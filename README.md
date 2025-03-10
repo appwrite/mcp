@@ -11,28 +11,42 @@ A Model Context Protocol server for interacting with Appwrite's API. This server
 - [Installation](#installation)
 - IDE Integration:
   - [Claude Desktop](#usage-with-claude-desktop)
-  - [Zed](#usage-with-zed)
   - [Cursor](#usage-with-cursor)
+  - [Windsurf Editor](#usage-with-windsurf-editor)
 - [Local Development](#local-development)
 - [Debugging](#debugging)
 
-Currently, the server supports the following tools:
-
-- [x] Databases
-- [x] Users
-
-> Please note that adding a lot of tools exceeds the context window of the LLM. As a result, we will make available a curated list of tools that are most commonly used.
-
 ## Configuration
 
-Create a `.env` file in the directory you're running the server from:
+> Before launching the MCP server, you must setup an [Appwrite project](https://cloud.appwrite.io/) and create an API key with the necessary scopes enabled.
 
-```env
-APPWRITE_API_KEY=your-api-key
-APPWRITE_PROJECT_ID=your-project-id
-APPWRITE_ENDPOINT=your-endpoint  # Optional, defaults to https://cloud.appwrite.io/v1
+Open the terminal in your working directory and run the following command:
+
+### Linux and MacOS
+
+```sh
+export APPWRITE_PROJECT_ID=your-project-id
+export APPWRITE_API_KEY=your-api-key
+export APPWRITE_ENDPOINT=https://cloud.appwrite.io/v1
 ```
-> Note: Ensure that your API Key has the necessary scopes to access the resources you want to use.
+
+### Windows
+
+#### Command Prompt
+
+```cmd
+SET APPWRITE_PROJECT_ID=your-project-id
+SET APPWRITE_API_KEY=your-api-key
+SET APPWRITE_ENDPOINT=https://cloud.appwrite.io/v1
+```
+
+#### PowerShell
+
+```powershell
+$env:APPWRITE_PROJECT_ID="your-project-id";
+$env:APPWRITE_API_KEY="your-api-key";
+$env:APPWRITE_ENDPOINT="https://cloud.appwrite.io/v1";
+```
 
 ## Installation
 
@@ -41,7 +55,7 @@ When using [`uv`](https://docs.astral.sh/uv/) no specific installation is needed
 use [`uvx`](https://docs.astral.sh/uv/guides/tools/) to directly run *mcp-server-appwrite*.
 
 ```bash
-uvx run mcp-server-appwrite
+uvx mcp-server-appwrite [args]
 ```
 
 ### Using pip
@@ -52,84 +66,143 @@ pip install mcp-server-appwrite
 Then run the server using 
 
 ```bash
-python -m mcp_server_appwrite
+python -m mcp_server_appwrite [args]
 ```
+
+### Command-line arguments
+
+Both the `uv` and `pip` setup processes require certain arguments to enable MCP tools for various Appwrite APIs.
+
+> When an MCP tool is enabled, the tool's definition is passed to the LLM, using up tokens from the model's available context window. As a result, the effective context window is reduced.  
+>  
+> The default Appwrite MCP server ships with only the Databases tools (our most commonly used API) enabled to stay within these limits. Additional tools can be enabled by using the flags below.
+
+| Argument | Description |
+| --- | --- |
+| `--databases` | Enables the Databases API |
+| `--users` | Enables the Users API |
+| `--teams` | Enables the Teams API |
+| `--storage` | Enables the Storage API |
+| `--functions` | Enables the Functions API |
+| `--messaging` | Enables the Messaging API |
+| `--locale` | Enables the Locale API |
+| `--avatars` | Enables the Avatars API |
+| `--all` | Enables all Appwrite APIs |
 
 ## Usage with Claude Desktop
 
 Add this to your `claude_desktop_config.json`:
 
 ```json
-"mcpServers": {
-  "appwrite": {
-    "command": "uvx",
-    "args": [
-      "mcp-server-appwrite"
-    ],
-    "env": {
-      "APPWRITE_PROJECT_ID": "your-project-id",
-      "APPWRITE_API_KEY": "your-api-key",
-      "APPWRITE_ENDPOINT": "your-endpoint"  // Optional
+{
+  "mcpServers": {
+    "appwrite": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-appwrite",
+        "--users"
+      ],
+      "env": {
+        "APPWRITE_PROJECT_ID": "your-project-id",
+        "APPWRITE_API_KEY": "your-api-key",
+        "APPWRITE_ENDPOINT": "https://cloud.appwrite.io/v1" // Optional
+      }
     }
   }
 }
+
 ```
 Upon successful configuration, you should be able to see the server in the list of available servers in Claude Desktop.
 
 ![Claude Desktop Config](images/claude-desktop-integration.png)
 
-## Usage with [Zed](https://github.com/zed-industries/zed)
-
-Add to your Zed settings.json:
-
-```json
-"context_servers": {
-  "appwrite": {
-    "command": "uvx",
-    "args": [
-      "mcp-server-appwrite"
-    ],
-    "env": {
-      "APPWRITE_PROJECT_ID": "your-project-id",
-      "APPWRITE_API_KEY": "your-api-key",
-      "APPWRITE_ENDPOINT": "your-endpoint"  // Optional
-    }
-  }
-}
-```
-
 ## Usage with [Cursor](https://www.cursor.com/)
 
-Head to Cursor `Settings > Features > MCP Servers` and click on **Add New MCP Server**. Choose the type as `Command` and add the command below to the **Command** field.
+Head to Cursor `Settings > MCP` and click on **Add new MCP server**. Choose the type as `Command` and add the command below to the **Command** field.
+
+- **MacOS**
 
 ```bash
 APPWRITE_PROJECT_ID=your-project-id APPWRITE_API_KEY=your-api-key uvx mcp-server-appwrite
 ```
 
+- **Windows**
+
+```cmd
+cmd /c SET APPWRITE_PROJECT_ID=your-project-id && SET APPWRITE_API_KEY=your-api-key && uvx mcp-server-appwrite
+```
+
 ![Cursor Settings](./images/cursor-integration.png)
+
+## Usage with [Windsurf Editor](https://codeium.com/windsurf)
+
+Head to Windsurf `Settings > Cascade > Model Context Protocol (MCP) Servers` and click on **View raw config**. Update the `mcp_config.json` file to include the following:
+
+```json
+{
+  "mcpServers": {
+    "appwrite": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-appwrite"
+      ],
+      "env": {
+        "APPWRITE_PROJECT_ID": "your-project-id",
+        "APPWRITE_API_KEY": "your-api-key",
+        "APPWRITE_ENDPOINT": "https://cloud.appwrite.io/v1" // Optional
+      }
+    }
+  }
+}
+```
+
+![Windsurf Settings](./images/windsurf-integration.png)
 
 ## Local Development
 
-Clone the repository
+### Clone the repository
 
 ```bash
 git clone https://github.com/appwrite/mcp.git
 ```
 
-Install `uv`
+### Install `uv`
+
+- Linux or MacOS
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-Create virtual environment
+- Windows (PowerShell)
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+### Prepare virtual environment
+
+First, create a virtual environment.
 
 ```bash
 uv venv
+```
+
+Next, activate the virtual environment.
+
+- Linux or MacOS
+
+```bash
 source .venv/bin/activate
 ```
 
-Run the server
+- Windows
+
+```powershell
+.venv\Scripts\activate
+```
+
+### Run the server
 
 ```bash
 uv run -v --directory ./ mcp-server-appwrite
