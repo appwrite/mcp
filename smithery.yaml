@@ -1,0 +1,37 @@
+# Smithery configuration file: https://smithery.ai/docs/config#smitheryyaml
+
+startCommand:
+  type: stdio
+  configSchema:
+    # JSON Schema defining the configuration options for the MCP.
+    type: object
+    required:
+      - appwriteApiKey
+      - appwriteProjectId
+    properties:
+      appwriteApiKey:
+        type: string
+        description: Your Appwrite API key.
+      appwriteProjectId:
+        type: string
+        description: Your Appwrite project ID.
+      appwriteEndpoint:
+        type: string
+        default: https://cloud.appwrite.io/v1
+        description: Optional Appwrite endpoint URL.
+  commandFunction:
+    # A JS function that produces the CLI command based on the given config to start the MCP on stdio.
+    |-
+    (config) => ({
+      command: 'mcp-server-appwrite',
+      args: [],
+      env: {
+        APPWRITE_API_KEY: config.appwriteApiKey,
+        APPWRITE_PROJECT_ID: config.appwriteProjectId,
+        APPWRITE_ENDPOINT: config.appwriteEndpoint || 'https://cloud.appwrite.io/v1'
+      }
+    })
+  exampleConfig:
+    appwriteApiKey: dummy-api-key
+    appwriteProjectId: dummy-project-id
+    appwriteEndpoint: https://cloud.appwrite.io/v1

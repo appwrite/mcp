@@ -1,5 +1,7 @@
 # Appwrite MCP server
 
+[![smithery badge](https://smithery.ai/badge/@appwrite/mcp)](https://smithery.ai/server/@appwrite/mcp)
+
 <!-- Cover image will go here once available -->
 
 <a href="https://glama.ai/mcp/servers/xkj2px7r0v">
@@ -59,6 +61,14 @@ Get-Content .\.env | ForEach-Object {
 ```
 
 ## Installation
+
+### Installing via Smithery
+
+To install Appwrite MCP Server for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@appwrite/mcp):
+
+```bash
+npx -y @smithery/cli install @appwrite/mcp --client claude
+```
 
 ### Using uv (recommended)
 When using [`uv`](https://docs.astral.sh/uv/) no specific installation is needed. We will
