@@ -1,5 +1,4 @@
 from __future__ import annotations
-from typing import List
 import asyncio
 import os
 import argparse
@@ -18,6 +17,7 @@ from appwrite.services.functions import Functions
 from appwrite.services.locale import Locale
 from appwrite.services.avatars import Avatars
 from appwrite.services.messaging import Messaging
+from appwrite.services.sites import Sites
 from appwrite.exception import AppwriteException
 from .tool_manager import ToolManager
 from .service import Service
@@ -32,6 +32,7 @@ def parse_args():
     parser.add_argument('--messaging', action='store_true', help='Enable Messaging service')
     parser.add_argument('--locale', action='store_true', help='Enable Locale service')
     parser.add_argument('--avatars', action='store_true', help='Enable Avatars service')
+    parser.add_argument('--sites', action='store_true', help='Enable Sites service')
     parser.add_argument('--all', action='store_true', help='Enable all services')
     return parser.parse_args()
 
@@ -60,6 +61,7 @@ def register_services(args):
     if args.all:
         args.databases = args.users = args.teams = args.storage = True
         args.functions = args.messaging = args.locale = args.avatars = True
+        args.sites = True
 
     # Register services based on CLI arguments
     if args.databases:
@@ -78,6 +80,8 @@ def register_services(args):
         tools_manager.register_service(Service(Locale(client), "locale"))
     if args.avatars:
         tools_manager.register_service(Service(Avatars(client), "avatars"))
+    if args.sites:
+        tools_manager.register_service(Service(Sites(client), "sites"))
 
     # If no services were specified, enable databases by default
     if not any([args.databases, args.users, args.teams, args.storage,
@@ -125,7 +129,7 @@ async def _run():
             write_stream,
             InitializationOptions(
                 server_name="appwrite",
-                server_version="0.1.4",
+                server_version="0.2.0",
                 capabilities=server.get_capabilities(
                     notification_options=NotificationOptions(),
                     experimental_capabilities={},

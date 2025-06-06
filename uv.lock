@@ -27,14 +27,14 @@ wheels = [
 
 [[package]]
 name = "appwrite"
-version = "9.0.3"
+version = "11.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/62/1e/44b16ae98909aef53b842f22a685139963b27a8341a8cdf20bc62728cab1/appwrite-9.0.3.tar.gz", hash = "sha256:cc003f37f1b87e80db376122fa0e2d85ed14672c15be2295fc60f37b314a69d2", size = 47975 }
+sdist = { url = "https://files.pythonhosted.org/packages/93/67/90bef0abe93ca61e63dc2323a459ad4f3f09725d88d4edc7791a07dd30c0/appwrite-11.0.0.tar.gz", hash = "sha256:6a40f20a0d74fec6b1c2f276756dbba1c8789c8256544c1a035feffae8ff3437", size = 53808 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/37/5b/88eebc3dcb4c155b1687814775665a92785248b147625077b623d5c8997a/appwrite-9.0.3-py3-none-any.whl", hash = "sha256:d3c82d68c9dde539fa82c4a2ba2cc61efa24483ec243aefbf45dac42e15118cf", size = 58572 },
+    { url = "https://files.pythonhosted.org/packages/28/31/f996e798e9fb9644ad876030eca95cda872b8f4b83581da35fa6a99c7cbe/appwrite-11.0.0-py3-none-any.whl", hash = "sha256:dd363769bd975ff72ab83a9e4f37534f9e3b08c20c5e1328cfed5920d979f33a", size = 67047 },
 ]
 
 [[package]]
@@ -205,7 +205,7 @@ cli = [
 
 [[package]]
 name = "mcp-server-appwrite"
-version = "0.1.4"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "appwrite" },
@@ -215,7 +215,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "appwrite", specifier = ">=9.0.3" },
+    { name = "appwrite", specifier = ">=11.0.0" },
     { name = "docstring-parser", specifier = ">=0.16" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.3.0" },
 ]

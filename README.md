@@ -25,7 +25,7 @@ Create a `.env` file in your working directory and add the following:
 ```env
 APPWRITE_PROJECT_ID=your-project-id
 APPWRITE_API_KEY=your-api-key
-APPWRITE_ENDPOINT=https://cloud.appwrite.io/v1
+APPWRITE_ENDPOINT=https://<REGION>.cloud.appwrite.io/v1
 ```
 
 Then, open your terminal and run the following command
@@ -93,6 +93,7 @@ Both the `uv` and `pip` setup processes require certain arguments to enable MCP 
 | `--messaging` | Enables the Messaging API |
 | `--locale` | Enables the Locale API |
 | `--avatars` | Enables the Avatars API |
+| `--sites` | Enables the Sites API |
 | `--all` | Enables all Appwrite APIs |
 
 ## Usage with Claude Desktop
@@ -110,7 +111,7 @@ In the Claude Desktop app, open the app's **Settings** page (press `CTRL + ,` on
       "env": {
         "APPWRITE_PROJECT_ID": "your-project-id",
         "APPWRITE_API_KEY": "your-api-key",
-        "APPWRITE_ENDPOINT": "https://cloud.appwrite.io/v1" // Optional
+        "APPWRITE_ENDPOINT": "https://<REGION>.cloud.appwrite.io/v1" // Optional
       }
     }
   }
@@ -157,7 +158,7 @@ Head to Windsurf `Settings > Cascade > Model Context Protocol (MCP) Servers` and
       "env": {
         "APPWRITE_PROJECT_ID": "your-project-id",
         "APPWRITE_API_KEY": "your-api-key",
-        "APPWRITE_ENDPOINT": "https://cloud.appwrite.io/v1" // Optional
+        "APPWRITE_ENDPOINT": "https://<REGION>.cloud.appwrite.io/v1" // Optional
       }
     }
   }
