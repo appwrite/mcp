@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import argparse
 import base64
+import importlib
+import inspect
 import json
 import os
+import pkgutil
 import re
 import sys
 from collections.abc import Mapping
@@ -20,15 +23,7 @@ from appwrite.client import Client
 from appwrite.enums.browser import Browser
 from appwrite.exception import AppwriteException
 from appwrite.input_file import InputFile
-from appwrite.services.avatars import Avatars
-from appwrite.services.functions import Functions
-from appwrite.services.locale import Locale
-from appwrite.services.messaging import Messaging
-from appwrite.services.sites import Sites
-from appwrite.services.storage import Storage
-from appwrite.services.tables_db import TablesDB
-from appwrite.services.teams import Teams
-from appwrite.services.users import Users
+from appwrite.service import Service as _SdkService
 from dotenv import find_dotenv, load_dotenv
 from mcp.server import Server
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -42,20 +37,38 @@ SERVER_VERSION = "0.5.0"
 
 DEFAULT_ENDPOINT = "https://cloud.appwrite.io/v1"
 
-# Maps the MCP service name (used as a tool-name prefix) to its Appwrite SDK service
-# class. The catalog/schema is built once from these classes; at execution time the
-# matching class is re-instantiated on a per-request client (see `resolve_client`).
-SERVICE_CLASSES: dict[str, type] = {
-    "tables_db": TablesDB,
-    "users": Users,
-    "teams": Teams,
-    "storage": Storage,
-    "functions": Functions,
-    "messaging": Messaging,
-    "locale": Locale,
-    "avatars": Avatars,
-    "sites": Sites,
-}
+# Service modules in the Appwrite SDK to skip (none by default — every service the
+# installed SDK ships is exposed). Add a module name here to hide a service.
+EXCLUDED_SERVICES: frozenset[str] = frozenset()
+
+
+def _discover_service_classes() -> dict[str, type]:
+    """Discover every Appwrite SDK service class, keyed by its module name
+    (e.g. ``"tables_db" -> TablesDB``). The module name is used as the tool-name
+    prefix. The catalog/schema is built once from these classes; at execution time
+    the matching class is re-instantiated on a per-request client (see
+    ``resolve_client``)."""
+    import appwrite.services as services_pkg
+
+    discovered: dict[str, type] = {}
+    for module_info in pkgutil.iter_modules(services_pkg.__path__):
+        name = module_info.name
+        if name in EXCLUDED_SERVICES:
+            continue
+        module = importlib.import_module(f"appwrite.services.{name}")
+        for _, cls in inspect.getmembers(module, inspect.isclass):
+            if (
+                issubclass(cls, _SdkService)
+                and cls is not _SdkService
+                and cls.__module__ == module.__name__
+            ):
+                discovered[name] = cls
+                break
+    return discovered
+
+
+# Maps the MCP service name (tool-name prefix) to its Appwrite SDK service class.
+SERVICE_CLASSES: dict[str, type] = _discover_service_classes()
 
 
 @dataclass(frozen=True)
@@ -156,19 +169,8 @@ def resolve_client() -> Client:
 
 def register_services(client: Client) -> ToolManager:
     tools_manager = ToolManager()
-    for service in [
-        Service(TablesDB(client), "tables_db"),
-        Service(Users(client), "users"),
-        Service(Teams(client), "teams"),
-        Service(Storage(client), "storage"),
-        Service(Functions(client), "functions"),
-        Service(Messaging(client), "messaging"),
-        Service(Locale(client), "locale"),
-        Service(Avatars(client), "avatars"),
-        Service(Sites(client), "sites"),
-    ]:
-        tools_manager.register_service(service)
-
+    for name, service_cls in SERVICE_CLASSES.items():
+        tools_manager.register_service(Service(service_cls(client), name))
     return tools_manager
 
 

@@ -19,55 +19,12 @@ import time
 from urllib.parse import urlsplit, urlunsplit
 
 import anyio
+import httpx
 import jwt
 from jwt import PyJWKClient
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 
 DEFAULT_ENDPOINT = "https://cloud.appwrite.io/v1"
-
-# Full read+write scope set the MCP advertises in its protected-resource metadata.
-# The connecting client requests the subset it needs; the cloud consent screen and the
-# Appwrite REST API (per-route scope checks) enforce what is actually granted.
-SCOPES_SUPPORTED: list[str] = [
-    "users.read",
-    "users.write",
-    "sessions.read",
-    "sessions.write",
-    "teams.read",
-    "teams.write",
-    "databases.read",
-    "databases.write",
-    "tables.read",
-    "tables.write",
-    "columns.read",
-    "columns.write",
-    "indexes.read",
-    "indexes.write",
-    "rows.read",
-    "rows.write",
-    "buckets.read",
-    "buckets.write",
-    "files.read",
-    "files.write",
-    "functions.read",
-    "functions.write",
-    "executions.read",
-    "executions.write",
-    "providers.read",
-    "providers.write",
-    "topics.read",
-    "topics.write",
-    "subscribers.read",
-    "subscribers.write",
-    "targets.read",
-    "targets.write",
-    "messages.read",
-    "messages.write",
-    "sites.read",
-    "sites.write",
-    "locale.read",
-    "avatars.read",
-]
 
 
 def _log(message: str) -> None:
@@ -102,14 +59,48 @@ def resource_metadata_url(project_id: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
 
 
-def protected_resource_metadata(project_id: str) -> dict:
+# Cache of scopes_supported per project (process lifetime; project OAuth config is
+# effectively static). Failed lookups raise and are not cached, so they retry.
+_scopes_cache: dict[str, list[str]] = {}
+
+
+async def supported_scopes(project_id: str) -> list[str]:
+    """Scopes advertised in the protected-resource metadata, sourced live from the
+    project's authorization-server discovery (`scopes_supported`). This is exactly the
+    set the project's OAuth server will grant, so it never drifts from the tool surface.
+    Raises if discovery is unreachable or malformed (the authorization server is the
+    same Appwrite deployment this MCP depends on)."""
+    cached = _scopes_cache.get(project_id)
+    if cached is not None:
+        return cached
+
+    url = f"{issuer_url(project_id)}/.well-known/openid-configuration"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        scopes = resp.json().get("scopes_supported")
+    if not isinstance(scopes, list):
+        raise ValueError(
+            f"authorization server discovery missing scopes_supported: {url}"
+        )
+
+    _scopes_cache[project_id] = scopes
+    return scopes
+
+
+def build_resource_metadata(project_id: str, scopes: list[str]) -> dict:
     """RFC 9728 Protected Resource Metadata document for a project."""
     return {
         "resource": canonical_resource(project_id),
         "authorization_servers": [issuer_url(project_id)],
-        "scopes_supported": SCOPES_SUPPORTED,
+        "scopes_supported": scopes,
         "bearer_methods_supported": ["header"],
     }
+
+
+async def protected_resource_metadata(project_id: str) -> dict:
+    """RFC 9728 Protected Resource Metadata, with scopes sourced from AS discovery."""
+    return build_resource_metadata(project_id, await supported_scopes(project_id))
 
 
 def project_id_from_issuer(iss: str | None) -> str | None:

@@ -210,20 +210,14 @@ class ServerHelperTests(unittest.TestCase):
 
         self.assertIsNot(manager_a, manager_b)
         self.assertEqual(len(manager_a.get_all_tools()), len(manager_b.get_all_tools()))
+        from mcp_server_appwrite.server import SERVICE_CLASSES
+
         self.assertEqual(
             {service.service_name for service in manager_a.services},
-            {
-                "avatars",
-                "functions",
-                "locale",
-                "messaging",
-                "sites",
-                "storage",
-                "tables_db",
-                "teams",
-                "users",
-            },
+            set(SERVICE_CLASSES),
         )
+        # Every advertised service is registered (the SDK currently ships 14).
+        self.assertGreaterEqual(len(manager_a.services), 14)
 
     def test_validate_services_raises_with_service_name(self):
         class FailingSdkService:

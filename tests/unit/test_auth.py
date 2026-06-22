@@ -1,3 +1,4 @@
+import asyncio
 import os
 import unittest
 from unittest import mock
@@ -28,15 +29,32 @@ class AuthHelperTests(unittest.TestCase):
             "https://mcp.appwrite.io/.well-known/oauth-protected-resource/proj1/mcp",
         )
 
-    def test_protected_resource_metadata_shape(self):
-        meta = auth.protected_resource_metadata("proj1")
+    def test_build_resource_metadata_shape(self):
+        meta = auth.build_resource_metadata("proj1", ["users.read", "teams.read"])
         self.assertEqual(meta["resource"], "https://mcp.appwrite.io/proj1/mcp")
         self.assertEqual(
             meta["authorization_servers"],
             ["https://cloud.appwrite.io/v1/oauth2/proj1"],
         )
         self.assertEqual(meta["bearer_methods_supported"], ["header"])
-        self.assertIn("users.read", meta["scopes_supported"])
+        self.assertEqual(meta["scopes_supported"], ["users.read", "teams.read"])
+
+    def test_supported_scopes_uses_cache_without_network(self):
+        auth._scopes_cache["cachedproj"] = ["rows.read", "rows.write"]
+        try:
+            scopes = asyncio.run(auth.supported_scopes("cachedproj"))
+        finally:
+            auth._scopes_cache.pop("cachedproj", None)
+        self.assertEqual(scopes, ["rows.read", "rows.write"])
+
+    def test_supported_scopes_raises_when_discovery_unreachable(self):
+        # Point discovery at an unroutable address so the fetch fails fast.
+        with mock.patch.dict(
+            os.environ, {"APPWRITE_ENDPOINT": "http://127.0.0.1:1/v1"}
+        ):
+            with self.assertRaises(Exception):
+                asyncio.run(auth.supported_scopes("unreachableproj"))
+        self.assertNotIn("unreachableproj", auth._scopes_cache)
 
     def test_project_id_from_issuer_accepts_matching_issuer(self):
         self.assertEqual(

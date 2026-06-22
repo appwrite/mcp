@@ -63,7 +63,7 @@ The server starts in a compact workflow so the MCP client only sees a small oper
 - The full Appwrite tool catalog stays internal and is searched at runtime.
 - Large tool outputs are stored as MCP resources and returned as preview text plus a resource URI.
 - Mutating hidden tools require `confirm_write=true`.
-- All supported Appwrite services are registered except the legacy Databases API.
+- Every Appwrite service the installed SDK ships is registered automatically (account, databases, tablesDB, users, teams, storage, functions, messaging, sites, tokens, locale, avatars, graphql, health).
 
 ## Self-hosting
 

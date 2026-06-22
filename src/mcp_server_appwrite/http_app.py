@@ -108,7 +108,8 @@ class RequireBearerForProject:
 
 async def protected_resource_metadata_endpoint(request: Request) -> JSONResponse:
     project_id = request.path_params["project_id"]
-    return JSONResponse(protected_resource_metadata(project_id), headers=_CORS_HEADERS)
+    metadata = await protected_resource_metadata(project_id)
+    return JSONResponse(metadata, headers=_CORS_HEADERS)
 
 
 async def health_endpoint(request: Request) -> PlainTextResponse:
