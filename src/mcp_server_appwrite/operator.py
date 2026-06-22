@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections import OrderedDict
-from dataclasses import dataclass
 import json
 import re
+from collections import OrderedDict
+from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.parse import urlparse
 from uuid import uuid4

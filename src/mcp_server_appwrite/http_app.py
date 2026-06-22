@@ -1,0 +1,171 @@
+"""Hosted Streamable-HTTP transport for the Appwrite MCP.
+
+Builds a multi-tenant Starlette ASGI app:
+
+* ``/{project_id}/mcp`` — the MCP Streamable-HTTP endpoint, gated by a bearer-token
+  check that returns an RFC 9728 ``WWW-Authenticate`` challenge when unauthenticated.
+* ``/.well-known/oauth-protected-resource/{project_id}/mcp`` — RFC 9728 protected
+  resource metadata pointing at that project's Appwrite OAuth authorization server.
+* ``/healthz`` — liveness probe.
+
+Auth uses the SDK primitives (``BearerAuthBackend`` + ``AuthContextMiddleware``) so the
+validated token is reachable from tool handlers via ``get_access_token()``.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import sys
+
+from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
+from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser, BearerAuthBackend
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.authentication import AuthenticationMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse, PlainTextResponse
+from starlette.routing import Route
+from starlette.types import Receive, Scope, Send
+
+from .auth import (
+    AppwriteTokenVerifier,
+    protected_resource_metadata,
+    resource_metadata_url,
+)
+from .server import (
+    SERVER_VERSION,
+    build_catalog_tools_manager,
+    build_mcp_server,
+    build_operator,
+)
+
+_CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version",
+    "Access-Control-Expose-Headers": "Mcp-Session-Id, WWW-Authenticate",
+}
+
+
+def _log(message: str) -> None:
+    print(f"[appwrite-mcp][http] {message}", file=sys.stderr, flush=True)
+
+
+async def _send_401(send: Send, project_id: str) -> None:
+    """RFC 9728 §5.1 — 401 with a WWW-Authenticate pointing to resource metadata."""
+    metadata_url = resource_metadata_url(project_id) if project_id else None
+    parts = ['error="invalid_token"', 'error_description="Authentication required"']
+    if metadata_url:
+        parts.append(f'resource_metadata="{metadata_url}"')
+    www_authenticate = f"Bearer {', '.join(parts)}"
+
+    body = json.dumps(
+        {"error": "invalid_token", "error_description": "Authentication required"}
+    ).encode()
+    headers = [
+        (b"content-type", b"application/json"),
+        (b"content-length", str(len(body)).encode()),
+        (b"www-authenticate", www_authenticate.encode()),
+    ]
+    await send({"type": "http.response.start", "status": 401, "headers": headers})
+    await send({"type": "http.response.body", "body": body})
+
+
+class RequireBearerForProject:
+    """ASGI gate: require an authenticated user for ``/{project_id}/mcp`` requests.
+
+    Scope enforcement is delegated to the Appwrite REST API (per-route scope checks
+    against the token's granted scopes), so the gate only requires a valid token.
+    """
+
+    def __init__(self, app: object) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":  # pragma: no cover
+            await self.app(scope, receive, send)
+            return
+
+        if scope.get("method") == "OPTIONS":
+            await self._preflight(send)
+            return
+
+        user = scope.get("user")
+        if not isinstance(user, AuthenticatedUser):
+            project_id = scope.get("path_params", {}).get("project_id", "")
+            await _send_401(send, project_id)
+            return
+
+        await self.app(scope, receive, send)
+
+    async def _preflight(self, send: Send) -> None:
+        headers = [(k.lower().encode(), v.encode()) for k, v in _CORS_HEADERS.items()]
+        await send({"type": "http.response.start", "status": 204, "headers": headers})
+        await send({"type": "http.response.body", "body": b""})
+
+
+async def protected_resource_metadata_endpoint(request: Request) -> JSONResponse:
+    project_id = request.path_params["project_id"]
+    return JSONResponse(protected_resource_metadata(project_id), headers=_CORS_HEADERS)
+
+
+async def health_endpoint(request: Request) -> PlainTextResponse:
+    return PlainTextResponse(f"appwrite-mcp {SERVER_VERSION} ok")
+
+
+def build_app() -> Starlette:
+    tools_manager = build_catalog_tools_manager()
+    operator = build_operator(tools_manager)
+    server = build_mcp_server(operator)
+
+    # Streamable HTTP with SSE responses (the MCP SDK/ecosystem default). Stateless,
+    # so each request opens and closes its own short-lived stream — no session to pin.
+    session_manager = StreamableHTTPSessionManager(
+        app=server,
+        json_response=False,
+        stateless=True,
+    )
+
+    async def handle_mcp(scope: Scope, receive: Receive, send: Send) -> None:
+        await session_manager.handle_request(scope, receive, send)
+
+    mcp_endpoint = RequireBearerForProject(handle_mcp)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app: Starlette):
+        async with session_manager.run():
+            _log(f"Appwrite MCP (Streamable HTTP) ready — v{SERVER_VERSION}")
+            yield
+
+    routes = [
+        Route(
+            "/.well-known/oauth-protected-resource/{project_id}/mcp",
+            endpoint=protected_resource_metadata_endpoint,
+            methods=["GET", "OPTIONS"],
+        ),
+        Route("/healthz", endpoint=health_endpoint, methods=["GET"]),
+        Route(
+            "/{project_id}/mcp",
+            endpoint=mcp_endpoint,
+            methods=["GET", "POST", "DELETE", "OPTIONS"],
+        ),
+    ]
+
+    middleware = [
+        Middleware(
+            AuthenticationMiddleware, backend=BearerAuthBackend(AppwriteTokenVerifier())
+        ),
+        Middleware(AuthContextMiddleware),
+    ]
+
+    return Starlette(routes=routes, middleware=middleware, lifespan=lifespan)
+
+
+def run_http(*, host: str = "0.0.0.0", port: int = 8000) -> None:
+    import uvicorn
+
+    app = build_app()
+    _log(f"Serving on http://{host}:{port}  (resource path: /<project_id>/mcp)")
+    uvicorn.run(app, host=host, port=port)

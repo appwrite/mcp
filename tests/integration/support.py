@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import json
-import os
 import struct
 import tempfile
 import time
+import unittest
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
-import unittest
 
 from mcp_server_appwrite.operator import Operator
 from mcp_server_appwrite.server import (
@@ -56,6 +55,7 @@ class LiveSurfaceRunner:
                 self.manager,
                 tool_name,
                 arguments,
+                self.client,
             ),
         )
         self.tool_outcomes: dict[str, ToolOutcome] = {}
@@ -65,7 +65,9 @@ class LiveSurfaceRunner:
         last_exc: Exception | None = None
         for attempt in range(1, 4):
             try:
-                return execute_registered_tool(self.manager, tool_name, arguments or {})
+                return execute_registered_tool(
+                    self.manager, tool_name, arguments or {}, self.client
+                )
             except Exception as exc:  # pragma: no cover - exercised live
                 message = str(exc).lower()
                 transient = (
