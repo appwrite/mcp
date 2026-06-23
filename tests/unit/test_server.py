@@ -67,7 +67,7 @@ class ServerHelperTests(unittest.TestCase):
                 os.chdir(previous_cwd)
 
         self.assertEqual(client._endpoint, "https://example.test/v1")
-        self.assertEqual(client._global_headers["x-appwrite-project"], "test-project")
+        self.assertEqual(client.get_config("project"), "test-project")
         self.assertEqual(client._global_headers["x-appwrite-key"], "test-key")
 
     def test_coerce_enum_returns_raw_value_string(self):
