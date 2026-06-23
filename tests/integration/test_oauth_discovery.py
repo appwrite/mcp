@@ -19,10 +19,9 @@ from __future__ import annotations
 import unittest
 
 import httpx
+from support import requires_live_integration
 
 from mcp_server_appwrite import auth
-
-from .support import requires_live_integration
 
 
 @requires_live_integration
