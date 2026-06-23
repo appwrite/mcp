@@ -79,7 +79,7 @@ class OperatorTests(unittest.TestCase):
         return Operator(manager, executor)
 
     def test_search_tools_returns_ranked_match(self):
-        runtime = self.make_runtime(lambda name, arguments: [])
+        runtime = self.make_runtime(lambda name, arguments, *_: [])
 
         result = runtime.execute_public_tool(
             "appwrite_search_tools",
@@ -92,7 +92,7 @@ class OperatorTests(unittest.TestCase):
         self.assertIn(CATALOG_URI, result[0].text)
 
     def test_search_tools_infers_mutating_search_for_create_query(self):
-        runtime = self.make_runtime(lambda name, arguments: [])
+        runtime = self.make_runtime(lambda name, arguments, *_: [])
 
         result = runtime.execute_public_tool(
             "appwrite_search_tools",
@@ -103,7 +103,7 @@ class OperatorTests(unittest.TestCase):
         self.assertIn("functions_create", result[0].text)
 
     def test_search_tools_surfaces_required_create_tool_without_argument_hints(self):
-        runtime = self.make_runtime(lambda name, arguments: [])
+        runtime = self.make_runtime(lambda name, arguments, *_: [])
 
         result = runtime.execute_public_tool(
             "appwrite_search_tools",
@@ -114,7 +114,7 @@ class OperatorTests(unittest.TestCase):
         self.assertIn("tables_db_create_string_column", result[0].text)
 
     def test_search_tools_scores_get_queries_against_get_tools(self):
-        runtime = self.make_runtime(lambda name, arguments: [])
+        runtime = self.make_runtime(lambda name, arguments, *_: [])
 
         result = runtime.execute_public_tool(
             "appwrite_search_tools",
@@ -125,7 +125,7 @@ class OperatorTests(unittest.TestCase):
         self.assertIn("functions_get", result[0].text)
 
     def test_call_tool_requires_confirm_write(self):
-        runtime = self.make_runtime(lambda name, arguments: [])
+        runtime = self.make_runtime(lambda name, arguments, *_: [])
 
         with self.assertRaisesRegex(RuntimeError, "confirm_write=true"):
             runtime.execute_public_tool(
@@ -136,7 +136,7 @@ class OperatorTests(unittest.TestCase):
     def test_call_tool_merges_top_level_arguments(self):
         captured = {}
 
-        def executor(name, arguments):
+        def executor(name, arguments, *_):
             captured["name"] = name
             captured["arguments"] = arguments
             return [types.TextContent(type="text", text="ok")]
@@ -157,7 +157,7 @@ class OperatorTests(unittest.TestCase):
 
     def test_large_result_is_stored_as_resource(self):
         runtime = self.make_runtime(
-            lambda name, arguments: [types.TextContent(type="text", text="x" * 1200)]
+            lambda name, arguments, *_: [types.TextContent(type="text", text="x" * 1200)]
         )
 
         result = runtime.execute_public_tool(

@@ -26,7 +26,8 @@ DELETE_HINTS = {"delete", "destroy", "drop", "remove"}
 READ_HINTS = {"fetch", "find", "get", "list", "read", "search", "show", "view"}
 
 ToolContent = types.TextContent | types.ImageContent | types.EmbeddedResource
-ToolExecutor = Callable[[str, dict[str, Any]], list[ToolContent]]
+# (tool_name, arguments, project_id, organization_id) -> content
+ToolExecutor = Callable[[str, dict[str, Any], str | None, str | None], list[ToolContent]]
 
 
 @dataclass(frozen=True)
@@ -171,6 +172,25 @@ class Operator:
                         "confirm_write": {
                             "type": "boolean",
                             "description": "Required for create, update, and delete tools.",
+                        },
+                        "project_id": {
+                            "type": "string",
+                            "description": (
+                                "Appwrite project ID to act on (sent as X-Appwrite-Project). "
+                                "The connection authenticates against the Appwrite console, which "
+                                "can list your projects/organizations but holds no data — so "
+                                "project-scoped tools (databases, tables, users, storage, "
+                                "functions, messaging, sites) require this. Discover a project "
+                                "first, then pass its id. Omit for console/account-level tools."
+                            ),
+                        },
+                        "organization_id": {
+                            "type": "string",
+                            "description": (
+                                "Appwrite organization (team) ID to act on (sent as "
+                                "X-Appwrite-Organization). Required for organization-scoped "
+                                "console tools such as creating a project. Omit otherwise."
+                            ),
                         },
                     },
                     "required": ["tool_name"],
@@ -351,8 +371,14 @@ class Operator:
                 f"Tool {tool_name} is {entry.classification}. Re-run appwrite_call_tool with confirm_write=true if you intend to mutate Appwrite state."
             )
 
+        project_id = raw_arguments.get("project_id", raw_arguments.get("projectId"))
+        organization_id = raw_arguments.get(
+            "organization_id", raw_arguments.get("organizationId")
+        )
         arguments_object = _normalize_arguments(raw_arguments)
-        result_content = self._execute_tool(tool_name, arguments_object)
+        result_content = self._execute_tool(
+            tool_name, arguments_object, project_id, organization_id
+        )
         return self._preview_or_store_result(tool_name, result_content)
 
     def _preview_or_store_result(
@@ -625,6 +651,10 @@ def _normalize_arguments(raw_arguments: dict[str, Any]) -> dict[str, Any]:
             "args",
             "confirm_write",
             "confirmWrite",
+            "project_id",
+            "projectId",
+            "organization_id",
+            "organizationId",
         }:
             continue
         if value is not None:

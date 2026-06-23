@@ -139,23 +139,53 @@ def build_introspection_client() -> Client:
 
 
 def build_client_for_request(
-    project_id: str, bearer_token: str, endpoint: str | None = None
+    project_id: str,
+    bearer_token: str,
+    endpoint: str | None = None,
+    target_project: str | None = None,
+    organization_id: str | None = None,
 ) -> Client:
     """Build a per-request client authenticated with a user's OAuth2 access token.
     The Appwrite REST API accepts the OAuth2 access token directly as a Bearer token
-    and resolves the user + granted scopes from it."""
+    and resolves the user + granted scopes from it.
+
+    The token authenticates against the Appwrite console project. To act on one of
+    the user's own projects, pass ``target_project``: it is sent as the
+    ``X-Appwrite-Project`` header so the same console token operates on that
+    project's data. ``organization_id`` sets ``X-Appwrite-Organization`` for
+    org-scoped console operations (e.g. creating a project).
+
+    Targeting a real project also sends ``X-Appwrite-Mode: admin``. Admin mode is
+    what lets a console-issued token be recognized across projects (resolving the
+    user as the project owner); without it the token is not a valid identity on
+    another project and the request falls back to the guest role. Admin mode is
+    only valid against a real project — the API rejects it on the console project —
+    so it is not sent for ``organization_id``-only (console) operations."""
     client = Client()
     client.set_endpoint(endpoint or os.getenv("APPWRITE_ENDPOINT", DEFAULT_ENDPOINT))
-    client.set_project(project_id)
+    client.set_project(target_project or project_id)
     client.add_header("Authorization", f"Bearer {bearer_token}")
     client.add_header("x-sdk-name", "mcp")
+    if target_project:
+        client.add_header("x-appwrite-project", target_project)
+        # Admin mode lets the console-issued token be recognized on another project
+        # (as the owner) instead of falling back to guest. It is only valid when
+        # targeting a real project — the API rejects admin mode on the console
+        # project itself — so it is gated on target_project, not organization_id.
+        client.add_header("x-appwrite-mode", "admin")
+    if organization_id:
+        client.add_header("x-appwrite-organization", organization_id)
     return client
 
 
-def resolve_client() -> Client:
+def resolve_client(
+    target_project: str | None = None, organization_id: str | None = None
+) -> Client:
     """Build the Appwrite client for the current request from its OAuth access
     token. The token is read from the request context populated by the auth
-    middleware and carries the project it was issued for."""
+    middleware and carries the project it was issued for (the console). Pass
+    ``target_project``/``organization_id`` to scope the call to one of the user's
+    own projects/organizations."""
     access_token = get_access_token()
     if access_token is None:
         raise RuntimeError("No authenticated Appwrite access token in request context.")
@@ -164,7 +194,12 @@ def resolve_client() -> Client:
     project_id = claims.get("project_id")
     if not project_id:
         raise RuntimeError("Authenticated token is missing a project identifier.")
-    return build_client_for_request(project_id, access_token.token)
+    return build_client_for_request(
+        project_id,
+        access_token.token,
+        target_project=target_project,
+        organization_id=organization_id,
+    )
 
 
 def register_services(client: Client) -> ToolManager:
@@ -435,6 +470,8 @@ def execute_registered_tool(
     name: str,
     arguments: dict[str, Any] | None,
     client: Client | None = None,
+    target_project: str | None = None,
+    organization_id: str | None = None,
 ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
     tool_info = tools_manager.get_tool(name)
     if not tool_info:
@@ -452,7 +489,7 @@ def execute_registered_tool(
     # An explicit client takes precedence (used by tests); otherwise it is resolved
     # from the request's OAuth access token.
     if client is None:
-        client = resolve_client()
+        client = resolve_client(target_project, organization_id)
     bound_method = getattr(service_cls(client), method_name)
 
     try:
@@ -565,6 +602,12 @@ def _format_appwrite_error(exc: AppwriteException) -> str:
 def build_mcp_server(operator: Operator) -> Server:
     instructions = (
         "Appwrite workflow: use appwrite_search_tools first, then appwrite_call_tool. "
+        "You authenticate against the Appwrite console, which can list your "
+        "organizations and projects but stores no project data itself. Project-scoped "
+        "tools (databases, tables, users, storage, functions, messaging, sites) need a "
+        "target project: first discover one (search for and call a tool that lists "
+        "projects), then pass its id as project_id to appwrite_call_tool. "
+        "Organization-scoped console tools (e.g. creating a project) need organization_id. "
         "Mutating hidden tools require confirm_write=true. "
         "Large results are stored as resources; read the URI returned by the tool."
     )
@@ -604,10 +647,12 @@ def build_operator(tools_manager: ToolManager) -> Operator:
     callback re-binds each call to a per-request client via `resolve_client`."""
     return Operator(
         tools_manager,
-        lambda tool_name, tool_arguments: execute_registered_tool(
+        lambda tool_name, tool_arguments, target_project=None, organization_id=None: execute_registered_tool(
             tools_manager,
             tool_name,
             tool_arguments,
+            target_project=target_project,
+            organization_id=organization_id,
         ),
     )
 

@@ -51,7 +51,7 @@ class LiveSurfaceRunner:
         self.manager = register_services(self.client)
         self.runtime = Operator(
             self.manager,
-            lambda tool_name, arguments: execute_registered_tool(
+            lambda tool_name, arguments, *_: execute_registered_tool(
                 self.manager,
                 tool_name,
                 arguments,
