@@ -27,7 +27,9 @@ READ_HINTS = {"fetch", "find", "get", "list", "read", "search", "show", "view"}
 
 ToolContent = types.TextContent | types.ImageContent | types.EmbeddedResource
 # (tool_name, arguments, project_id, organization_id) -> content
-ToolExecutor = Callable[[str, dict[str, Any], str | None, str | None], list[ToolContent]]
+ToolExecutor = Callable[
+    [str, dict[str, Any], str | None, str | None], list[ToolContent]
+]
 
 
 @dataclass(frozen=True)

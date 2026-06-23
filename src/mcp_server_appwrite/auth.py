@@ -145,7 +145,9 @@ class AppwriteTokenVerifier(TokenVerifier):
     def _jwks_client(self, project_id: str) -> PyJWKClient:
         client = self._jwks_clients.get(project_id)
         if client is None:
-            jwks_uri = f"{appwrite_endpoint()}/oauth2/{project_id}/.well-known/jwks.json"
+            jwks_uri = (
+                f"{appwrite_endpoint()}/oauth2/{project_id}/.well-known/jwks.json"
+            )
             client = PyJWKClient(jwks_uri)
             self._jwks_clients[project_id] = client
         return client

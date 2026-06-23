@@ -157,7 +157,9 @@ class OperatorTests(unittest.TestCase):
 
     def test_large_result_is_stored_as_resource(self):
         runtime = self.make_runtime(
-            lambda name, arguments, *_: [types.TextContent(type="text", text="x" * 1200)]
+            lambda name, arguments, *_: [
+                types.TextContent(type="text", text="x" * 1200)
+            ]
         )
 
         result = runtime.execute_public_tool(

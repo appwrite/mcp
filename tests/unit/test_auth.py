@@ -24,9 +24,7 @@ class AuthHelperTests(unittest.TestCase):
         self.assertEqual(
             auth.issuer_url(), "https://cloud.appwrite.io/v1/oauth2/console"
         )
-        self.assertEqual(
-            auth.canonical_resource(), "https://mcp.appwrite.io/mcp"
-        )
+        self.assertEqual(auth.canonical_resource(), "https://mcp.appwrite.io/mcp")
         self.assertEqual(
             auth.resource_metadata_url(),
             "https://mcp.appwrite.io/.well-known/oauth-protected-resource/mcp",
@@ -95,7 +93,9 @@ class AuthHelperTests(unittest.TestCase):
         # Discovery is read from the OIDC well-known path under the served project's issuer.
         self.assertEqual(
             seen_urls,
-            ["https://cloud.appwrite.io/v1/oauth2/console/.well-known/openid-configuration"],
+            [
+                "https://cloud.appwrite.io/v1/oauth2/console/.well-known/openid-configuration"
+            ],
         )
         # The registration endpoint the MCP points clients to follows `issuer/register`.
         self.assertEqual(
@@ -107,7 +107,10 @@ class AuthHelperTests(unittest.TestCase):
         # Point discovery at an unroutable address so the fetch fails fast.
         with mock.patch.dict(
             os.environ,
-            {"APPWRITE_ENDPOINT": "http://127.0.0.1:1/v1", "APPWRITE_PROJECT_ID": "unreachableproj"},
+            {
+                "APPWRITE_ENDPOINT": "http://127.0.0.1:1/v1",
+                "APPWRITE_PROJECT_ID": "unreachableproj",
+            },
         ):
             with self.assertRaises(Exception):
                 asyncio.run(auth.supported_scopes())
