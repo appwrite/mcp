@@ -46,12 +46,15 @@ The MCP server validates the bearer access token on every request and forwards i
 
 1. The client requests `/<project_id>/mcp` without a token and receives `401` with a `WWW-Authenticate` header pointing to the protected-resource metadata.
 2. The client fetches `GET /.well-known/oauth-protected-resource/<project_id>/mcp` (RFC 9728), which lists the project's authorization server (`<APPWRITE_ENDPOINT>/oauth2/<project_id>`) and supported scopes.
-3. The client discovers the authorization server (RFC 8414 / OIDC), registers (RFC 7591), and runs the OAuth 2.1 + PKCE authorization-code flow, including the RFC 8707 `resource` parameter that binds the token's audience to this server.
-4. The client calls `/<project_id>/mcp` with `Authorization: Bearer <token>`.
+3. The client discovers the authorization server (RFC 8414 / OIDC) and **self-registers** via RFC 7591 Dynamic Client Registration — the project's OAuth server exposes an open `registration_endpoint`, so there is no client ID or secret to pre-provision. MCP clients register as public (PKCE) clients automatically.
+4. The client runs the OAuth 2.1 + PKCE authorization-code flow, including the RFC 8707 `resource` parameter that binds the token's audience to this server.
+5. The client calls `/<project_id>/mcp` with `Authorization: Bearer <token>`.
 
 ## Project setup
 
 Each project must enable its OAuth server (`oAuth2Server.enabled = true`) and include the scopes the MCP advertises in `oAuth2Server.scopes`. The advertised set covers read+write for users, sessions, teams, databases (tables/columns/indexes/rows), storage (buckets/files), functions (executions), messaging (providers/topics/subscribers/targets/messages), and sites, plus `locale.read` and `avatars.read`. Clients request only the subset they need; the consent screen and the API's per-route scope checks enforce what is actually granted.
+
+No OAuth client needs to be created by hand: enabling the OAuth server also exposes the RFC 7591 `registration_endpoint`, and MCP clients self-register against it on first connect. Each registered client becomes an `apps` document in the project.
 
 ## Tool surface
 
@@ -68,6 +71,8 @@ The server starts in a compact workflow so the MCP client only sees a small oper
 ## Self-hosting
 
 The server is a standard ASGI app. Configure it via environment variables (see [`.env.example`](.env.example)) — chiefly `APPWRITE_ENDPOINT` (the Appwrite Cloud base) and `MCP_PUBLIC_URL` (the external URL clients use to reach this server, used to build canonical resource URIs and metadata). `GET /healthz` is a liveness probe.
+
+> **Regional endpoints:** `APPWRITE_ENDPOINT` must be the host that actually **issues** tokens. The server validates each token's `iss` claim against this endpoint, so if your project lives in a region whose discovery reports a regional issuer (e.g. `https://fra.cloud.appwrite.io/v1`), set `APPWRITE_ENDPOINT` to that regional host — otherwise valid tokens are rejected.
 
 ### Docker (recommended)
 

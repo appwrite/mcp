@@ -47,6 +47,58 @@ class AuthHelperTests(unittest.TestCase):
             auth._scopes_cache.pop("cachedproj", None)
         self.assertEqual(scopes, ["rows.read", "rows.write"])
 
+    def test_supported_scopes_reads_dcr_enabled_discovery(self):
+        # The authorization server's discovery document now also advertises
+        # `registration_endpoint` (RFC 7591). Sourcing scopes must keep working
+        # against that document — the MCP points clients at this same AS, and
+        # the clients self-register there. This guards the discovery contract
+        # without a network round-trip.
+        discovery = {
+            "issuer": "https://cloud.appwrite.io/v1/oauth2/proj1",
+            "registration_endpoint": "https://cloud.appwrite.io/v1/oauth2/proj1/register",
+            "scopes_supported": ["users.read", "rows.write"],
+        }
+        seen_urls: list[str] = []
+
+        class _FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return discovery
+
+        class _FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def get(self, url):
+                seen_urls.append(url)
+                return _FakeResponse()
+
+        with mock.patch.object(auth.httpx, "AsyncClient", _FakeAsyncClient):
+            try:
+                scopes = asyncio.run(auth.supported_scopes("dcrproj"))
+            finally:
+                auth._scopes_cache.pop("dcrproj", None)
+
+        self.assertEqual(scopes, ["users.read", "rows.write"])
+        # Discovery is read from the OIDC well-known path under the project issuer.
+        self.assertEqual(
+            seen_urls,
+            ["https://cloud.appwrite.io/v1/oauth2/dcrproj/.well-known/openid-configuration"],
+        )
+        # The registration endpoint the MCP points clients to follows `issuer/register`.
+        self.assertEqual(
+            discovery["registration_endpoint"],
+            f"{discovery['issuer']}/register",
+        )
+
     def test_supported_scopes_raises_when_discovery_unreachable(self):
         # Point discovery at an unroutable address so the fetch fails fast.
         with mock.patch.dict(
