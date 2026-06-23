@@ -3,11 +3,14 @@ import os
 import unittest
 from unittest import mock
 
+import jwt
+
 from mcp_server_appwrite import auth
 
 ENV = {
     "APPWRITE_ENDPOINT": "https://cloud.appwrite.io/v1",
     "MCP_PUBLIC_URL": "https://mcp.appwrite.io",
+    "APPWRITE_PROJECT_ID": "console",
 }
 
 
@@ -19,32 +22,33 @@ class AuthHelperTests(unittest.TestCase):
 
     def test_issuer_and_resource_urls(self):
         self.assertEqual(
-            auth.issuer_url("proj1"), "https://cloud.appwrite.io/v1/oauth2/proj1"
+            auth.issuer_url(), "https://cloud.appwrite.io/v1/oauth2/console"
         )
         self.assertEqual(
-            auth.canonical_resource("proj1"), "https://mcp.appwrite.io/proj1/mcp"
+            auth.canonical_resource(), "https://mcp.appwrite.io/mcp"
         )
         self.assertEqual(
-            auth.resource_metadata_url("proj1"),
-            "https://mcp.appwrite.io/.well-known/oauth-protected-resource/proj1/mcp",
+            auth.resource_metadata_url(),
+            "https://mcp.appwrite.io/.well-known/oauth-protected-resource/mcp",
         )
 
     def test_build_resource_metadata_shape(self):
-        meta = auth.build_resource_metadata("proj1", ["users.read", "teams.read"])
-        self.assertEqual(meta["resource"], "https://mcp.appwrite.io/proj1/mcp")
+        meta = auth.build_resource_metadata(["users.read", "teams.read"])
+        self.assertEqual(meta["resource"], "https://mcp.appwrite.io/mcp")
         self.assertEqual(
             meta["authorization_servers"],
-            ["https://cloud.appwrite.io/v1/oauth2/proj1"],
+            ["https://cloud.appwrite.io/v1/oauth2/console"],
         )
         self.assertEqual(meta["bearer_methods_supported"], ["header"])
         self.assertEqual(meta["scopes_supported"], ["users.read", "teams.read"])
 
     def test_supported_scopes_uses_cache_without_network(self):
-        auth._scopes_cache["cachedproj"] = ["rows.read", "rows.write"]
+        pid = auth.configured_project_id()
+        auth._scopes_cache[pid] = ["rows.read", "rows.write"]
         try:
-            scopes = asyncio.run(auth.supported_scopes("cachedproj"))
+            scopes = asyncio.run(auth.supported_scopes())
         finally:
-            auth._scopes_cache.pop("cachedproj", None)
+            auth._scopes_cache.pop(pid, None)
         self.assertEqual(scopes, ["rows.read", "rows.write"])
 
     def test_supported_scopes_reads_dcr_enabled_discovery(self):
@@ -54,8 +58,8 @@ class AuthHelperTests(unittest.TestCase):
         # the clients self-register there. This guards the discovery contract
         # without a network round-trip.
         discovery = {
-            "issuer": "https://cloud.appwrite.io/v1/oauth2/proj1",
-            "registration_endpoint": "https://cloud.appwrite.io/v1/oauth2/proj1/register",
+            "issuer": "https://cloud.appwrite.io/v1/oauth2/console",
+            "registration_endpoint": "https://cloud.appwrite.io/v1/oauth2/console/register",
             "scopes_supported": ["users.read", "rows.write"],
         }
         seen_urls: list[str] = []
@@ -83,15 +87,15 @@ class AuthHelperTests(unittest.TestCase):
 
         with mock.patch.object(auth.httpx, "AsyncClient", _FakeAsyncClient):
             try:
-                scopes = asyncio.run(auth.supported_scopes("dcrproj"))
+                scopes = asyncio.run(auth.supported_scopes())
             finally:
-                auth._scopes_cache.pop("dcrproj", None)
+                auth._scopes_cache.pop("console", None)
 
         self.assertEqual(scopes, ["users.read", "rows.write"])
-        # Discovery is read from the OIDC well-known path under the project issuer.
+        # Discovery is read from the OIDC well-known path under the served project's issuer.
         self.assertEqual(
             seen_urls,
-            ["https://cloud.appwrite.io/v1/oauth2/dcrproj/.well-known/openid-configuration"],
+            ["https://cloud.appwrite.io/v1/oauth2/console/.well-known/openid-configuration"],
         )
         # The registration endpoint the MCP points clients to follows `issuer/register`.
         self.assertEqual(
@@ -102,10 +106,11 @@ class AuthHelperTests(unittest.TestCase):
     def test_supported_scopes_raises_when_discovery_unreachable(self):
         # Point discovery at an unroutable address so the fetch fails fast.
         with mock.patch.dict(
-            os.environ, {"APPWRITE_ENDPOINT": "http://127.0.0.1:1/v1"}
+            os.environ,
+            {"APPWRITE_ENDPOINT": "http://127.0.0.1:1/v1", "APPWRITE_PROJECT_ID": "unreachableproj"},
         ):
             with self.assertRaises(Exception):
-                asyncio.run(auth.supported_scopes("unreachableproj"))
+                asyncio.run(auth.supported_scopes())
         self.assertNotIn("unreachableproj", auth._scopes_cache)
 
     def test_project_id_from_issuer_accepts_matching_issuer(self):
@@ -131,7 +136,7 @@ class AudienceTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.verifier = auth.AppwriteTokenVerifier()
-        self.resource = "https://mcp.appwrite.io/proj1/mcp"
+        self.resource = "https://mcp.appwrite.io/mcp"
 
     def test_audience_match_string(self):
         self.assertTrue(self.verifier._audience_ok(self.resource, self.resource))
@@ -146,6 +151,18 @@ class AudienceTests(unittest.TestCase):
 
     def test_missing_audience_rejected(self):
         self.assertFalse(self.verifier._audience_ok(None, self.resource))
+
+    def test_verify_rejects_token_for_other_project(self):
+        # A token issued by a different project's authorization server must be
+        # rejected even before signature checks: this MCP serves one project only.
+        # The mismatch is caught from the (unverified) issuer claim, so an unsigned
+        # token with a foreign issuer is enough to exercise the guard.
+        token = jwt.encode(
+            {"iss": "https://cloud.appwrite.io/v1/oauth2/some-other-project"},
+            "x" * 32,
+            algorithm="HS256",
+        )
+        self.assertIsNone(self.verifier._verify_sync(token))
 
 
 if __name__ == "__main__":

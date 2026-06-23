@@ -1,11 +1,11 @@
 """Hosted Streamable-HTTP transport for the Appwrite MCP.
 
-Builds a multi-tenant Starlette ASGI app:
+Builds a single-tenant Starlette ASGI app for the served Appwrite project:
 
-* ``/{project_id}/mcp`` — the MCP Streamable-HTTP endpoint, gated by a bearer-token
-  check that returns an RFC 9728 ``WWW-Authenticate`` challenge when unauthenticated.
-* ``/.well-known/oauth-protected-resource/{project_id}/mcp`` — RFC 9728 protected
-  resource metadata pointing at that project's Appwrite OAuth authorization server.
+* ``/mcp`` — the MCP Streamable-HTTP endpoint, gated by a bearer-token check that
+  returns an RFC 9728 ``WWW-Authenticate`` challenge when unauthenticated.
+* ``/.well-known/oauth-protected-resource/mcp`` — RFC 9728 protected resource
+  metadata pointing at the project's Appwrite OAuth authorization server.
 * ``/healthz`` — liveness probe.
 
 Auth uses the SDK primitives (``BearerAuthBackend`` + ``AuthContextMiddleware``) so the
@@ -53,12 +53,14 @@ def _log(message: str) -> None:
     print(f"[appwrite-mcp][http] {message}", file=sys.stderr, flush=True)
 
 
-async def _send_401(send: Send, project_id: str) -> None:
+async def _send_401(send: Send) -> None:
     """RFC 9728 §5.1 — 401 with a WWW-Authenticate pointing to resource metadata."""
-    metadata_url = resource_metadata_url(project_id) if project_id else None
-    parts = ['error="invalid_token"', 'error_description="Authentication required"']
-    if metadata_url:
-        parts.append(f'resource_metadata="{metadata_url}"')
+    metadata_url = resource_metadata_url()
+    parts = [
+        'error="invalid_token"',
+        'error_description="Authentication required"',
+        f'resource_metadata="{metadata_url}"',
+    ]
     www_authenticate = f"Bearer {', '.join(parts)}"
 
     body = json.dumps(
@@ -73,8 +75,8 @@ async def _send_401(send: Send, project_id: str) -> None:
     await send({"type": "http.response.body", "body": body})
 
 
-class RequireBearerForProject:
-    """ASGI gate: require an authenticated user for ``/{project_id}/mcp`` requests.
+class RequireBearer:
+    """ASGI gate: require an authenticated user for ``/mcp`` requests.
 
     Scope enforcement is delegated to the Appwrite REST API (per-route scope checks
     against the token's granted scopes), so the gate only requires a valid token.
@@ -94,8 +96,7 @@ class RequireBearerForProject:
 
         user = scope.get("user")
         if not isinstance(user, AuthenticatedUser):
-            project_id = scope.get("path_params", {}).get("project_id", "")
-            await _send_401(send, project_id)
+            await _send_401(send)
             return
 
         await self.app(scope, receive, send)
@@ -107,8 +108,7 @@ class RequireBearerForProject:
 
 
 async def protected_resource_metadata_endpoint(request: Request) -> JSONResponse:
-    project_id = request.path_params["project_id"]
-    metadata = await protected_resource_metadata(project_id)
+    metadata = await protected_resource_metadata()
     return JSONResponse(metadata, headers=_CORS_HEADERS)
 
 
@@ -132,7 +132,7 @@ def build_app() -> Starlette:
     async def handle_mcp(scope: Scope, receive: Receive, send: Send) -> None:
         await session_manager.handle_request(scope, receive, send)
 
-    mcp_endpoint = RequireBearerForProject(handle_mcp)
+    mcp_endpoint = RequireBearer(handle_mcp)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):
@@ -142,13 +142,13 @@ def build_app() -> Starlette:
 
     routes = [
         Route(
-            "/.well-known/oauth-protected-resource/{project_id}/mcp",
+            "/.well-known/oauth-protected-resource/mcp",
             endpoint=protected_resource_metadata_endpoint,
             methods=["GET", "OPTIONS"],
         ),
         Route("/healthz", endpoint=health_endpoint, methods=["GET"]),
         Route(
-            "/{project_id}/mcp",
+            "/mcp",
             endpoint=mcp_endpoint,
             methods=["GET", "POST", "DELETE", "OPTIONS"],
         ),
@@ -168,5 +168,5 @@ def run_http(*, host: str = "0.0.0.0", port: int = 8000) -> None:
     import uvicorn
 
     app = build_app()
-    _log(f"Serving on http://{host}:{port}  (resource path: /<project_id>/mcp)")
+    _log(f"Serving on http://{host}:{port}  (resource path: /mcp)")
     uvicorn.run(app, host=host, port=port)

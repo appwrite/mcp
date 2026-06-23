@@ -1,14 +1,15 @@
 """OAuth 2.1 resource-server layer for the hosted Appwrite MCP.
 
 The MCP server acts as an OAuth 2.1 Resource Server (per the MCP authorization
-spec): it validates the bearer access token issued by Appwrite Cloud's per-project
-OAuth authorization server and then lets the request proceed. The same token is
-later forwarded to the Appwrite REST API, which natively accepts it.
+spec): it validates the bearer access token issued by Appwrite Cloud's OAuth
+authorization server and then lets the request proceed. The same token is later
+forwarded to the Appwrite REST API, which natively accepts it.
 
-Routing is multi-tenant via the URL path (``/{project_id}/mcp``), so a single
-deployment serves every project. Because the JWT ``iss`` claim already encodes the
-project (``<endpoint>/oauth2/<project_id>``), the project is derived from the token
-itself — no path is needed inside :meth:`verify_token`.
+This deployment is single-tenant: it serves one Appwrite project — the Cloud
+console project by default, overridable via ``APPWRITE_PROJECT_ID`` — so the MCP
+endpoint is simply ``/mcp`` with no project in the path. Tokens must be issued by
+that project's authorization server (``<endpoint>/oauth2/<project_id>``); a token
+whose issuer names any other project is rejected.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from jwt import PyJWKClient
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 
 DEFAULT_ENDPOINT = "https://cloud.appwrite.io/v1"
+DEFAULT_PROJECT_ID = "console"
 
 
 def _log(message: str) -> None:
@@ -35,6 +37,12 @@ def appwrite_endpoint() -> str:
     return os.getenv("APPWRITE_ENDPOINT", DEFAULT_ENDPOINT).rstrip("/")
 
 
+def configured_project_id() -> str:
+    """The single Appwrite project this MCP serves. Defaults to the Cloud console
+    project; override with ``APPWRITE_PROJECT_ID`` for other deployments/tests."""
+    return os.getenv("APPWRITE_PROJECT_ID", DEFAULT_PROJECT_ID)
+
+
 def public_base_url() -> str:
     """External base URL of this MCP server, used to build canonical resource URIs.
     Falls back to APPWRITE-independent ``MCP_PUBLIC_URL``."""
@@ -42,39 +50,41 @@ def public_base_url() -> str:
     return base.rstrip("/")
 
 
-def issuer_url(project_id: str) -> str:
-    """The per-project Appwrite OAuth authorization server (issuer)."""
-    return f"{appwrite_endpoint()}/oauth2/{project_id}"
+def issuer_url() -> str:
+    """The Appwrite OAuth authorization server (issuer) for the served project."""
+    return f"{appwrite_endpoint()}/oauth2/{configured_project_id()}"
 
 
-def canonical_resource(project_id: str) -> str:
-    """RFC 8707 canonical resource URI for this MCP server / project."""
-    return f"{public_base_url()}/{project_id}/mcp"
+def canonical_resource() -> str:
+    """RFC 8707 canonical resource URI for this MCP server."""
+    return f"{public_base_url()}/mcp"
 
 
-def resource_metadata_url(project_id: str) -> str:
+def resource_metadata_url() -> str:
     """RFC 9728 protected-resource metadata URL (well-known path + resource path)."""
     parts = urlsplit(public_base_url())
-    path = f"/.well-known/oauth-protected-resource/{project_id}/mcp"
+    path = "/.well-known/oauth-protected-resource/mcp"
     return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
 
 
-# Cache of scopes_supported per project (process lifetime; project OAuth config is
-# effectively static). Failed lookups raise and are not cached, so they retry.
+# Cache of scopes_supported, keyed by served project id (process lifetime; the
+# project OAuth config is effectively static). Failed lookups raise and are not
+# cached, so they retry.
 _scopes_cache: dict[str, list[str]] = {}
 
 
-async def supported_scopes(project_id: str) -> list[str]:
+async def supported_scopes() -> list[str]:
     """Scopes advertised in the protected-resource metadata, sourced live from the
-    project's authorization-server discovery (`scopes_supported`). This is exactly the
-    set the project's OAuth server will grant, so it never drifts from the tool surface.
-    Raises if discovery is unreachable or malformed (the authorization server is the
-    same Appwrite deployment this MCP depends on)."""
+    served project's authorization-server discovery (`scopes_supported`). This is
+    exactly the set the project's OAuth server will grant, so it never drifts from
+    the tool surface. Raises if discovery is unreachable or malformed (the
+    authorization server is the same Appwrite deployment this MCP depends on)."""
+    project_id = configured_project_id()
     cached = _scopes_cache.get(project_id)
     if cached is not None:
         return cached
 
-    url = f"{issuer_url(project_id)}/.well-known/openid-configuration"
+    url = f"{issuer_url()}/.well-known/openid-configuration"
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(url)
         resp.raise_for_status()
@@ -88,19 +98,19 @@ async def supported_scopes(project_id: str) -> list[str]:
     return scopes
 
 
-def build_resource_metadata(project_id: str, scopes: list[str]) -> dict:
-    """RFC 9728 Protected Resource Metadata document for a project."""
+def build_resource_metadata(scopes: list[str]) -> dict:
+    """RFC 9728 Protected Resource Metadata document."""
     return {
-        "resource": canonical_resource(project_id),
-        "authorization_servers": [issuer_url(project_id)],
+        "resource": canonical_resource(),
+        "authorization_servers": [issuer_url()],
         "scopes_supported": scopes,
         "bearer_methods_supported": ["header"],
     }
 
 
-async def protected_resource_metadata(project_id: str) -> dict:
+async def protected_resource_metadata() -> dict:
     """RFC 9728 Protected Resource Metadata, with scopes sourced from AS discovery."""
-    return build_resource_metadata(project_id, await supported_scopes(project_id))
+    return build_resource_metadata(await supported_scopes())
 
 
 def project_id_from_issuer(iss: str | None) -> str | None:
@@ -119,7 +129,7 @@ def project_id_from_issuer(iss: str | None) -> str | None:
 
 
 class AppwriteTokenVerifier(TokenVerifier):
-    """Validates RS256 access tokens against the issuing project's JWKS.
+    """Validates RS256 access tokens against the served project's JWKS.
 
     Revocation/rotation is not checked here: the Appwrite REST API re-validates the
     token (signature + rotation + expiry + identity) on every downstream call, so a
@@ -128,13 +138,14 @@ class AppwriteTokenVerifier(TokenVerifier):
     """
 
     def __init__(self) -> None:
-        # One JWKS client per project, cached for the process lifetime.
+        # One JWKS client per project, cached for the process lifetime. In practice
+        # only the served project's client is ever created.
         self._jwks_clients: dict[str, PyJWKClient] = {}
 
     def _jwks_client(self, project_id: str) -> PyJWKClient:
         client = self._jwks_clients.get(project_id)
         if client is None:
-            jwks_uri = f"{issuer_url(project_id)}/.well-known/jwks.json"
+            jwks_uri = f"{appwrite_endpoint()}/oauth2/{project_id}/.well-known/jwks.json"
             client = PyJWKClient(jwks_uri)
             self._jwks_clients[project_id] = client
         return client
@@ -149,6 +160,12 @@ class AppwriteTokenVerifier(TokenVerifier):
         if not project_id:
             _log("Rejecting token: issuer does not match this Appwrite endpoint.")
             return None
+        if project_id != configured_project_id():
+            _log(
+                f"Rejecting token: issuer project {project_id!r} is not the served "
+                f"project {configured_project_id()!r}."
+            )
+            return None
 
         try:
             signing_key = self._jwks_client(project_id).get_signing_key_from_jwt(token)
@@ -162,7 +179,7 @@ class AppwriteTokenVerifier(TokenVerifier):
             _log(f"Rejecting token: verification failed ({exc}).")
             return None
 
-        expected_resource = canonical_resource(project_id)
+        expected_resource = canonical_resource()
         if not self._audience_ok(claims.get("aud"), expected_resource):
             return None
 

@@ -16,7 +16,6 @@ is correct even when the endpoint regionally redirects (e.g. ``fra.cloud.appwrit
 
 from __future__ import annotations
 
-import os
 import unittest
 
 import httpx
@@ -29,8 +28,7 @@ from .support import requires_live_integration
 @requires_live_integration
 class OAuthDiscoveryContractTests(unittest.TestCase):
     def _discovery(self) -> dict:
-        project_id = os.environ["APPWRITE_PROJECT_ID"]
-        url = f"{auth.issuer_url(project_id)}/.well-known/openid-configuration"
+        url = f"{auth.issuer_url()}/.well-known/openid-configuration"
         resp = httpx.get(url, timeout=10.0, follow_redirects=True)
         resp.raise_for_status()
         return resp.json()
