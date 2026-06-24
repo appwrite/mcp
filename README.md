@@ -92,11 +92,13 @@ The MCP server validates the bearer access token on every request and forwards i
 
 The server starts in a compact workflow so the MCP client only sees a small operator-style surface while the full Appwrite catalog stays internal.
 
-- Up to 3 MCP tools are exposed to the model:
+- Up to 4 MCP tools are exposed to the model:
+  - `appwrite_get_context`
   - `appwrite_search_tools`
   - `appwrite_call_tool`
   - `appwrite_search_docs` — semantic search over the Appwrite documentation (only registered when the docs index and `OPENAI_API_KEY` are present; see [Documentation search](#documentation-search)).
 - The full Appwrite tool catalog stays internal and is searched at runtime.
+- `appwrite_get_context` gives the client a quick workspace summary. With a local project API key it returns the configured project and readable service totals/samples. With hosted OAuth it also includes account, organization, and discovered project context.
 - Large tool outputs are stored as MCP resources and returned as preview text plus a resource URI.
 - Mutating hidden tools require `confirm_write=true`.
 - Every Appwrite service the installed SDK ships is registered automatically — 25 in total, each becoming a tool-name prefix: `account`, `activities`, `advisor`, `apps`, `avatars`, `backups`, `databases`, `functions`, `graphql`, `health`, `locale`, `messaging`, `oauth2`, `organization`, `presences`, `project`, `proxy`, `sites`, `storage`, `tables_db`, `teams`, `tokens`, `usage`, `users`, and `webhooks`. Which ones a given user can actually call is gated by the scopes their OAuth token was granted (enforced per-route by the Appwrite API), not by the catalog.

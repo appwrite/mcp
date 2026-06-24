@@ -114,7 +114,10 @@ class OperatorTests(unittest.TestCase):
     def test_docs_tool_absent_without_docs_search(self):
         runtime = self.make_runtime(lambda name, arguments, *_: [])
         names = {tool.name for tool in runtime.get_public_tools()}
-        self.assertEqual(names, {"appwrite_search_tools", "appwrite_call_tool"})
+        self.assertEqual(
+            names,
+            {"appwrite_get_context", "appwrite_search_tools", "appwrite_call_tool"},
+        )
         self.assertFalse(runtime.has_public_tool("appwrite_search_docs"))
 
     def test_docs_tool_listed_and_dispatched(self):
@@ -122,7 +125,7 @@ class OperatorTests(unittest.TestCase):
         runtime = self.make_runtime_with_docs(docs)
 
         tools = runtime.get_public_tools()
-        self.assertEqual(len(tools), 3)
+        self.assertEqual(len(tools), 4)
         self.assertIn("appwrite_search_docs", {tool.name for tool in tools})
         self.assertTrue(runtime.has_public_tool("appwrite_search_docs"))
 
@@ -152,6 +155,38 @@ class OperatorTests(unittest.TestCase):
         self.assertIsInstance(result[0], types.TextContent)
         self.assertIn("tables_db_list", result[0].text)
         self.assertIn(CATALOG_URI, result[0].text)
+
+    def test_get_context_dispatches_provider(self):
+        runtime = Operator(
+            ToolManager(),
+            lambda name, arguments, *_: [],
+            context_provider=lambda arguments: {
+                "connection": {"mode": "api_key_project"},
+                "projects": [{"$id": arguments["project_id"]}],
+            },
+        )
+
+        result = runtime.execute_public_tool(
+            "appwrite_get_context", {"project_id": "project-1"}
+        )
+
+        self.assertIn('"mode": "api_key_project"', result[0].text)
+        self.assertIn('"$id": "project-1"', result[0].text)
+
+    def test_get_context_returns_large_payload_inline(self):
+        runtime = Operator(
+            ToolManager(),
+            lambda name, arguments, *_: [],
+            context_provider=lambda arguments: {
+                "connection": {"mode": "api_key_project"},
+                "projects": [{"$id": "project-1", "description": "x" * 1200}],
+            },
+        )
+
+        result = runtime.execute_public_tool("appwrite_get_context", {})
+
+        self.assertNotIn("appwrite://operator/results/", result[0].text)
+        self.assertIn("x" * 1200, result[0].text)
 
     def test_search_tools_infers_mutating_search_for_create_query(self):
         runtime = self.make_runtime(lambda name, arguments, *_: [])

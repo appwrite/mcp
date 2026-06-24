@@ -32,6 +32,7 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.models import InitializationOptions
 
+from .context import _normalize_sample_limit, get_appwrite_context
 from .docs_search import DocsSearch
 from .operator import Operator
 from .service import Service
@@ -655,7 +656,9 @@ def _format_appwrite_error(exc: AppwriteException) -> str:
 
 def build_instructions(transport: str = "http") -> str:
     common = (
-        "Appwrite workflow: use appwrite_search_tools first, then appwrite_call_tool. "
+        "Appwrite workflow: use appwrite_get_context to understand the current "
+        "connection and available project resources, then use appwrite_search_tools "
+        "and appwrite_call_tool for specific operations. "
         "Mutating hidden tools require confirm_write=true. "
         "For questions about Appwrite concepts, products, or guides, use "
         "appwrite_search_docs to search the documentation when available. "
@@ -673,9 +676,9 @@ def build_instructions(transport: str = "http") -> str:
     return (
         "You authenticate against the Appwrite console, which can list your "
         "organizations and projects but stores no project data itself. Project-scoped "
-        "tools (databases, tables, users, storage, functions, messaging, sites) need a "
-        "target project: first discover one (search for and call a tool that lists "
-        "projects), then pass its id as project_id to appwrite_call_tool. "
+        "tools (TablesDB, tables, users, storage, functions, messaging, sites) need a "
+        "target project: use appwrite_get_context first, then pass the selected "
+        "project id as project_id to appwrite_call_tool. "
         "Organization-scoped console tools (e.g. creating a project) need organization_id. "
         f"{common}"
     )
@@ -742,7 +745,47 @@ def build_operator(
             target_project=target_project,
             organization_id=organization_id,
         ),
+        context_provider=lambda arguments: _get_context_for_request(arguments, client),
         docs_search=docs_search,
+    )
+
+
+def _get_context_for_request(
+    arguments: dict[str, Any], client: Client | None = None
+) -> dict[str, Any]:
+    project_id = arguments.get("project_id", arguments.get("projectId"))
+    organization_id = arguments.get("organization_id", arguments.get("organizationId"))
+    include_services = bool(
+        arguments.get("include_services", arguments.get("includeServices", True))
+    )
+    sample_limit = _normalize_sample_limit(
+        arguments.get("sample_limit", arguments.get("sampleLimit", 5))
+    )
+
+    if client is not None:
+        return get_appwrite_context(
+            client,
+            mode="api_key_project",
+            project_id=project_id,
+            include_services=include_services,
+            sample_limit=sample_limit,
+        )
+
+    base_client = resolve_client()
+
+    def client_factory(
+        target_project: str | None, target_organization: str | None
+    ) -> Client:
+        return resolve_client(target_project, target_organization)
+
+    return get_appwrite_context(
+        base_client,
+        mode="oauth_console",
+        client_factory=client_factory,
+        project_id=project_id,
+        organization_id=organization_id,
+        include_services=include_services,
+        sample_limit=sample_limit,
     )
 
 
