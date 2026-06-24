@@ -15,7 +15,9 @@ validated token is reachable from tool handlers via ``get_access_token()``.
 from __future__ import annotations
 
 import contextlib
+import copy
 import json
+import logging
 import sys
 
 from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
@@ -47,6 +49,19 @@ _CORS_HEADERS = {
     "Access-Control-Allow-Headers": "Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version",
     "Access-Control-Expose-Headers": "Mcp-Session-Id, WWW-Authenticate",
 }
+
+
+class HealthzAccessLogFilter(logging.Filter):
+    """Drop noisy load-balancer health probes from uvicorn access logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3:
+            method = args[1]
+            path = str(args[2]).split("?", 1)[0]
+            return not (method == "GET" and path == "/healthz")
+
+        return "GET /healthz HTTP/" not in record.getMessage()
 
 
 def _log(message: str) -> None:
@@ -166,7 +181,14 @@ def build_app() -> Starlette:
 
 def run_http(*, host: str = "0.0.0.0", port: int = 8000) -> None:
     import uvicorn
+    from uvicorn.config import LOGGING_CONFIG
 
     app = build_app()
+    log_config = copy.deepcopy(LOGGING_CONFIG)
+    log_config.setdefault("filters", {})["hide_healthz"] = {
+        "()": "mcp_server_appwrite.http_app.HealthzAccessLogFilter"
+    }
+    log_config["handlers"]["access"]["filters"] = ["hide_healthz"]
+
     _log(f"Serving on http://{host}:{port}  (resource path: /mcp)")
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=host, port=port, log_config=log_config)
