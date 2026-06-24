@@ -3,6 +3,7 @@ import unittest
 from appwrite.client import Client
 
 from mcp_server_appwrite.context import get_appwrite_context
+from mcp_server_appwrite.server import _get_context_for_request
 
 
 class FakeClient(Client):
@@ -114,6 +115,76 @@ class AppwriteContextTests(unittest.TestCase):
         self.assertIn((None, None), seen)
         self.assertIn((None, "org-1"), seen)
         self.assertIn(("project-1", "org-1"), seen)
+
+    def test_compact_output_preserves_false_resource_state(self):
+        client = FakeClient(
+            {
+                ("get", "/project"): {"$id": "project-1", "name": "Project One"},
+                ("get", "/functions"): {
+                    "total": 1,
+                    "functions": [
+                        {
+                            "$id": "fn-1",
+                            "name": "Disabled Function",
+                            "enabled": False,
+                        }
+                    ],
+                },
+                ("get", "/users"): {
+                    "total": 1,
+                    "users": [
+                        {
+                            "$id": "user-1",
+                            "email": "user@example.test",
+                            "emailVerification": False,
+                        }
+                    ],
+                },
+            },
+            project="project-1",
+        )
+
+        context = get_appwrite_context(client, mode="api_key_project")
+        services = context["projects"][0]["services"]
+
+        self.assertIs(services["functions"]["items"][0]["enabled"], False)
+        self.assertIs(services["users"]["items"][0]["emailVerification"], False)
+
+    def test_service_probe_errors_are_returned_without_failing_context(self):
+        def fail(_params):
+            raise OSError("connection refused")
+
+        client = FakeClient(
+            {
+                ("get", "/project"): {"$id": "project-1", "name": "Project One"},
+                ("get", "/functions"): fail,
+            },
+            project="project-1",
+        )
+
+        context = get_appwrite_context(client, mode="api_key_project")
+
+        self.assertEqual(context["projects"][0]["$id"], "project-1")
+        self.assertEqual(
+            context["projects"][0]["services"]["functions"]["error"],
+            "connection refused",
+        )
+
+    def test_invalid_sample_limit_falls_back_to_default(self):
+        client = FakeClient(
+            {
+                ("get", "/project"): {"$id": "project-1", "name": "Project One"},
+            },
+            project="project-1",
+        )
+
+        context = _get_context_for_request({"sample_limit": "five"}, client)
+
+        self.assertEqual(context["projects"][0]["$id"], "project-1")
+        self.assertIn(
+            ("get", "/tablesdb", {"queries": ['{"method":"limit","values":[5]}']}),
+            client.calls,
+        )
 
 
 if __name__ == "__main__":

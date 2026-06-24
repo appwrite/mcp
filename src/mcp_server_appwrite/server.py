@@ -32,7 +32,7 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.models import InitializationOptions
 
-from .context import get_appwrite_context
+from .context import _normalize_sample_limit, get_appwrite_context
 from .docs_search import DocsSearch
 from .operator import Operator
 from .service import Service
@@ -758,7 +758,9 @@ def _get_context_for_request(
     include_services = bool(
         arguments.get("include_services", arguments.get("includeServices", True))
     )
-    sample_limit = int(arguments.get("sample_limit", arguments.get("sampleLimit", 5)))
+    sample_limit = _normalize_sample_limit(
+        arguments.get("sample_limit", arguments.get("sampleLimit", 5))
+    )
 
     if client is not None:
         return get_appwrite_context(

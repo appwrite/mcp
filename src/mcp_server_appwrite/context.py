@@ -68,8 +68,10 @@ def get_appwrite_context(
     include_services: bool = True,
     sample_limit: int = 5,
 ) -> dict[str, Any]:
-    sample_limit = max(1, min(int(sample_limit), 25))
-    client_factory = client_factory or (lambda _project_id, _organization_id: base_client)
+    sample_limit = _normalize_sample_limit(sample_limit)
+    client_factory = client_factory or (
+        lambda _project_id, _organization_id: base_client
+    )
 
     context: dict[str, Any] = {
         "connection": {
@@ -135,7 +137,9 @@ def get_appwrite_context(
 
     if project_id and not projects:
         project_client = client_factory(project_id, organization_id)
-        project = _get_current_project(project_client, project_id) or {"$id": project_id}
+        project = _get_current_project(project_client, project_id) or {
+            "$id": project_id
+        }
         projects.append(
             _project_context(
                 project,
@@ -176,6 +180,8 @@ def _safe_call(
             details.append(f"type={exc.type}")
         suffix = f" ({', '.join(details)})" if details else ""
         return _CallResult(False, error=f"{exc}{suffix}")
+    except Exception as exc:
+        return _CallResult(False, error=str(exc))
 
 
 def _get_current_project(client: Client, project_id: str) -> dict[str, Any] | None:
@@ -195,13 +201,17 @@ def _list_organizations(
 ) -> list[dict[str, Any]]:
     result = _safe_call(client, "get", "/organizations")
     if not result.ok or not isinstance(result.value, dict):
-        return [{"$id": organization_id, "error": result.error}] if organization_id else []
+        return (
+            [{"$id": organization_id, "error": result.error}] if organization_id else []
+        )
 
     teams = result.value.get("teams")
     if not isinstance(teams, list):
         return []
     organizations = [
-        _compact_document(_model_dict(team, Team)) for team in teams if isinstance(team, dict)
+        _compact_document(_model_dict(team, Team))
+        for team in teams
+        if isinstance(team, dict)
     ]
     if organization_id:
         organizations = [
@@ -286,7 +296,9 @@ def _compact_document(source: dict[str, Any]) -> dict[str, Any]:
     for key, value in source.items():
         if _is_sensitive_key(key):
             continue
-        if value is None or value == "" or value is False or value == 0:
+        if value is None or value == "":
+            continue
+        if not isinstance(value, bool) and value == 0:
             continue
         if isinstance(value, (str, int, float, bool)):
             candidates[key] = value
@@ -317,3 +329,11 @@ def _summary_key_rank(key: str) -> tuple[int, str]:
     if normalized in {"enabled", "runtime", "framework", "type"}:
         return (3, key)
     return (4, key)
+
+
+def _normalize_sample_limit(value: Any) -> int:
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        limit = 5
+    return max(1, min(limit, 25))
