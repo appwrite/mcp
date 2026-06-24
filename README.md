@@ -1,6 +1,6 @@
 # Appwrite MCP server
 
-mcp-name: io.github.appwrite/mcp-for-api
+mcp-name: io.github.appwrite/mcp
 
 ## Overview
 
@@ -65,8 +65,8 @@ The server starts in a compact workflow so the MCP client only sees a small oper
 ### Clone and install `uv`
 
 ```bash
-git clone https://github.com/appwrite/mcp-for-api.git
-cd mcp-for-api
+git clone https://github.com/appwrite/mcp.git
+cd mcp
 # Linux or MacOS
 curl -LsSf https://astral.sh/uv/install.sh | sh
 # Windows (PowerShell)
