@@ -98,6 +98,22 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ### Run the server
 
+With Docker Compose:
+
+```bash
+docker compose up --build
+```
+
+Compose defaults to `MCP_PUBLIC_URL=http://localhost:8000` and exposes the MCP endpoint at:
+
+```text
+http://localhost:8000/mcp
+```
+
+To enable documentation search locally, provide `OPENAI_API_KEY` in your shell or a local `.env` file before running Compose.
+
+With `uv` directly:
+
 ```bash
 MCP_PUBLIC_URL=http://localhost:8000 APPWRITE_ENDPOINT=https://cloud.appwrite.io/v1 \
   uv run mcp-server-appwrite

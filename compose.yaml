@@ -1,0 +1,28 @@
+services:
+  appwrite-mcp:
+    build:
+      context: .
+    image: appwrite-mcp:local
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8000
+      APPWRITE_ENDPOINT: ${APPWRITE_ENDPOINT:-https://cloud.appwrite.io/v1}
+      APPWRITE_PROJECT_ID: ${APPWRITE_PROJECT_ID:-console}
+      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-http://localhost:8000}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DOCS_SEARCH_MIN_SCORE: ${DOCS_SEARCH_MIN_SCORE:-0.25}
+      DOCS_SEARCH_LIMIT: ${DOCS_SEARCH_LIMIT:-5}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).read()",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
