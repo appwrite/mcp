@@ -1,0 +1,319 @@
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any
+
+from appwrite.client import Client
+from appwrite.exception import AppwriteException
+from appwrite.models.bucket import Bucket
+from appwrite.models.database import Database
+from appwrite.models.function import Function
+from appwrite.models.message import Message
+from appwrite.models.project import Project
+from appwrite.models.site import Site
+from appwrite.models.team import Team
+from appwrite.models.user import User
+from appwrite.query import Query
+
+ContextClientFactory = Callable[[str | None, str | None], Client]
+
+SERVICE_PROBES = {
+    "tablesdb": {
+        "path": "/tablesdb",
+        "items_key": "databases",
+        "model": Database,
+    },
+    "users": {
+        "path": "/users",
+        "items_key": "users",
+        "model": User,
+    },
+    "storage": {
+        "path": "/storage/buckets",
+        "items_key": "buckets",
+        "model": Bucket,
+    },
+    "functions": {
+        "path": "/functions",
+        "items_key": "functions",
+        "model": Function,
+    },
+    "sites": {
+        "path": "/sites",
+        "items_key": "sites",
+        "model": Site,
+    },
+    "messaging": {
+        "path": "/messaging/messages",
+        "items_key": "messages",
+        "model": Message,
+    },
+    "teams": {
+        "path": "/teams",
+        "items_key": "teams",
+        "model": Team,
+    },
+}
+
+REDACTED_KEYS = {"password", "secret", "key", "token", "otp", "cookie", "session"}
+
+
+def get_appwrite_context(
+    base_client: Client,
+    *,
+    mode: str,
+    client_factory: ContextClientFactory | None = None,
+    project_id: str | None = None,
+    organization_id: str | None = None,
+    include_services: bool = True,
+    sample_limit: int = 5,
+) -> dict[str, Any]:
+    sample_limit = max(1, min(int(sample_limit), 25))
+    client_factory = client_factory or (lambda _project_id, _organization_id: base_client)
+
+    context: dict[str, Any] = {
+        "connection": {
+            "mode": mode,
+            "endpoint": getattr(base_client, "_endpoint", ""),
+        },
+        "projects": [],
+    }
+
+    if mode == "api_key_project":
+        configured_project_id = project_id or base_client.get_config("project")
+        context["connection"]["projectId"] = configured_project_id
+        project_client = client_factory(configured_project_id, None)
+        project = _get_current_project(project_client, configured_project_id)
+        if project is None:
+            project = {"$id": configured_project_id}
+        context["projects"] = [
+            _project_context(
+                project,
+                project_client,
+                include_services=include_services,
+                sample_limit=sample_limit,
+            )
+        ]
+        return context
+
+    console_client = client_factory(None, None)
+    account = _safe_call(console_client, "get", "/account")
+    if account.ok and isinstance(account.value, dict):
+        context["account"] = _compact_document(_model_dict(account.value, User))
+    elif not account.ok:
+        context["account"] = {"error": account.error}
+
+    organizations = _list_organizations(console_client, organization_id)
+    context["organizations"] = organizations
+
+    projects: list[dict[str, Any]] = []
+    if organization_id and not organizations:
+        organizations = [{"$id": organization_id}]
+
+    for organization in organizations:
+        org_id = organization.get("$id")
+        if not isinstance(org_id, str) or not org_id:
+            continue
+        org_client = client_factory(None, org_id)
+        org_projects = _list_projects_for_organization(org_client)
+        for project in org_projects:
+            if not isinstance(project, dict):
+                continue
+            discovered_project_id = project.get("$id")
+            if project_id and discovered_project_id != project_id:
+                continue
+            project_client = client_factory(discovered_project_id, org_id)
+            projects.append(
+                _project_context(
+                    project,
+                    project_client,
+                    organization_id=org_id,
+                    include_services=include_services,
+                    sample_limit=sample_limit,
+                )
+            )
+
+    if project_id and not projects:
+        project_client = client_factory(project_id, organization_id)
+        project = _get_current_project(project_client, project_id) or {"$id": project_id}
+        projects.append(
+            _project_context(
+                project,
+                project_client,
+                organization_id=organization_id,
+                include_services=include_services,
+                sample_limit=sample_limit,
+            )
+        )
+
+    context["projects"] = projects
+    return context
+
+
+class _CallResult:
+    def __init__(self, ok: bool, value: Any = None, error: str | None = None) -> None:
+        self.ok = ok
+        self.value = value
+        self.error = error
+
+
+def _safe_call(
+    client: Client, method: str, path: str, params: dict[str, Any] | None = None
+) -> _CallResult:
+    try:
+        headers = {"accept": "application/json"}
+        project_id = client.get_config("project")
+        if project_id:
+            headers["X-Appwrite-Project"] = project_id
+        return _CallResult(
+            True, client.call(method, path, headers=headers, params=params or {})
+        )
+    except AppwriteException as exc:
+        details = []
+        if getattr(exc, "code", None):
+            details.append(f"code={exc.code}")
+        if getattr(exc, "type", None):
+            details.append(f"type={exc.type}")
+        suffix = f" ({', '.join(details)})" if details else ""
+        return _CallResult(False, error=f"{exc}{suffix}")
+
+
+def _get_current_project(client: Client, project_id: str) -> dict[str, Any] | None:
+    result = _safe_call(
+        client,
+        "get",
+        "/project",
+        params={},
+    )
+    if result.ok and isinstance(result.value, dict):
+        return result.value
+    return {"$id": project_id, "error": result.error} if not result.ok else None
+
+
+def _list_organizations(
+    client: Client, organization_id: str | None
+) -> list[dict[str, Any]]:
+    result = _safe_call(client, "get", "/organizations")
+    if not result.ok or not isinstance(result.value, dict):
+        return [{"$id": organization_id, "error": result.error}] if organization_id else []
+
+    teams = result.value.get("teams")
+    if not isinstance(teams, list):
+        return []
+    organizations = [
+        _compact_document(_model_dict(team, Team)) for team in teams if isinstance(team, dict)
+    ]
+    if organization_id:
+        organizations = [
+            organization
+            for organization in organizations
+            if organization.get("$id") == organization_id
+        ]
+    return organizations
+
+
+def _list_projects_for_organization(client: Client) -> list[dict[str, Any]]:
+    result = _safe_call(
+        client,
+        "get",
+        "/organization/projects",
+        {"queries": [Query.limit(100)]},
+    )
+    if not result.ok or not isinstance(result.value, dict):
+        return []
+    projects = result.value.get("projects")
+    return projects if isinstance(projects, list) else []
+
+
+def _project_context(
+    project: dict[str, Any],
+    client: Client,
+    *,
+    organization_id: str | None = None,
+    include_services: bool,
+    sample_limit: int,
+) -> dict[str, Any]:
+    project_summary = _compact_document(_model_dict(project, Project))
+    if organization_id:
+        project_summary["organizationId"] = organization_id
+    if "error" in project:
+        project_summary["error"] = project["error"]
+    if include_services:
+        project_summary["services"] = _summarize_services(client, sample_limit)
+    return project_summary
+
+
+def _summarize_services(client: Client, sample_limit: int) -> dict[str, Any]:
+    services: dict[str, Any] = {}
+    params = {"queries": [Query.limit(sample_limit)]}
+    for service_name, probe in SERVICE_PROBES.items():
+        result = _safe_call(client, "get", str(probe["path"]), params)
+        if not result.ok:
+            services[service_name] = {"error": result.error}
+            continue
+        payload = result.value if isinstance(result.value, dict) else {}
+        items = payload.get(str(probe["items_key"]), [])
+        if not isinstance(items, list):
+            items = []
+        services[service_name] = {
+            "total": payload.get("total", len(items)),
+            "items": [
+                _compact_document(_model_dict(item, probe["model"]))
+                for item in items
+                if isinstance(item, dict)
+            ],
+        }
+    return services
+
+
+def _model_dict(source: dict[str, Any], model_type: type) -> dict[str, Any]:
+    try:
+        if model_type is User:
+            model = User.with_data(source)
+        elif model_type is Team:
+            model = Team.with_data(source)
+        else:
+            model = model_type.from_dict(source)
+        if model is not None and hasattr(model, "to_dict"):
+            return model.to_dict()
+    except Exception:
+        pass
+    return source
+
+
+def _compact_document(source: dict[str, Any]) -> dict[str, Any]:
+    candidates: dict[str, Any] = {}
+    for key, value in source.items():
+        if _is_sensitive_key(key):
+            continue
+        if value is None or value == "" or value is False or value == 0:
+            continue
+        if isinstance(value, (str, int, float, bool)):
+            candidates[key] = value
+        elif key in {"prefs"} and isinstance(value, dict):
+            candidates[key] = value
+
+    compact: dict[str, Any] = {}
+    for key in sorted(candidates, key=_summary_key_rank):
+        compact[key] = candidates[key]
+        if len(compact) >= 12:
+            break
+    return compact
+
+
+def _is_sensitive_key(key: str) -> bool:
+    normalized = key.lower()
+    return any(marker in normalized for marker in REDACTED_KEYS)
+
+
+def _summary_key_rank(key: str) -> tuple[int, str]:
+    normalized = key.lower().replace("$", "")
+    if normalized in {"id", "name", "email", "status", "region", "total"}:
+        return (0, key)
+    if normalized.endswith("id"):
+        return (1, key)
+    if normalized in {"createdat", "updatedat", "accessedat"}:
+        return (2, key)
+    if normalized in {"enabled", "runtime", "framework", "type"}:
+        return (3, key)
+    return (4, key)
