@@ -272,7 +272,9 @@ def validate_services(tools_manager: ToolManager) -> None:
     if not tools_manager.services:
         return
 
-    services_by_name = {service.service_name: service for service in tools_manager.services}
+    services_by_name = {
+        service.service_name: service for service in tools_manager.services
+    }
     service = next(
         (
             services_by_name[service_name]
@@ -712,7 +714,9 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
     return server
 
 
-def build_operator(tools_manager: ToolManager, client: Client | None = None) -> Operator:
+def build_operator(
+    tools_manager: ToolManager, client: Client | None = None
+) -> Operator:
     """Wire the operator surface to the per-request execution path. The execution
     callback re-binds each call to a per-request client via `resolve_client` in
     HTTP/OAuth mode. Pass a client for stdio/API-key mode.
