@@ -13,5 +13,5 @@ class OperatorIntegrationTests(LiveIntegrationTestCase):
             if outcome.outcome == "unexpected_error"
         ]
 
-        self.assertEqual(len(runner.public_outcomes), 3)
+        self.assertEqual(len(runner.public_outcomes), runner.expected_public_outcomes)
         self.assertFalse(unexpected_errors, unexpected_errors)

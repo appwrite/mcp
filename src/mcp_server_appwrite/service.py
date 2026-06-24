@@ -1,12 +1,12 @@
-from enum import Enum
 import inspect
 import re
+from enum import Enum
 from types import UnionType
 from typing import Any, Dict, List, Union, get_args, get_origin, get_type_hints
 
 from appwrite.input_file import InputFile
-from mcp.types import Tool
 from docstring_parser import parse
+from mcp.types import Tool
 
 
 class Service:
@@ -196,7 +196,11 @@ class Service:
 
             tools[tool_name] = {
                 "definition": tool_definition,
-                "function": func,
+                # Store the service + method identity rather than a bound method so
+                # execution can re-bind to a per-request Appwrite client (HTTP/OAuth
+                # mode) instead of the credential-less client used for introspection.
+                "service_name": self.service_name,
+                "method_name": name,
                 "parameter_types": {
                     param_name: type_hints[param_name]
                     for param_name in signature.parameters

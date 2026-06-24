@@ -1,5 +1,7 @@
-from typing import List, Dict
+from typing import Dict, List
+
 from mcp.types import Tool
+
 from .service import Service
 
 

@@ -1,6 +1,5 @@
 from appwrite.enums.build_runtime import BuildRuntime
 from appwrite.enums.framework import Framework
-
 from support import LiveIntegrationTestCase, requires_live_integration
 
 

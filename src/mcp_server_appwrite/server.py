@@ -1,13 +1,16 @@
 from __future__ import annotations
-import asyncio
+
 import argparse
 import base64
-from dataclasses import dataclass
+import importlib
+import inspect
 import json
 import os
+import pkgutil
 import re
 import sys
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
@@ -15,30 +18,58 @@ from pathlib import Path
 from types import UnionType
 from typing import Any, Union, get_args, get_origin
 
-import mcp.server.stdio
 import mcp.types as types
-from mcp.server import NotificationOptions, Server
-from mcp.server.models import InitializationOptions
-from dotenv import find_dotenv, load_dotenv
 from appwrite.client import Client
-from appwrite.input_file import InputFile
 from appwrite.enums.browser import Browser
-from appwrite.services.tables_db import TablesDB
-from appwrite.services.users import Users
-from appwrite.services.teams import Teams
-from appwrite.services.storage import Storage
-from appwrite.services.functions import Functions
-from appwrite.services.locale import Locale
-from appwrite.services.avatars import Avatars
-from appwrite.services.messaging import Messaging
-from appwrite.services.sites import Sites
 from appwrite.exception import AppwriteException
+from appwrite.input_file import InputFile
+from appwrite.service import Service as _SdkService
+from dotenv import find_dotenv, load_dotenv
+from mcp.server import Server
+from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.lowlevel.helper_types import ReadResourceContents
+
+from .docs_search import DocsSearch
 from .operator import Operator
 from .service import Service
 from .tool_manager import ToolManager
 
-SERVER_VERSION = "0.4.1"
+SERVER_VERSION = "0.7.0"
+
+DEFAULT_ENDPOINT = "https://cloud.appwrite.io/v1"
+
+# Service modules in the Appwrite SDK to skip (none by default — every service the
+# installed SDK ships is exposed). Add a module name here to hide a service.
+EXCLUDED_SERVICES: frozenset[str] = frozenset()
+
+
+def _discover_service_classes() -> dict[str, type]:
+    """Discover every Appwrite SDK service class, keyed by its module name
+    (e.g. ``"tables_db" -> TablesDB``). The module name is used as the tool-name
+    prefix. The catalog/schema is built once from these classes; at execution time
+    the matching class is re-instantiated on a per-request client (see
+    ``resolve_client``)."""
+    import appwrite.services as services_pkg
+
+    discovered: dict[str, type] = {}
+    for module_info in pkgutil.iter_modules(services_pkg.__path__):
+        name = module_info.name
+        if name in EXCLUDED_SERVICES:
+            continue
+        module = importlib.import_module(f"appwrite.services.{name}")
+        for _, cls in inspect.getmembers(module, inspect.isclass):
+            if (
+                issubclass(cls, _SdkService)
+                and cls is not _SdkService
+                and cls.__module__ == module.__name__
+            ):
+                discovered[name] = cls
+                break
+    return discovered
+
+
+# Maps the MCP service name (tool-name prefix) to its Appwrite SDK service class.
+SERVICE_CLASSES: dict[str, type] = _discover_service_classes()
 
 
 @dataclass(frozen=True)
@@ -54,6 +85,17 @@ def _log_startup(message: str) -> None:
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Appwrite MCP Server")
+    parser.add_argument(
+        "--host",
+        default=os.getenv("HOST", "0.0.0.0"),
+        help="Bind host for the HTTP server (default $HOST or 0.0.0.0).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.getenv("PORT", "8000")),
+        help="Bind port for the HTTP server (default $PORT or 8000).",
+    )
     return parser.parse_args()
 
 
@@ -68,7 +110,7 @@ def load_appwrite_config() -> AppwriteConfig:
 
     project_id = os.getenv("APPWRITE_PROJECT_ID")
     api_key = os.getenv("APPWRITE_API_KEY")
-    endpoint = os.getenv("APPWRITE_ENDPOINT", "https://cloud.appwrite.io/v1")
+    endpoint = os.getenv("APPWRITE_ENDPOINT", DEFAULT_ENDPOINT)
 
     if not project_id or not api_key:
         raise ValueError(
@@ -88,21 +130,83 @@ def build_client(config: AppwriteConfig | None = None) -> Client:
     return client
 
 
+def build_introspection_client() -> Client:
+    """A credential-less client used only to introspect SDK methods for schema
+    generation. It never makes API calls, so no project/key is required."""
+    client = Client()
+    client.set_endpoint(os.getenv("APPWRITE_ENDPOINT", DEFAULT_ENDPOINT))
+    client.add_header("x-sdk-name", "mcp")
+    return client
+
+
+def build_client_for_request(
+    project_id: str,
+    bearer_token: str,
+    endpoint: str | None = None,
+    target_project: str | None = None,
+    organization_id: str | None = None,
+) -> Client:
+    """Build a per-request client authenticated with a user's OAuth2 access token.
+    The Appwrite REST API accepts the OAuth2 access token directly as a Bearer token
+    and resolves the user + granted scopes from it.
+
+    The token authenticates against the Appwrite console project. To act on one of
+    the user's own projects, pass ``target_project``: it is sent as the
+    ``X-Appwrite-Project`` header so the same console token operates on that
+    project's data. ``organization_id`` sets ``X-Appwrite-Organization`` for
+    org-scoped console operations (e.g. creating a project).
+
+    Targeting a real project also sends ``X-Appwrite-Mode: admin``. Admin mode is
+    what lets a console-issued token be recognized across projects (resolving the
+    user as the project owner); without it the token is not a valid identity on
+    another project and the request falls back to the guest role. Admin mode is
+    only valid against a real project — the API rejects it on the console project —
+    so it is not sent for ``organization_id``-only (console) operations."""
+    client = Client()
+    client.set_endpoint(endpoint or os.getenv("APPWRITE_ENDPOINT", DEFAULT_ENDPOINT))
+    client.set_project(target_project or project_id)
+    client.add_header("Authorization", f"Bearer {bearer_token}")
+    client.add_header("x-sdk-name", "mcp")
+    if target_project:
+        client.add_header("x-appwrite-project", target_project)
+        # Admin mode lets the console-issued token be recognized on another project
+        # (as the owner) instead of falling back to guest. It is only valid when
+        # targeting a real project — the API rejects admin mode on the console
+        # project itself — so it is gated on target_project, not organization_id.
+        client.add_header("x-appwrite-mode", "admin")
+    if organization_id:
+        client.add_header("x-appwrite-organization", organization_id)
+    return client
+
+
+def resolve_client(
+    target_project: str | None = None, organization_id: str | None = None
+) -> Client:
+    """Build the Appwrite client for the current request from its OAuth access
+    token. The token is read from the request context populated by the auth
+    middleware and carries the project it was issued for (the console). Pass
+    ``target_project``/``organization_id`` to scope the call to one of the user's
+    own projects/organizations."""
+    access_token = get_access_token()
+    if access_token is None:
+        raise RuntimeError("No authenticated Appwrite access token in request context.")
+
+    claims = access_token.claims or {}
+    project_id = claims.get("project_id")
+    if not project_id:
+        raise RuntimeError("Authenticated token is missing a project identifier.")
+    return build_client_for_request(
+        project_id,
+        access_token.token,
+        target_project=target_project,
+        organization_id=organization_id,
+    )
+
+
 def register_services(client: Client) -> ToolManager:
     tools_manager = ToolManager()
-    for service in [
-        Service(TablesDB(client), "tables_db"),
-        Service(Users(client), "users"),
-        Service(Teams(client), "teams"),
-        Service(Storage(client), "storage"),
-        Service(Functions(client), "functions"),
-        Service(Messaging(client), "messaging"),
-        Service(Locale(client), "locale"),
-        Service(Avatars(client), "avatars"),
-        Service(Sites(client), "sites"),
-    ]:
-        tools_manager.register_service(service)
-
+    for name, service_cls in SERVICE_CLASSES.items():
+        tools_manager.register_service(Service(service_cls(client), name))
     return tools_manager
 
 
@@ -366,13 +470,28 @@ def execute_registered_tool(
     tools_manager: ToolManager,
     name: str,
     arguments: dict[str, Any] | None,
+    client: Client | None = None,
+    target_project: str | None = None,
+    organization_id: str | None = None,
 ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
     tool_info = tools_manager.get_tool(name)
     if not tool_info:
         raise ValueError(f"Tool {name} not found")
 
     prepared_arguments = _prepare_arguments(tool_info, arguments or {})
-    bound_method = tool_info["function"]
+
+    service_name = tool_info["service_name"]
+    method_name = tool_info["method_name"]
+    service_cls = SERVICE_CLASSES.get(service_name)
+    if service_cls is None:
+        raise ValueError(f"Unknown service '{service_name}' for tool {name}")
+
+    # Re-bind the SDK method to a client authenticated for the current request.
+    # An explicit client takes precedence (used by tests); otherwise it is resolved
+    # from the request's OAuth access token.
+    if client is None:
+        client = resolve_client(target_project, organization_id)
+    bound_method = getattr(service_cls(client), method_name)
 
     try:
         result = bound_method(**prepared_arguments)
@@ -481,10 +600,18 @@ def _format_appwrite_error(exc: AppwriteException) -> str:
     return f"Appwrite request failed{detail_text}: {exc}"
 
 
-async def serve(operator: Operator) -> Server:
+def build_mcp_server(operator: Operator) -> Server:
     instructions = (
         "Appwrite workflow: use appwrite_search_tools first, then appwrite_call_tool. "
+        "You authenticate against the Appwrite console, which can list your "
+        "organizations and projects but stores no project data itself. Project-scoped "
+        "tools (databases, tables, users, storage, functions, messaging, sites) need a "
+        "target project: first discover one (search for and call a tool that lists "
+        "projects), then pass its id as project_id to appwrite_call_tool. "
+        "Organization-scoped console tools (e.g. creating a project) need organization_id. "
         "Mutating hidden tools require confirm_write=true. "
+        "For questions about Appwrite concepts, products, or guides, use "
+        "appwrite_search_docs to search the documentation (no project_id needed). "
         "Large results are stored as resources; read the URI returned by the tool."
     )
 
@@ -518,43 +645,59 @@ async def serve(operator: Operator) -> Server:
     return server
 
 
-async def _run():
-    parse_args()
-    _log_startup("Loading Appwrite configuration")
-    config = load_appwrite_config()
-    client = build_client(config)
-    _log_startup(f"Using Appwrite endpoint: {config.endpoint}")
-    _log_startup("Registering Appwrite services")
-    tools_manager = register_services(client)
-    _log_startup("Starting Appwrite service validation")
-    validate_services(tools_manager)
-    _log_startup("Building Appwrite operator surface")
-    operator = Operator(
+def build_operator(tools_manager: ToolManager) -> Operator:
+    """Wire the operator surface to the per-request execution path. The execution
+    callback re-binds each call to a per-request client via `resolve_client`.
+
+    The docs-search tool is wired in only when its committed index and an
+    OPENAI_API_KEY are both available; otherwise the server boots without it."""
+    docs_search = DocsSearch()
+    if docs_search.available:
+        _log_startup("Documentation search enabled (appwrite_search_docs)")
+    else:
+        _log_startup(
+            "Documentation search disabled: docs index or OPENAI_API_KEY not configured"
+        )
+        docs_search = None
+
+    return Operator(
         tools_manager,
-        lambda tool_name, tool_arguments: execute_registered_tool(
+        lambda tool_name, tool_arguments, target_project=None, organization_id=None: execute_registered_tool(
             tools_manager,
             tool_name,
             tool_arguments,
+            target_project=target_project,
+            organization_id=organization_id,
         ),
+        docs_search=docs_search,
     )
 
-    async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-        server = await serve(operator)
-        _log_startup("MCP transport: stdio")
-        _log_startup("Appwrite MCP server ready")
-        await server.run(
-            read_stream,
-            write_stream,
-            InitializationOptions(
-                server_name="appwrite",
-                server_version=SERVER_VERSION,
-                capabilities=server.get_capabilities(
-                    notification_options=NotificationOptions(),
-                    experimental_capabilities={},
-                ),
-            ),
-        )
+
+def build_catalog_tools_manager() -> ToolManager:
+    """Build the tool catalog/schema once from SDK introspection. Credentials arrive
+    per request (OAuth) rather than at startup, so a credential-less client suffices."""
+    return register_services(build_introspection_client())
+
+
+def main():
+    """Entry point: serve the Streamable-HTTP + OAuth resource server."""
+    # Load .env early so env-driven config (APPWRITE_ENDPOINT, MCP_PUBLIC_URL,
+    # OPENAI_API_KEY for docs search) is available before the app is built. In
+    # production these are injected directly into the environment.
+    cwd_dotenv = Path.cwd() / ".env"
+    if cwd_dotenv.exists():
+        load_dotenv(dotenv_path=cwd_dotenv)
+    else:
+        discovered_dotenv = find_dotenv(usecwd=True)
+        if discovered_dotenv:
+            load_dotenv(dotenv_path=discovered_dotenv)
+
+    args = parse_args()
+    from .http_app import run_http
+
+    run_http(host=args.host, port=args.port)
+    return 0
 
 
 if __name__ == "__main__":
-    asyncio.run(_run())
+    main()

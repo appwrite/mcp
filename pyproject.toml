@@ -1,14 +1,20 @@
 [project]
 name = "mcp-server-appwrite"
-version = "0.4.1"
+version = "0.7.0"
 description = "MCP (Model Context Protocol) server for Appwrite"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "appwrite>=13.4.1,<16",
+    "appwrite>=21.0.0,<22",
     "docstring-parser>=0.16",
-    "mcp[cli]>=1.3.0",
+    "mcp[cli]>=1.12.0",
     "python-dotenv>=1.0.1",
+    "starlette>=0.40.0",
+    "uvicorn[standard]>=0.30.0",
+    "httpx>=0.27.0",
+    "pyjwt[crypto]>=2.9.0",
+    "numpy>=2.0",
+    "openai>=1.40",
 ]
 
 [project.optional-dependencies]
@@ -22,13 +28,30 @@ integration = [
 [dependency-groups]
 dev = [
     "black>=25.1.0",
+    "ruff>=0.10.0",
+    # Only needed by scripts/build_docs_index.py to (re)build the docs index.
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]
 mcp-server-appwrite = "mcp_server_appwrite.__main__:main"
 
+[tool.hatch.build.targets.wheel]
+# Ship the prebuilt docs search index (non-.py package data) in the wheel.
+artifacts = ["src/mcp_server_appwrite/data/*"]
+
 [tool.black]
 target-version = ["py312"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+# E/W: pycodestyle, F: pyflakes (real bugs), I: import sorting.
+# Line length (E501) is owned by black, so it is disabled here.
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
 
 [build-system]
 requires = ["hatchling"]

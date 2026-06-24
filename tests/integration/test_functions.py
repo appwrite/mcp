@@ -1,5 +1,4 @@
 from appwrite.enums.runtime import Runtime
-
 from support import LiveIntegrationTestCase, requires_live_integration
 
 

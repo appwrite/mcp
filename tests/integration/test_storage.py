@@ -1,5 +1,4 @@
 from appwrite.enums.compression import Compression
-
 from support import LiveIntegrationTestCase, requires_live_integration
 
 

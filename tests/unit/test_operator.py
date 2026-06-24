@@ -22,6 +22,28 @@ def make_tool(
     )
 
 
+class FakeDocsSearch:
+    """Minimal stand-in for DocsSearch used to test the operator wiring."""
+
+    def __init__(self, content):
+        self._content = content
+
+    def get_tool(self) -> types.Tool:
+        return types.Tool(
+            name="appwrite_search_docs",
+            description="Search the Appwrite documentation.",
+            inputSchema={
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        )
+
+    def search(self, arguments):
+        return self._content
+
+
 class OperatorTests(unittest.TestCase):
     def make_runtime(self, executor):
         manager = ToolManager()
@@ -78,8 +100,48 @@ class OperatorTests(unittest.TestCase):
         }
         return Operator(manager, executor)
 
+    def make_runtime_with_docs(self, docs_search):
+        manager = ToolManager()
+        manager.tools_registry = {
+            "tables_db_list": {
+                "definition": make_tool("tables_db_list", "List all databases."),
+                "function": object(),
+                "parameter_types": {},
+            },
+        }
+        return Operator(manager, lambda *_: [], docs_search=docs_search)
+
+    def test_docs_tool_absent_without_docs_search(self):
+        runtime = self.make_runtime(lambda name, arguments, *_: [])
+        names = {tool.name for tool in runtime.get_public_tools()}
+        self.assertEqual(names, {"appwrite_search_tools", "appwrite_call_tool"})
+        self.assertFalse(runtime.has_public_tool("appwrite_search_docs"))
+
+    def test_docs_tool_listed_and_dispatched(self):
+        docs = FakeDocsSearch([types.TextContent(type="text", text='{"results": []}')])
+        runtime = self.make_runtime_with_docs(docs)
+
+        tools = runtime.get_public_tools()
+        self.assertEqual(len(tools), 3)
+        self.assertIn("appwrite_search_docs", {tool.name for tool in tools})
+        self.assertTrue(runtime.has_public_tool("appwrite_search_docs"))
+
+        result = runtime.execute_public_tool(
+            "appwrite_search_docs", {"query": "databases"}
+        )
+        self.assertEqual(result[0].text, '{"results": []}')
+
+    def test_docs_tool_large_result_is_stored_as_resource(self):
+        docs = FakeDocsSearch([types.TextContent(type="text", text="x" * 1200)])
+        runtime = self.make_runtime_with_docs(docs)
+
+        result = runtime.execute_public_tool(
+            "appwrite_search_docs", {"query": "databases"}
+        )
+        self.assertIn("appwrite://operator/results/", result[0].text)
+
     def test_search_tools_returns_ranked_match(self):
-        runtime = self.make_runtime(lambda name, arguments: [])
+        runtime = self.make_runtime(lambda name, arguments, *_: [])
 
         result = runtime.execute_public_tool(
             "appwrite_search_tools",
@@ -92,7 +154,7 @@ class OperatorTests(unittest.TestCase):
         self.assertIn(CATALOG_URI, result[0].text)
 
     def test_search_tools_infers_mutating_search_for_create_query(self):
-        runtime = self.make_runtime(lambda name, arguments: [])
+        runtime = self.make_runtime(lambda name, arguments, *_: [])
 
         result = runtime.execute_public_tool(
             "appwrite_search_tools",
@@ -103,7 +165,7 @@ class OperatorTests(unittest.TestCase):
         self.assertIn("functions_create", result[0].text)
 
     def test_search_tools_surfaces_required_create_tool_without_argument_hints(self):
-        runtime = self.make_runtime(lambda name, arguments: [])
+        runtime = self.make_runtime(lambda name, arguments, *_: [])
 
         result = runtime.execute_public_tool(
             "appwrite_search_tools",
@@ -114,7 +176,7 @@ class OperatorTests(unittest.TestCase):
         self.assertIn("tables_db_create_string_column", result[0].text)
 
     def test_search_tools_scores_get_queries_against_get_tools(self):
-        runtime = self.make_runtime(lambda name, arguments: [])
+        runtime = self.make_runtime(lambda name, arguments, *_: [])
 
         result = runtime.execute_public_tool(
             "appwrite_search_tools",
@@ -125,7 +187,7 @@ class OperatorTests(unittest.TestCase):
         self.assertIn("functions_get", result[0].text)
 
     def test_call_tool_requires_confirm_write(self):
-        runtime = self.make_runtime(lambda name, arguments: [])
+        runtime = self.make_runtime(lambda name, arguments, *_: [])
 
         with self.assertRaisesRegex(RuntimeError, "confirm_write=true"):
             runtime.execute_public_tool(
@@ -136,7 +198,7 @@ class OperatorTests(unittest.TestCase):
     def test_call_tool_merges_top_level_arguments(self):
         captured = {}
 
-        def executor(name, arguments):
+        def executor(name, arguments, *_):
             captured["name"] = name
             captured["arguments"] = arguments
             return [types.TextContent(type="text", text="ok")]
@@ -157,7 +219,9 @@ class OperatorTests(unittest.TestCase):
 
     def test_large_result_is_stored_as_resource(self):
         runtime = self.make_runtime(
-            lambda name, arguments: [types.TextContent(type="text", text="x" * 1200)]
+            lambda name, arguments, *_: [
+                types.TextContent(type="text", text="x" * 1200)
+            ]
         )
 
         result = runtime.execute_public_tool(

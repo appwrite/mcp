@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections import OrderedDict
-from dataclasses import dataclass
 import json
 import re
+from collections import OrderedDict
+from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -11,6 +11,7 @@ from uuid import uuid4
 import mcp.types as types
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 
+from .docs_search import DocsSearch
 from .tool_manager import ToolManager
 
 SEARCH_LIMIT = 8
@@ -26,7 +27,10 @@ DELETE_HINTS = {"delete", "destroy", "drop", "remove"}
 READ_HINTS = {"fetch", "find", "get", "list", "read", "search", "show", "view"}
 
 ToolContent = types.TextContent | types.ImageContent | types.EmbeddedResource
-ToolExecutor = Callable[[str, dict[str, Any]], list[ToolContent]]
+# (tool_name, arguments, project_id, organization_id) -> content
+ToolExecutor = Callable[
+    [str, dict[str, Any], str | None, str | None], list[ToolContent]
+]
 
 
 @dataclass(frozen=True)
@@ -94,11 +98,13 @@ class Operator:
         tools_manager: ToolManager,
         execute_tool: ToolExecutor,
         *,
+        docs_search: DocsSearch | None = None,
         preview_threshold: int = PREVIEW_THRESHOLD,
         search_limit: int = SEARCH_LIMIT,
     ):
         self._tools_manager = tools_manager
         self._execute_tool = execute_tool
+        self._docs_search = docs_search
         self._preview_threshold = preview_threshold
         self._search_limit = search_limit
         self._result_store = ResultStore()
@@ -110,7 +116,7 @@ class Operator:
         return CATALOG_URI
 
     def get_public_tools(self) -> list[types.Tool]:
-        return [
+        tools = [
             types.Tool(
                 name="appwrite_search_tools",
                 description=(
@@ -172,6 +178,25 @@ class Operator:
                             "type": "boolean",
                             "description": "Required for create, update, and delete tools.",
                         },
+                        "project_id": {
+                            "type": "string",
+                            "description": (
+                                "Appwrite project ID to act on (sent as X-Appwrite-Project). "
+                                "The connection authenticates against the Appwrite console, which "
+                                "can list your projects/organizations but holds no data — so "
+                                "project-scoped tools (databases, tables, users, storage, "
+                                "functions, messaging, sites) require this. Discover a project "
+                                "first, then pass its id. Omit for console/account-level tools."
+                            ),
+                        },
+                        "organization_id": {
+                            "type": "string",
+                            "description": (
+                                "Appwrite organization (team) ID to act on (sent as "
+                                "X-Appwrite-Organization). Required for organization-scoped "
+                                "console tools such as creating a project. Omit otherwise."
+                            ),
+                        },
                     },
                     "required": ["tool_name"],
                     "additionalProperties": True,
@@ -179,8 +204,16 @@ class Operator:
             ),
         ]
 
+        if self._docs_search is not None:
+            tools.append(self._docs_search.get_tool())
+
+        return tools
+
     def has_public_tool(self, name: str) -> bool:
-        return name in {"appwrite_search_tools", "appwrite_call_tool"}
+        names = {"appwrite_search_tools", "appwrite_call_tool"}
+        if self._docs_search is not None:
+            names.add(self._docs_search.get_tool().name)
+        return name in names
 
     def execute_public_tool(
         self, name: str, arguments: dict[str, Any] | None
@@ -189,6 +222,9 @@ class Operator:
             return self._search_tools(arguments or {})
         if name == "appwrite_call_tool":
             return self._call_hidden_tool(arguments or {})
+        if self._docs_search is not None and name == self._docs_search.get_tool().name:
+            content = self._docs_search.search(arguments or {})
+            return self._preview_or_store_result(name, content)
         raise ValueError(f"Unknown public Appwrite tool {name}")
 
     def list_resources(self) -> list[types.Resource]:
@@ -351,8 +387,14 @@ class Operator:
                 f"Tool {tool_name} is {entry.classification}. Re-run appwrite_call_tool with confirm_write=true if you intend to mutate Appwrite state."
             )
 
+        project_id = raw_arguments.get("project_id", raw_arguments.get("projectId"))
+        organization_id = raw_arguments.get(
+            "organization_id", raw_arguments.get("organizationId")
+        )
         arguments_object = _normalize_arguments(raw_arguments)
-        result_content = self._execute_tool(tool_name, arguments_object)
+        result_content = self._execute_tool(
+            tool_name, arguments_object, project_id, organization_id
+        )
         return self._preview_or_store_result(tool_name, result_content)
 
     def _preview_or_store_result(
@@ -625,6 +667,10 @@ def _normalize_arguments(raw_arguments: dict[str, Any]) -> dict[str, Any]:
             "args",
             "confirm_write",
             "confirmWrite",
+            "project_id",
+            "projectId",
+            "organization_id",
+            "organizationId",
         }:
             continue
         if value is not None:

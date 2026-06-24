@@ -1,248 +1,122 @@
 # Appwrite MCP server
 
-mcp-name: io.github.appwrite/mcp-for-api
-
-[![Install MCP Server](https://cursor.com/deeplink/mcp-install-light.svg)](https://cursor.com/install-mcp?name=appwrite&config=%7B%22command%22%3A%22uvx%20mcp-server-appwrite%22%2C%22env%22%3A%7B%22APPWRITE_API_KEY%22%3A%22%3Cyour-api-key%3E%22%2C%22APPWRITE_PROJECT_ID%22%3A%22%3Cyour-project-id%3E%22%2C%22APPWRITE_ENDPOINT%22%3A%22https%3A//%3CREGION%3E.cloud.appwrite.io/v1%22%7D%7D)
+mcp-name: io.github.appwrite/mcp
 
 ## Overview
 
-A Model Context Protocol server for interacting with Appwrite's API. This server provides tools to manage databases, users, functions, teams, and more within your Appwrite project.
+A Model Context Protocol server for interacting with Appwrite's API. It provides tools to manage databases, users, functions, teams, and more within your Appwrite project.
+
+The server is a hosted [OAuth 2.1 Resource Server](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization) served over the MCP [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports) transport. It targets the Appwrite Cloud console project; users authenticate with that project's OAuth 2.1 authorization server, and no API keys are distributed to clients.
 
 ## Quick Links
-- [Configuration](#configuration)
-- [Installation](#installation)
-- IDE Integration:
-  - [Claude Desktop](#usage-with-claude-desktop)
-  - [Cursor](#usage-with-cursor)
-  - [Windsurf Editor](#usage-with-windsurf-editor)
-  - [VS Code](#usage-with-vs-code)
-- [Local Development](#local-development)
+- [Connecting a client](#connecting-a-client)
+- [How authentication works](#how-authentication-works)
+- [Tool surface](#tool-surface)
+- [Local development](#local-development)
 - [Debugging](#debugging)
 
-## Configuration
+## Connecting a client
 
-> Before launching the MCP server, you must setup an [Appwrite project](https://cloud.appwrite.io/) and create an API key with the necessary scopes enabled.
+Add the server to any MCP client that supports remote (Streamable HTTP) servers by its URL:
 
-The server validates the credentials and scopes required for its built-in Appwrite service set during startup. If the endpoint, project ID, API key, or scopes are wrong, the MCP server will fail to start instead of waiting for the first tool call to fail.
-
-Create a `.env` file in your working directory and add the following:
-
-```env
-APPWRITE_PROJECT_ID=your-project-id
-APPWRITE_API_KEY=your-api-key
-APPWRITE_ENDPOINT=https://<REGION>.cloud.appwrite.io/v1
+```
+https://mcp.appwrite.io/mcp
 ```
 
-Then, open your terminal and run the following command
+For example, in a client that accepts a JSON server config:
 
-### Linux and MacOS
-
-```sh
-source .env
-```
-
-### Windows
-
-#### Command Prompt
-
-```cmd
-for /f "tokens=1,2 delims==" %A in (.env) do set %A=%B
-```
-
-#### PowerShell
-
-```powershell
-Get-Content .\.env | ForEach-Object {
-  if ($_ -match '^(.*?)=(.*)$') {
-    [System.Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process")
+```json
+{
+  "mcpServers": {
+    "appwrite": {
+      "type": "http",
+      "url": "https://mcp.appwrite.io/mcp"
+    }
   }
 }
 ```
 
-## Installation
+The first time you connect, the client opens an Appwrite consent screen in your browser. Approve the requested scopes and the client is connected — there are no keys to copy.
 
-### Using uv (recommended)
-When using [`uv`](https://docs.astral.sh/uv/) no specific installation is needed. We will
-use [`uvx`](https://docs.astral.sh/uv/guides/tools/) to directly run *mcp-server-appwrite*.
+## How authentication works
 
-```bash
-uvx mcp-server-appwrite
-```
+The MCP server validates the bearer access token on every request and forwards it to the Appwrite REST API, which accepts the OAuth2 access token directly. The flow (handled automatically by MCP-aware clients):
 
-### Using pip
+1. The client requests `/mcp` without a token and receives `401` with a `WWW-Authenticate` header pointing to the protected-resource metadata.
+2. The client fetches `GET /.well-known/oauth-protected-resource/mcp` (RFC 9728), which lists the authorization server (`<APPWRITE_ENDPOINT>/oauth2/console`) and supported scopes.
+3. The client discovers the authorization server (RFC 8414 / OIDC) and **self-registers** via RFC 7591 Dynamic Client Registration — the OAuth server exposes an open `registration_endpoint`, so there is no client ID or secret to pre-provision. MCP clients register as public (PKCE) clients automatically.
+4. The client runs the OAuth 2.1 + PKCE authorization-code flow, including the RFC 8707 `resource` parameter that binds the token's audience to this server.
+5. The client calls `/mcp` with `Authorization: Bearer <token>`.
 
-```bash
-pip install mcp-server-appwrite
-```
-Then run the server using 
+## Tool surface
 
-```bash
-python -m mcp_server_appwrite
-```
+The server starts in a compact workflow so the MCP client only sees a small operator-style surface while the full Appwrite catalog stays internal.
 
-### Tool surface
-
-The server no longer accepts service-selection or mode flags. It always starts in a compact workflow so the MCP client only sees a small operator-style surface while the full Appwrite catalog stays internal.
-
-- Only 2 MCP tools are exposed to the model:
+- Up to 3 MCP tools are exposed to the model:
   - `appwrite_search_tools`
   - `appwrite_call_tool`
+  - `appwrite_search_docs` — semantic search over the Appwrite documentation (only registered when the docs index and `OPENAI_API_KEY` are present; see [Documentation search](#documentation-search)).
 - The full Appwrite tool catalog stays internal and is searched at runtime.
 - Large tool outputs are stored as MCP resources and returned as preview text plus a resource URI.
 - Mutating hidden tools require `confirm_write=true`.
-- The server automatically registers all supported Appwrite services except the legacy Databases API.
+- Every Appwrite service the installed SDK ships is registered automatically — 25 in total, each becoming a tool-name prefix: `account`, `activities`, `advisor`, `apps`, `avatars`, `backups`, `databases`, `functions`, `graphql`, `health`, `locale`, `messaging`, `oauth2`, `organization`, `presences`, `project`, `proxy`, `sites`, `storage`, `tables_db`, `teams`, `tokens`, `usage`, `users`, and `webhooks`. Which ones a given user can actually call is gated by the scopes their OAuth token was granted (enforced per-route by the Appwrite API), not by the catalog.
 
-If you still have older MCP configs that pass flags such as `--mode` or `--users`, remove them.
+## Documentation search
 
-## Usage with Claude Desktop
+`appwrite_search_docs` runs semantic search over the Appwrite documentation entirely in-process, replacing the standalone docs MCP server. It embeds the query with OpenAI `text-embedding-3-small` and ranks a prebuilt index of doc pages by cosine similarity, returning the most relevant pages with their full content. It needs no `project_id`.
 
-In the Claude Desktop app, open the app's **Settings** page (press `CTRL + ,` on Windows or `CMD + ,` on MacOS) and head to the **Developer** tab. Clicking on the **Edit Config** button will take you to the `claude_desktop_config.json` file, where you must add the following:
+The index is a small artifact committed under `src/mcp_server_appwrite/data/` (`docs_index.npz` + `docs_index_meta.json`) and shipped in the image. The tool is registered only when both the artifact and `OPENAI_API_KEY` are available; otherwise the server boots without it.
 
-```json
-{
-  "mcpServers": {
-    "appwrite": {
-      "command": "uvx",
-      "args": [
-        "mcp-server-appwrite"
-      ],
-      "env": {
-        "APPWRITE_PROJECT_ID": "<YOUR_PROJECT_ID>",
-        "APPWRITE_API_KEY": "<YOUR_API_KEY>",
-        "APPWRITE_ENDPOINT": "https://<REGION>.cloud.appwrite.io/v1" // Optional
-      }
-    }
-  }
-}
+### Runtime configuration
 
-```
+- `OPENAI_API_KEY` — required to embed incoming queries (one OpenAI call per search).
+- `DOCS_SEARCH_MIN_SCORE` — minimum cosine score for a match (default `0.25`).
+- `DOCS_SEARCH_LIMIT` — default maximum pages returned (default `5`, max `10`).
 
-> Note: In case you see a `uvx ENOENT` error, ensure that you either add `uvx` to the `PATH` environment variable on your system or use the full path to your `uvx` installation in the config file.
+### Rebuilding the index
 
-Upon successful configuration, you should be able to see the server in the list of available servers in Claude Desktop.
-
-![Claude Desktop Config](images/claude-desktop-integration.png)
-
-## Usage with [Cursor](https://www.cursor.com/)
-
-Head to Cursor `Settings > MCP` and click on **Add new MCP server**. Choose the type as `Command` and add the command below to the **Command** field.
-
-- **MacOS**
+Re-run the build script when the docs change and commit the refreshed artifact:
 
 ```bash
-env APPWRITE_API_KEY=your-api-key env APPWRITE_PROJECT_ID=your-project-id uvx mcp-server-appwrite
+OPENAI_API_KEY=sk-... uv run python scripts/build_docs_index.py
 ```
 
-- **Windows**
+It downloads `appwrite/website` docs from GitHub, chunks each page, embeds the chunks, and writes the artifact. Optional env vars: `DOCS_WEBSITE_REF` (git ref, default `main`), `DOCS_EMBED_BATCH` (default `100`).
 
-```cmd
-cmd /c SET APPWRITE_PROJECT_ID=your-project-id && SET APPWRITE_API_KEY=your-api-key && uvx mcp-server-appwrite
-```
+## Local development
 
-![Cursor Settings](./images/cursor-integration.png)
-
-## Usage with [Windsurf Editor](https://codeium.com/windsurf)
-
-Head to Windsurf `Settings > Cascade > Model Context Protocol (MCP) Servers` and click on **View raw config**. Update the `mcp_config.json` file to include the following:
-
-```json
-{
-  "mcpServers": {
-    "appwrite": {
-      "command": "uvx",
-      "args": [
-        "mcp-server-appwrite"
-      ],
-      "env": {
-        "APPWRITE_PROJECT_ID": "<YOUR_PROJECT_ID>",
-        "APPWRITE_API_KEY": "<YOUR_API_KEY>",
-        "APPWRITE_ENDPOINT": "https://<REGION>.cloud.appwrite.io/v1" // Optional
-      }
-    }
-  }
-}
-```
-
-![Windsurf Settings](./images/windsurf-integration.png)
-
-## Usage with [VS Code](https://code.visualstudio.com/)
-
-### Configuration
-
-1. **Update the MCP configuration file**: Open the Command Palette (`Ctrl+Shift+P` or `Cmd+Shift+P`) and run `MCP: Open User Configuration`. It should open the `mcp.json` file in your user settings.
-
-2. **Add the Appwrite MCP server configuration**: Add the following to the `mcp.json` file:
-
-```json
-{
-  "servers": {
-    "appwrite": {
-      "command": "uvx",
-      "args": ["mcp-server-appwrite"],
-      "env": {
-        "APPWRITE_PROJECT_ID": "<YOUR_PROJECT_ID>",
-        "APPWRITE_API_KEY": "<YOUR_API_KEY>",
-        "APPWRITE_ENDPOINT": "https://<REGION>.cloud.appwrite.io/v1"
-      }
-    }
-  }
-}
-```
-
-3. **Start the MCP server**: Open the Command Palette (`Ctrl+Shift+P` or `Cmd+Shift+P`) and run `MCP: List Servers`. In the dropdown, select `appwrite` and click on the **Start Server** button.
-
-4. **Use in Copilot Chat**: Open Copilot Chat and switch to **Agent Mode** to access the Appwrite tools.
-
-![VS Code Settings](./images/vs-code-integration.png)
-
-## Local Development
-
-### Clone the repository
+### Clone and install `uv`
 
 ```bash
-git clone https://github.com/appwrite/mcp-for-api.git
-```
-
-### Install `uv`
-
-- Linux or MacOS
-
-```bash
+git clone https://github.com/appwrite/mcp.git
+cd mcp
+# Linux or MacOS
 curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-- Windows (PowerShell)
-
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
-
-### Prepare virtual environment
-
-First, create a virtual environment.
-
-```bash
-uv venv
-```
-
-Next, activate the virtual environment.
-
-- Linux or MacOS
-
-```bash
-source .venv/bin/activate
-```
-
-- Windows
-
-```powershell
-.venv\Scripts\activate
+# Windows (PowerShell)
+# powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
 ### Run the server
 
+With Docker Compose:
+
 ```bash
-uv run -v --directory ./ mcp-server-appwrite
+docker compose up --build
+```
+
+Compose defaults to `MCP_PUBLIC_URL=http://localhost:8000` and exposes the MCP endpoint at:
+
+```text
+http://localhost:8000/mcp
+```
+
+To enable documentation search locally, provide `OPENAI_API_KEY` in your shell or a local `.env` file before running Compose.
+
+With `uv` directly:
+
+```bash
+MCP_PUBLIC_URL=http://localhost:8000 APPWRITE_ENDPOINT=https://cloud.appwrite.io/v1 \
+  uv run mcp-server-appwrite
 ```
 
 ## Testing
@@ -255,7 +129,7 @@ uv run python -m unittest discover -s tests/unit -v
 
 ### Live integration tests
 
-These tests create and delete real Appwrite resources against a real Appwrite project. They run automatically when valid Appwrite credentials are available in the environment or `.env`.
+These create and delete real Appwrite resources against a real project. They authenticate to the Appwrite API with an API key supplied via the environment or `.env` (`APPWRITE_PROJECT_ID`, `APPWRITE_API_KEY`, `APPWRITE_ENDPOINT`) and are skipped when no credentials are present.
 
 ```bash
 uv run --extra integration python -m unittest discover -s tests/integration -v
@@ -263,16 +137,13 @@ uv run --extra integration python -m unittest discover -s tests/integration -v
 
 ## Debugging
 
-You can use the MCP inspector to debug the server. 
+Use the MCP Inspector against a running server URL:
 
 ```bash
-npx @modelcontextprotocol/inspector \
-  uv \
-  --directory . \
-  run mcp-server-appwrite
+npx @modelcontextprotocol/inspector
 ```
 
-Make sure your `.env` file is properly configured before running the inspector. You can then access the inspector at `http://localhost:5173`.
+Point it at `https://mcp.appwrite.io/mcp` and complete the OAuth flow when prompted.
 
 ## License
 

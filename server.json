@@ -1,20 +1,16 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
-  "name": "io.github.appwrite/mcp-for-api",
+  "name": "io.github.appwrite/mcp",
   "description": "MCP (Model Context Protocol) server for Appwrite",
-  "version": "0.4.1",
+  "version": "0.6.0",
   "repository": {
-    "url": "https://github.com/appwrite/mcp-for-api",
+    "url": "https://github.com/appwrite/mcp",
     "source": "github"
   },
-  "packages": [
+  "remotes": [
     {
-      "version": "0.4.1",
-      "registryType": "pypi",
-      "identifier": "mcp-server-appwrite",
-      "transport": {
-        "type": "stdio"
-      }
+      "type": "streamable-http",
+      "url": "https://mcp.appwrite.io/mcp"
     }
   ]
 }
