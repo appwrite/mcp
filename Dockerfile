@@ -15,8 +15,9 @@ RUN uv sync --frozen --no-dev
 
 ENV HOST=0.0.0.0 \
     PORT=8000 \
+    MCP_TRANSPORT=http \
     APPWRITE_ENDPOINT=https://cloud.appwrite.io/v1
 
 EXPOSE 8000
 
-CMD ["uv", "run", "mcp-server-appwrite"]
+CMD ["uv", "run", "mcp-server-appwrite", "--transport", "http"]

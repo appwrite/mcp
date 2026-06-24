@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 import importlib
 import inspect
@@ -18,6 +19,7 @@ from pathlib import Path
 from types import UnionType
 from typing import Any, Union, get_args, get_origin
 
+import mcp.server.stdio
 import mcp.types as types
 from appwrite.client import Client
 from appwrite.enums.browser import Browser
@@ -25,9 +27,10 @@ from appwrite.exception import AppwriteException
 from appwrite.input_file import InputFile
 from appwrite.service import Service as _SdkService
 from dotenv import find_dotenv, load_dotenv
-from mcp.server import Server
+from mcp.server import NotificationOptions, Server
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.lowlevel.helper_types import ReadResourceContents
+from mcp.server.models import InitializationOptions
 
 from .docs_search import DocsSearch
 from .operator import Operator
@@ -37,6 +40,19 @@ from .tool_manager import ToolManager
 SERVER_VERSION = "0.7.0"
 
 DEFAULT_ENDPOINT = "https://cloud.appwrite.io/v1"
+DEFAULT_TRANSPORT = "stdio"
+TRANSPORTS = {"stdio", "http"}
+VALIDATION_SERVICE_ORDER = (
+    "tables_db",
+    "users",
+    "teams",
+    "functions",
+    "sites",
+    "storage",
+    "messaging",
+    "locale",
+    "avatars",
+)
 
 # Service modules in the Appwrite SDK to skip (none by default — every service the
 # installed SDK ships is exposed). Add a module name here to hide a service.
@@ -83,8 +99,22 @@ def _log_startup(message: str) -> None:
     print(f"[appwrite-mcp] {message}", file=sys.stderr, flush=True)
 
 
-def parse_args():
+def _transport_arg(value: str) -> str:
+    if value not in TRANSPORTS:
+        raise argparse.ArgumentTypeError(
+            f"invalid choice: {value!r} (choose from 'http', 'stdio')"
+        )
+    return value
+
+
+def parse_args(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description="Appwrite MCP Server")
+    parser.add_argument(
+        "--transport",
+        type=_transport_arg,
+        default=os.getenv("MCP_TRANSPORT", DEFAULT_TRANSPORT),
+        help="MCP transport to serve (default $MCP_TRANSPORT or stdio).",
+    )
     parser.add_argument(
         "--host",
         default=os.getenv("HOST", "0.0.0.0"),
@@ -96,17 +126,27 @@ def parse_args():
         default=int(os.getenv("PORT", "8000")),
         help="Bind port for the HTTP server (default $PORT or 8000).",
     )
-    return parser.parse_args()
+    args = parser.parse_args(argv)
+    try:
+        args.transport = _transport_arg(args.transport)
+    except argparse.ArgumentTypeError as exc:
+        parser.error(str(exc))
+    return args
 
 
-def load_appwrite_config() -> AppwriteConfig:
+def load_environment() -> None:
     cwd_dotenv = Path.cwd() / ".env"
     if cwd_dotenv.exists():
         load_dotenv(dotenv_path=cwd_dotenv)
-    else:
-        discovered_dotenv = find_dotenv(usecwd=True)
-        if discovered_dotenv:
-            load_dotenv(dotenv_path=discovered_dotenv)
+        return
+
+    discovered_dotenv = find_dotenv(usecwd=True)
+    if discovered_dotenv:
+        load_dotenv(dotenv_path=discovered_dotenv)
+
+
+def load_appwrite_config() -> AppwriteConfig:
+    load_environment()
 
     project_id = os.getenv("APPWRITE_PROJECT_ID")
     api_key = os.getenv("APPWRITE_API_KEY")
@@ -232,7 +272,18 @@ def validate_services(tools_manager: ToolManager) -> None:
     if not tools_manager.services:
         return
 
-    service = tools_manager.services[0]
+    services_by_name = {service.service_name: service for service in tools_manager.services}
+    service = next(
+        (
+            services_by_name[service_name]
+            for service_name in VALIDATION_SERVICE_ORDER
+            if service_name in services_by_name
+        ),
+        None,
+    )
+    if service is None:
+        return
+
     _log_startup(f"Validating startup access via {service.service_name}")
 
     try:
@@ -600,20 +651,36 @@ def _format_appwrite_error(exc: AppwriteException) -> str:
     return f"Appwrite request failed{detail_text}: {exc}"
 
 
-def build_mcp_server(operator: Operator) -> Server:
-    instructions = (
+def build_instructions(transport: str = "http") -> str:
+    common = (
         "Appwrite workflow: use appwrite_search_tools first, then appwrite_call_tool. "
+        "Mutating hidden tools require confirm_write=true. "
+        "For questions about Appwrite concepts, products, or guides, use "
+        "appwrite_search_docs to search the documentation when available. "
+        "Large results are stored as resources; read the URI returned by the tool."
+    )
+
+    if transport == "stdio":
+        return (
+            "This local Appwrite MCP connection uses the API key, endpoint, and "
+            "project configured in the server environment. Appwrite API calls target "
+            "that configured APPWRITE_PROJECT_ID by default. "
+            f"{common}"
+        )
+
+    return (
         "You authenticate against the Appwrite console, which can list your "
         "organizations and projects but stores no project data itself. Project-scoped "
         "tools (databases, tables, users, storage, functions, messaging, sites) need a "
         "target project: first discover one (search for and call a tool that lists "
         "projects), then pass its id as project_id to appwrite_call_tool. "
         "Organization-scoped console tools (e.g. creating a project) need organization_id. "
-        "Mutating hidden tools require confirm_write=true. "
-        "For questions about Appwrite concepts, products, or guides, use "
-        "appwrite_search_docs to search the documentation (no project_id needed). "
-        "Large results are stored as resources; read the URI returned by the tool."
+        f"{common}"
     )
+
+
+def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
+    instructions = build_instructions(transport)
 
     server = Server("Appwrite MCP Server", instructions=instructions)
 
@@ -645,9 +712,10 @@ def build_mcp_server(operator: Operator) -> Server:
     return server
 
 
-def build_operator(tools_manager: ToolManager) -> Operator:
+def build_operator(tools_manager: ToolManager, client: Client | None = None) -> Operator:
     """Wire the operator surface to the per-request execution path. The execution
-    callback re-binds each call to a per-request client via `resolve_client`.
+    callback re-binds each call to a per-request client via `resolve_client` in
+    HTTP/OAuth mode. Pass a client for stdio/API-key mode.
 
     The docs-search tool is wired in only when its committed index and an
     OPENAI_API_KEY are both available; otherwise the server boots without it."""
@@ -666,6 +734,7 @@ def build_operator(tools_manager: ToolManager) -> Operator:
             tools_manager,
             tool_name,
             tool_arguments,
+            client=client,
             target_project=target_project,
             organization_id=organization_id,
         ),
@@ -679,20 +748,46 @@ def build_catalog_tools_manager() -> ToolManager:
     return register_services(build_introspection_client())
 
 
-def main():
-    """Entry point: serve the Streamable-HTTP + OAuth resource server."""
-    # Load .env early so env-driven config (APPWRITE_ENDPOINT, MCP_PUBLIC_URL,
-    # OPENAI_API_KEY for docs search) is available before the app is built. In
-    # production these are injected directly into the environment.
-    cwd_dotenv = Path.cwd() / ".env"
-    if cwd_dotenv.exists():
-        load_dotenv(dotenv_path=cwd_dotenv)
-    else:
-        discovered_dotenv = find_dotenv(usecwd=True)
-        if discovered_dotenv:
-            load_dotenv(dotenv_path=discovered_dotenv)
+async def run_stdio() -> None:
+    """Serve a local stdio MCP using APPWRITE_* API-key configuration."""
+    _log_startup("Loading Appwrite configuration")
+    config = load_appwrite_config()
+    client = build_client(config)
+    _log_startup(f"Using Appwrite endpoint: {config.endpoint}")
+    _log_startup("Registering Appwrite services")
+    tools_manager = register_services(client)
+    _log_startup("Starting Appwrite service validation")
+    validate_services(tools_manager)
+    _log_startup("Building Appwrite operator surface")
+    operator = build_operator(tools_manager, client=client)
+    server = build_mcp_server(operator, transport="stdio")
 
+    async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
+        _log_startup("MCP transport: stdio")
+        _log_startup("Appwrite MCP server ready")
+        await server.run(
+            read_stream,
+            write_stream,
+            InitializationOptions(
+                server_name="appwrite",
+                server_version=SERVER_VERSION,
+                capabilities=server.get_capabilities(
+                    notification_options=NotificationOptions(),
+                    experimental_capabilities={},
+                ),
+            ),
+        )
+
+
+def main():
+    """Entry point: stdio by default, or Streamable HTTP when requested."""
+    load_environment()
     args = parse_args()
+
+    if args.transport == "stdio":
+        asyncio.run(run_stdio())
+        return 0
+
     from .http_app import run_http
 
     run_http(host=args.host, port=args.port)
