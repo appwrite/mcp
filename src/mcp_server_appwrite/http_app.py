@@ -119,7 +119,7 @@ async def health_endpoint(request: Request) -> PlainTextResponse:
 def build_app() -> Starlette:
     tools_manager = build_catalog_tools_manager()
     operator = build_operator(tools_manager)
-    server = build_mcp_server(operator)
+    server = build_mcp_server(operator, transport="http")
 
     # Streamable HTTP with SSE responses (the MCP SDK/ecosystem default). Stateless,
     # so each request opens and closes its own short-lived stream — no session to pin.

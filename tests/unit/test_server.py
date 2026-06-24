@@ -17,6 +17,8 @@ from mcp_server_appwrite.server import (
     _prepare_arguments,
     _validate_service,
     build_client,
+    build_instructions,
+    build_operator,
     parse_args,
     register_services,
     validate_services,
@@ -25,6 +27,42 @@ from mcp_server_appwrite.tool_manager import ToolManager
 
 
 class ServerHelperTests(unittest.TestCase):
+    def test_parse_args_defaults_to_stdio(self):
+        with patch.dict(os.environ, {}, clear=True):
+            args = parse_args([])
+
+        self.assertEqual(args.transport, "stdio")
+        self.assertEqual(args.host, "0.0.0.0")
+        self.assertEqual(args.port, 8000)
+
+    def test_parse_args_accepts_env_transport(self):
+        with patch.dict(os.environ, {"MCP_TRANSPORT": "http", "PORT": "9000"}):
+            args = parse_args([])
+
+        self.assertEqual(args.transport, "http")
+        self.assertEqual(args.port, 9000)
+
+    def test_parse_args_accepts_explicit_transport(self):
+        with patch.dict(os.environ, {"MCP_TRANSPORT": "http"}):
+            args = parse_args(["--transport", "stdio", "--host", "127.0.0.1"])
+
+        self.assertEqual(args.transport, "stdio")
+        self.assertEqual(args.host, "127.0.0.1")
+
+    def test_parse_args_rejects_invalid_env_transport(self):
+        with patch.dict(os.environ, {"MCP_TRANSPORT": "websocket"}):
+            with self.assertRaises(SystemExit):
+                parse_args([])
+
+    def test_build_instructions_are_transport_specific(self):
+        stdio = build_instructions("stdio")
+        http = build_instructions("http")
+
+        self.assertIn("APPWRITE_PROJECT_ID", stdio)
+        self.assertNotIn("Appwrite console", stdio)
+        self.assertIn("Appwrite console", http)
+        self.assertIn("project_id", http)
+
     def test_coerce_input_file_from_path(self):
         with tempfile.NamedTemporaryFile(suffix=".txt") as handle:
             coerced = _coerce_argument("file", handle.name, InputFile)
@@ -257,6 +295,80 @@ class ServerHelperTests(unittest.TestCase):
         ]
 
         validate_services(manager)
+
+    def test_validate_services_skips_unprobed_services(self):
+        class SuccessfulSdkService:
+            def list(self):
+                return {"total": 0}
+
+        manager = ToolManager()
+        manager.services = [
+            type(
+                "UnprobedService",
+                (),
+                {
+                    "service_name": "account",
+                    "service": object(),
+                },
+            )(),
+            type(
+                "StubService",
+                (),
+                {
+                    "service_name": "users",
+                    "service": SuccessfulSdkService(),
+                },
+            )(),
+        ]
+
+        validate_services(manager)
+
+    def test_build_operator_uses_explicit_stdio_client(self):
+        tool = types.Tool(
+            name="users_list",
+            description="List users.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": False,
+            },
+        )
+        manager = ToolManager()
+        manager.tools_registry = {
+            "users_list": {
+                "definition": tool,
+                "service_name": "users",
+                "method_name": "list",
+                "parameter_types": {},
+            }
+        }
+        client = object()
+        seen = {}
+
+        def fake_execute(
+            tools_manager,
+            tool_name,
+            tool_arguments,
+            client=None,
+            target_project=None,
+            organization_id=None,
+        ):
+            seen["client"] = client
+            seen["target_project"] = target_project
+            seen["organization_id"] = organization_id
+            return [types.TextContent(type="text", text="ok")]
+
+        with patch("mcp_server_appwrite.server.execute_registered_tool", fake_execute):
+            operator = build_operator(manager, client=client)
+            result = operator.execute_public_tool(
+                "appwrite_call_tool",
+                {"tool_name": "users_list", "project_id": "ignored"},
+            )
+
+        self.assertEqual(result[0].text, "ok")
+        self.assertIs(seen["client"], client)
+        self.assertEqual(seen["target_project"], "ignored")
 
     def test_validate_services_logs_progress(self):
         class SuccessfulSdkService:

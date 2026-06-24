@@ -8,6 +8,7 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 8000
+      MCP_TRANSPORT: http
       APPWRITE_ENDPOINT: ${APPWRITE_ENDPOINT:-https://cloud.appwrite.io/v1}
       APPWRITE_PROJECT_ID: ${APPWRITE_PROJECT_ID:-console}
       MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-http://localhost:8000}

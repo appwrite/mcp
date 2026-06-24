@@ -6,16 +6,17 @@ mcp-name: io.github.appwrite/mcp
 
 A Model Context Protocol server for interacting with Appwrite's API. It provides tools to manage databases, users, functions, teams, and more within your Appwrite project.
 
-The server is a hosted [OAuth 2.1 Resource Server](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization) served over the MCP [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports) transport. It targets the Appwrite Cloud console project; users authenticate with that project's OAuth 2.1 authorization server, and no API keys are distributed to clients.
+Appwrite Cloud is available as a hosted [OAuth 2.1 Resource Server](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization) over MCP [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports). Self-hosted Appwrite instances use the local MCP `stdio` transport with an Appwrite project API key.
 
 ## Quick Links
-- [Connecting a client](#connecting-a-client)
-- [How authentication works](#how-authentication-works)
+- [Cloud hosted MCP](#cloud-hosted-mcp)
+- [Self-hosted stdio MCP](#self-hosted-stdio-mcp)
+- [How Cloud authentication works](#how-cloud-authentication-works)
 - [Tool surface](#tool-surface)
 - [Local development](#local-development)
 - [Debugging](#debugging)
 
-## Connecting a client
+## Cloud hosted MCP
 
 Add the server to any MCP client that supports remote (Streamable HTTP) servers by its URL:
 
@@ -38,7 +39,46 @@ For example, in a client that accepts a JSON server config:
 
 The first time you connect, the client opens an Appwrite consent screen in your browser. Approve the requested scopes and the client is connected — there are no keys to copy.
 
-## How authentication works
+## Self-hosted stdio MCP
+
+Self-hosted users should run the MCP server locally over stdio and authenticate with a project API key from their Appwrite Console.
+
+Create a project API key with the scopes you want the MCP server to use, then configure your MCP client with:
+
+```json
+{
+  "mcpServers": {
+    "appwrite": {
+      "command": "uvx",
+      "args": ["mcp-server-appwrite"],
+      "env": {
+        "APPWRITE_PROJECT_ID": "<YOUR_PROJECT_ID>",
+        "APPWRITE_API_KEY": "<YOUR_API_KEY>",
+        "APPWRITE_ENDPOINT": "https://<YOUR_APPWRITE_DOMAIN>/v1"
+      }
+    }
+  }
+}
+```
+
+For the local Appwrite development compose setup in `/Users/chiragaggarwal/Desktop/appwrite/appwrite`, the endpoint is typically:
+
+```text
+http://localhost:9501/v1
+```
+
+`stdio` is the default transport for the package command. You can also make it explicit:
+
+```bash
+APPWRITE_ENDPOINT=http://localhost:9501/v1 \
+APPWRITE_PROJECT_ID=<YOUR_PROJECT_ID> \
+APPWRITE_API_KEY=<YOUR_API_KEY> \
+uvx mcp-server-appwrite --transport stdio
+```
+
+The server validates the endpoint, project ID, API key, and at least one supported service during startup. If credentials or scopes are wrong, the MCP server fails before accepting tool calls.
+
+## How Cloud authentication works
 
 The MCP server validates the bearer access token on every request and forwards it to the Appwrite REST API, which accepts the OAuth2 access token directly. The flow (handled automatically by MCP-aware clients):
 
@@ -98,7 +138,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ### Run the server
 
-With Docker Compose:
+With Docker Compose, the server runs the hosted HTTP/OAuth transport:
 
 ```bash
 docker compose up --build
@@ -116,7 +156,16 @@ With `uv` directly:
 
 ```bash
 MCP_PUBLIC_URL=http://localhost:8000 APPWRITE_ENDPOINT=https://cloud.appwrite.io/v1 \
-  uv run mcp-server-appwrite
+  uv run mcp-server-appwrite --transport http
+```
+
+For local self-hosted stdio development, run with API-key credentials:
+
+```bash
+APPWRITE_ENDPOINT=http://localhost:9501/v1 \
+APPWRITE_PROJECT_ID=<YOUR_PROJECT_ID> \
+APPWRITE_API_KEY=<YOUR_API_KEY> \
+uv run mcp-server-appwrite
 ```
 
 ## Testing
@@ -144,6 +193,8 @@ npx @modelcontextprotocol/inspector
 ```
 
 Point it at `https://mcp.appwrite.io/mcp` and complete the OAuth flow when prompted.
+
+For self-hosted stdio debugging, start Inspector in stdio mode and use `uv run mcp-server-appwrite` as the command with the `APPWRITE_*` environment variables above.
 
 ## License
 
