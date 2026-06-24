@@ -2,14 +2,9 @@
 
 `appwrite_search_docs` runs semantic search over the Appwrite documentation
 entirely in-process (replacing the standalone docs MCP server). It needs no
-`project_id`.
-
-```mermaid
-flowchart LR
-    Q[Query] -->|embed via<br/>text-embedding-3-small| V[Query vector]
-    V -->|cosine similarity| I[(Prebuilt index<br/>docs_index.npz)]
-    I -->|rank ≥ MIN_SCORE| R[Top pages<br/>full content]
-```
+`project_id`. Each query is embedded with OpenAI's `text-embedding-3-small` model,
+matched against a prebuilt index by cosine similarity, and the top-ranked pages
+are returned with their full content.
 
 The index is a small committed artifact under `src/mcp_server_appwrite/data/`
 (`docs_index.npz` + `docs_index_meta.json`), shipped in the image. The tool
@@ -32,13 +27,8 @@ Re-run when the docs change, then commit the refreshed artifact:
 OPENAI_API_KEY=sk-... uv run python scripts/build_docs_index.py
 ```
 
-```mermaid
-flowchart LR
-    G[appwrite/website<br/>docs on GitHub] --> CH[Chunk each page]
-    CH --> EM[Embed chunks] --> ART[Write artifact<br/>data/]
-```
-
-Optional build env vars:
+The script pulls the docs from the `appwrite/website` repo, chunks each page,
+embeds the chunks, and writes the artifact to `data/`. Optional build env vars:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |

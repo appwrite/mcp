@@ -68,7 +68,7 @@ Run the MCP Inspector against a server:
 npx @modelcontextprotocol/inspector
 ```
 
-| Target | How |
-| --- | --- |
-| Hosted | Point at `https://mcp.appwrite.io/mcp`, complete the OAuth flow when prompted. |
-| Self-hosted stdio | Start Inspector in stdio mode; command = `uv run mcp-server-appwrite` with the `APPWRITE_*` env vars above. |
+To debug the hosted transport, point it at `https://mcp.appwrite.io/mcp` and
+complete the OAuth flow when prompted. For self-hosted, start the Inspector in
+stdio mode with `uv run mcp-server-appwrite` as the command and the `APPWRITE_*`
+env vars above.

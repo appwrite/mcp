@@ -40,9 +40,10 @@ flowchart LR
 
 ## Behavior
 
-| Concern | Rule |
-| --- | --- |
-| Large outputs | Stored as an MCP resource; returned as preview text + resource URI. |
-| Writes | Hidden mutating tools require `confirm_write=true`. |
-| Access control | Gated per-route by the scopes the OAuth token was granted — **not** by the catalog. |
-| Registration | Every service the installed SDK ships is registered automatically. |
+- **Large outputs** are stored as an MCP resource and returned as preview text
+  plus a resource URI.
+- **Writes** through hidden mutating tools require `confirm_write=true`.
+- **Access** is gated per-route by the scopes the OAuth token was granted, not by
+  the catalog.
+- **Registration** is automatic — every service the installed SDK ships becomes a
+  catalog entry.

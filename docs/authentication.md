@@ -33,12 +33,7 @@ sequenceDiagram
     S-->>C: Response
 ```
 
-## Standards in play
-
-| Step | Standard | Purpose |
-| --- | --- | --- |
-| Protected-resource metadata | RFC 9728 | Points the client at the auth server (`<APPWRITE_ENDPOINT>/oauth2/console`) and scopes |
-| Auth-server discovery | RFC 8414 / OIDC | Locates token & registration endpoints |
-| Dynamic client registration | RFC 7591 | Open `registration_endpoint` → no client ID/secret to pre-provision |
-| Authorization-code + PKCE | OAuth 2.1 | Secure token issuance for public clients |
-| Resource indicator | RFC 8707 | Binds token audience to this server |
+The key detail is that clients **self-register** — the auth server exposes an open
+`registration_endpoint` (RFC 7591), so there's no client ID or secret to
+pre-provision. Everything else is standard OAuth 2.1 + PKCE, with the RFC 8707
+resource indicator binding each token's audience to this server.

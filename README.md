@@ -1,10 +1,3 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="images/appwrite-logo-darkbg.png">
-    <img alt="Appwrite" src="images/appwrite-logo-lightbg.png" width="280">
-  </picture>
-</p>
-
 # Appwrite MCP server
 
 mcp-name: io.github.appwrite/mcp
