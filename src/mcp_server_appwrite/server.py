@@ -29,11 +29,12 @@ from mcp.server import Server
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 
+from .docs_search import DocsSearch
 from .operator import Operator
 from .service import Service
 from .tool_manager import ToolManager
 
-SERVER_VERSION = "0.6.0"
+SERVER_VERSION = "0.7.0"
 
 DEFAULT_ENDPOINT = "https://cloud.appwrite.io/v1"
 
@@ -609,6 +610,8 @@ def build_mcp_server(operator: Operator) -> Server:
         "projects), then pass its id as project_id to appwrite_call_tool. "
         "Organization-scoped console tools (e.g. creating a project) need organization_id. "
         "Mutating hidden tools require confirm_write=true. "
+        "For questions about Appwrite concepts, products, or guides, use "
+        "appwrite_search_docs to search the documentation (no project_id needed). "
         "Large results are stored as resources; read the URI returned by the tool."
     )
 
@@ -644,7 +647,19 @@ def build_mcp_server(operator: Operator) -> Server:
 
 def build_operator(tools_manager: ToolManager) -> Operator:
     """Wire the operator surface to the per-request execution path. The execution
-    callback re-binds each call to a per-request client via `resolve_client`."""
+    callback re-binds each call to a per-request client via `resolve_client`.
+
+    The docs-search tool is wired in only when its committed index and an
+    OPENAI_API_KEY are both available; otherwise the server boots without it."""
+    docs_search = DocsSearch()
+    if docs_search.available:
+        _log_startup("Documentation search enabled (appwrite_search_docs)")
+    else:
+        _log_startup(
+            "Documentation search disabled: docs index or OPENAI_API_KEY not configured"
+        )
+        docs_search = None
+
     return Operator(
         tools_manager,
         lambda tool_name, tool_arguments, target_project=None, organization_id=None: execute_registered_tool(
@@ -654,6 +669,7 @@ def build_operator(tools_manager: ToolManager) -> Operator:
             target_project=target_project,
             organization_id=organization_id,
         ),
+        docs_search=docs_search,
     )
 
 
@@ -665,6 +681,17 @@ def build_catalog_tools_manager() -> ToolManager:
 
 def main():
     """Entry point: serve the Streamable-HTTP + OAuth resource server."""
+    # Load .env early so env-driven config (APPWRITE_ENDPOINT, MCP_PUBLIC_URL,
+    # OPENAI_API_KEY for docs search) is available before the app is built. In
+    # production these are injected directly into the environment.
+    cwd_dotenv = Path.cwd() / ".env"
+    if cwd_dotenv.exists():
+        load_dotenv(dotenv_path=cwd_dotenv)
+    else:
+        discovered_dotenv = find_dotenv(usecwd=True)
+        if discovered_dotenv:
+            load_dotenv(dotenv_path=discovered_dotenv)
+
     args = parse_args()
     from .http_app import run_http
 

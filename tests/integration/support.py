@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from mcp_server_appwrite.docs_search import DocsSearch
 from mcp_server_appwrite.operator import Operator
 from mcp_server_appwrite.server import (
     build_client,
@@ -49,6 +50,8 @@ class LiveSurfaceRunner:
     def __init__(self):
         self.client = build_client()
         self.manager = register_services(self.client)
+        docs_search = DocsSearch()
+        self.docs_available = docs_search.available
         self.runtime = Operator(
             self.manager,
             lambda tool_name, arguments, *_: execute_registered_tool(
@@ -57,9 +60,15 @@ class LiveSurfaceRunner:
                 arguments,
                 self.client,
             ),
+            docs_search=docs_search if self.docs_available else None,
         )
         self.tool_outcomes: dict[str, ToolOutcome] = {}
         self.public_outcomes: list[ToolOutcome] = []
+
+    @property
+    def expected_public_outcomes(self) -> int:
+        """Number of public-surface calls run_public_smoke records."""
+        return 4 if self.docs_available else 3
 
     def _invoke(self, tool_name: str, arguments: dict[str, Any] | None = None) -> Any:
         last_exc: Exception | None = None
@@ -257,6 +266,21 @@ class LiveSurfaceRunner:
             raise RuntimeError(
                 "confirm_write guard unexpectedly allowed a mutating call"
             )
+
+        if not self.docs_available:
+            return
+
+        try:
+            docs = self.runtime.execute_public_tool(
+                "appwrite_search_docs",
+                {"query": "create a database collection"},
+            )
+            self._register_public(
+                "appwrite_search_docs", "success", str(docs[0].text[:200])
+            )
+        except Exception as exc:  # pragma: no cover - exercised live
+            self._register_public("appwrite_search_docs", "unexpected_error", str(exc))
+            raise
 
 
 class LiveIntegrationTestCase(unittest.TestCase):

@@ -11,6 +11,7 @@ from uuid import uuid4
 import mcp.types as types
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 
+from .docs_search import DocsSearch
 from .tool_manager import ToolManager
 
 SEARCH_LIMIT = 8
@@ -97,11 +98,13 @@ class Operator:
         tools_manager: ToolManager,
         execute_tool: ToolExecutor,
         *,
+        docs_search: DocsSearch | None = None,
         preview_threshold: int = PREVIEW_THRESHOLD,
         search_limit: int = SEARCH_LIMIT,
     ):
         self._tools_manager = tools_manager
         self._execute_tool = execute_tool
+        self._docs_search = docs_search
         self._preview_threshold = preview_threshold
         self._search_limit = search_limit
         self._result_store = ResultStore()
@@ -113,7 +116,7 @@ class Operator:
         return CATALOG_URI
 
     def get_public_tools(self) -> list[types.Tool]:
-        return [
+        tools = [
             types.Tool(
                 name="appwrite_search_tools",
                 description=(
@@ -201,8 +204,16 @@ class Operator:
             ),
         ]
 
+        if self._docs_search is not None:
+            tools.append(self._docs_search.get_tool())
+
+        return tools
+
     def has_public_tool(self, name: str) -> bool:
-        return name in {"appwrite_search_tools", "appwrite_call_tool"}
+        names = {"appwrite_search_tools", "appwrite_call_tool"}
+        if self._docs_search is not None:
+            names.add(self._docs_search.get_tool().name)
+        return name in names
 
     def execute_public_tool(
         self, name: str, arguments: dict[str, Any] | None
@@ -211,6 +222,9 @@ class Operator:
             return self._search_tools(arguments or {})
         if name == "appwrite_call_tool":
             return self._call_hidden_tool(arguments or {})
+        if self._docs_search is not None and name == self._docs_search.get_tool().name:
+            content = self._docs_search.search(arguments or {})
+            return self._preview_or_store_result(name, content)
         raise ValueError(f"Unknown public Appwrite tool {name}")
 
     def list_resources(self) -> list[types.Resource]:

@@ -52,13 +52,36 @@ The MCP server validates the bearer access token on every request and forwards i
 
 The server starts in a compact workflow so the MCP client only sees a small operator-style surface while the full Appwrite catalog stays internal.
 
-- Only 2 MCP tools are exposed to the model:
+- Up to 3 MCP tools are exposed to the model:
   - `appwrite_search_tools`
   - `appwrite_call_tool`
+  - `appwrite_search_docs` — semantic search over the Appwrite documentation (only registered when the docs index and `OPENAI_API_KEY` are present; see [Documentation search](#documentation-search)).
 - The full Appwrite tool catalog stays internal and is searched at runtime.
 - Large tool outputs are stored as MCP resources and returned as preview text plus a resource URI.
 - Mutating hidden tools require `confirm_write=true`.
 - Every Appwrite service the installed SDK ships is registered automatically — 25 in total, each becoming a tool-name prefix: `account`, `activities`, `advisor`, `apps`, `avatars`, `backups`, `databases`, `functions`, `graphql`, `health`, `locale`, `messaging`, `oauth2`, `organization`, `presences`, `project`, `proxy`, `sites`, `storage`, `tables_db`, `teams`, `tokens`, `usage`, `users`, and `webhooks`. Which ones a given user can actually call is gated by the scopes their OAuth token was granted (enforced per-route by the Appwrite API), not by the catalog.
+
+## Documentation search
+
+`appwrite_search_docs` runs semantic search over the Appwrite documentation entirely in-process, replacing the standalone docs MCP server. It embeds the query with OpenAI `text-embedding-3-small` and ranks a prebuilt index of doc pages by cosine similarity, returning the most relevant pages with their full content. It needs no `project_id`.
+
+The index is a small artifact committed under `src/mcp_server_appwrite/data/` (`docs_index.npz` + `docs_index_meta.json`) and shipped in the image. The tool is registered only when both the artifact and `OPENAI_API_KEY` are available; otherwise the server boots without it.
+
+### Runtime configuration
+
+- `OPENAI_API_KEY` — required to embed incoming queries (one OpenAI call per search).
+- `DOCS_SEARCH_MIN_SCORE` — minimum cosine score for a match (default `0.25`).
+- `DOCS_SEARCH_LIMIT` — default maximum pages returned (default `5`, max `10`).
+
+### Rebuilding the index
+
+Re-run the build script when the docs change and commit the refreshed artifact:
+
+```bash
+OPENAI_API_KEY=sk-... uv run python scripts/build_docs_index.py
+```
+
+It downloads `appwrite/website` docs from GitHub, chunks each page, embeds the chunks, and writes the artifact. Optional env vars: `DOCS_WEBSITE_REF` (git ref, default `main`), `DOCS_EMBED_BATCH` (default `100`).
 
 ## Local development
 
