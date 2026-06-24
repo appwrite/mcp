@@ -1,15 +1,14 @@
 """In-process semantic search over the Appwrite documentation.
 
-This reproduces the capability of the standalone ``mcp-for-docs`` server inside
-this hosted MCP. The heavy lifting (downloading docs, chunking, embedding) happens
-ahead of time in ``scripts/build_docs_index.py``; the result is a small artifact
-committed under ``data/`` and loaded here at startup.
+The heavy lifting (downloading docs, chunking, embedding) happens ahead of time
+in ``scripts/build_docs_index.py``; the result is a small artifact committed
+under ``data/`` and loaded here at startup.
 
 At query time we embed the user's query with the same OpenAI model used to build
 the index (``text-embedding-3-small``) and rank the indexed chunks by cosine
 similarity. Vectors are L2-normalized at build time, so cosine similarity is a
-plain dot product. Matching chunks are deduped to their source page (mirroring the
-original ``mcp-for-docs`` ``search`` tool) and the full page content is returned.
+plain dot product. Matching chunks are deduped to their source page and the full
+page content is returned.
 """
 
 from __future__ import annotations
@@ -185,7 +184,7 @@ class DocsSearch:
 
         scores = self._vectors @ embedding  # cosine similarity (both normalized)
 
-        # Mirror mcp-for-docs: take the top `limit` chunks, then dedupe to pages.
+        # Take the top `limit` chunks, then dedupe to pages.
         top_indices = np.argsort(-scores)[:limit]
 
         results: list[dict[str, Any]] = []

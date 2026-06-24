@@ -1,9 +1,8 @@
 """Build the committed semantic-search index for the Appwrite documentation.
 
-This is the Python port of ``mcp-for-docs``'s download + init-vector-store pipeline.
-It downloads the Appwrite docs from GitHub, chunks each page's markdown, embeds the
-chunks with OpenAI ``text-embedding-3-small``, and writes a small artifact that the
-running server loads at startup (see ``mcp_server_appwrite/docs_search.py``).
+This downloads the Appwrite docs from GitHub, chunks each page's markdown, embeds
+the chunks with OpenAI ``text-embedding-3-small``, and writes a small artifact
+that the running server loads at startup (see ``mcp_server_appwrite/docs_search.py``).
 
 Run this when the docs change and commit the refreshed artifact:
 
@@ -74,7 +73,6 @@ def download_docs(ref: str) -> dict[str, str]:
             if fileobj is None:
                 continue
             text = fileobj.read().decode("utf-8", errors="replace")
-            # webPath mirrors mcp-for-docs: "docs/<...>" with "/+page.markdoc" stripped.
             inner = repo_relative[len(DOCS_SUBDIR) + 1 :]  # strip "src/routes/docs/"
             web_path = ("docs/" + inner).replace("/+page.markdoc", "")
             pages[web_path] = text
