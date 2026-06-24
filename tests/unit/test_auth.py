@@ -42,11 +42,15 @@ class AuthHelperTests(unittest.TestCase):
 
     def test_supported_scopes_uses_cache_without_network(self):
         pid = auth.configured_project_id()
-        auth._scopes_cache[pid] = ["rows.read", "rows.write"]
+        auth._discovery_cache[pid] = {
+            "issuer": "https://fra.cloud.appwrite.io/v1/oauth2/console",
+            "jwks_uri": "https://fra.cloud.appwrite.io/v1/oauth2/console/.well-known/jwks.json",
+            "scopes_supported": ["rows.read", "rows.write"],
+        }
         try:
             scopes = asyncio.run(auth.supported_scopes())
         finally:
-            auth._scopes_cache.pop(pid, None)
+            auth._discovery_cache.pop(pid, None)
         self.assertEqual(scopes, ["rows.read", "rows.write"])
 
     def test_supported_scopes_reads_dcr_enabled_discovery(self):
@@ -57,6 +61,7 @@ class AuthHelperTests(unittest.TestCase):
         # without a network round-trip.
         discovery = {
             "issuer": "https://cloud.appwrite.io/v1/oauth2/console",
+            "jwks_uri": "https://cloud.appwrite.io/v1/oauth2/console/.well-known/jwks.json",
             "registration_endpoint": "https://cloud.appwrite.io/v1/oauth2/console/register",
             "scopes_supported": ["users.read", "rows.write"],
         }
@@ -87,7 +92,7 @@ class AuthHelperTests(unittest.TestCase):
             try:
                 scopes = asyncio.run(auth.supported_scopes())
             finally:
-                auth._scopes_cache.pop("console", None)
+                auth._discovery_cache.pop("console", None)
 
         self.assertEqual(scopes, ["users.read", "rows.write"])
         # Discovery is read from the OIDC well-known path under the served project's issuer.
@@ -114,7 +119,7 @@ class AuthHelperTests(unittest.TestCase):
         ):
             with self.assertRaises(Exception):
                 asyncio.run(auth.supported_scopes())
-        self.assertNotIn("unreachableproj", auth._scopes_cache)
+        self.assertNotIn("unreachableproj", auth._discovery_cache)
 
     def test_project_id_from_issuer_accepts_matching_issuer(self):
         self.assertEqual(
@@ -122,14 +127,40 @@ class AuthHelperTests(unittest.TestCase):
             "abc123",
         )
 
+    def test_project_id_from_issuer_accepts_cloud_regional_issuer(self):
+        self.assertEqual(
+            auth.project_id_from_issuer(
+                "https://fra.cloud.appwrite.io/v1/oauth2/abc123"
+            ),
+            "abc123",
+        )
+
     def test_project_id_from_issuer_rejects_foreign_issuer(self):
-        self.assertIsNone(
-            auth.project_id_from_issuer("https://evil.example.com/v1/oauth2/abc123")
+        self.assertEqual(
+            auth.project_id_from_issuer("https://evil.example.com/v1/oauth2/abc123"),
+            "abc123",
         )
         self.assertIsNone(auth.project_id_from_issuer(None))
         # Extra path segments are not a valid single project id.
         self.assertIsNone(
             auth.project_id_from_issuer("https://cloud.appwrite.io/v1/oauth2/abc/extra")
+        )
+
+    def test_protected_resource_metadata_uses_discovered_issuer(self):
+        pid = auth.configured_project_id()
+        auth._discovery_cache[pid] = {
+            "issuer": "https://fra.cloud.appwrite.io/v1/oauth2/console",
+            "jwks_uri": "https://fra.cloud.appwrite.io/v1/oauth2/console/.well-known/jwks.json",
+            "scopes_supported": ["users.read"],
+        }
+        try:
+            meta = asyncio.run(auth.protected_resource_metadata())
+        finally:
+            auth._discovery_cache.pop(pid, None)
+
+        self.assertEqual(
+            meta["authorization_servers"],
+            ["https://fra.cloud.appwrite.io/v1/oauth2/console"],
         )
 
 
@@ -166,6 +197,23 @@ class AudienceTests(unittest.TestCase):
             algorithm="HS256",
         )
         self.assertIsNone(self.verifier._verify_sync(token))
+
+    def test_verify_rejects_token_with_undiscovered_issuer(self):
+        pid = auth.configured_project_id()
+        auth._discovery_cache[pid] = {
+            "issuer": "https://fra.cloud.appwrite.io/v1/oauth2/console",
+            "jwks_uri": "https://fra.cloud.appwrite.io/v1/oauth2/console/.well-known/jwks.json",
+            "scopes_supported": ["users.read"],
+        }
+        token = jwt.encode(
+            {"iss": "https://cloud.appwrite.io/v1/oauth2/console"},
+            "x" * 32,
+            algorithm="HS256",
+        )
+        try:
+            self.assertIsNone(self.verifier._verify_sync(token))
+        finally:
+            auth._discovery_cache.pop(pid, None)
 
 
 if __name__ == "__main__":

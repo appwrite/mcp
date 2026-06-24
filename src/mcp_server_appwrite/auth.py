@@ -70,7 +70,51 @@ def resource_metadata_url() -> str:
 # Cache of scopes_supported, keyed by served project id (process lifetime; the
 # project OAuth config is effectively static). Failed lookups raise and are not
 # cached, so they retry.
-_scopes_cache: dict[str, list[str]] = {}
+_discovery_cache: dict[str, dict] = {}
+
+
+def discovery_url() -> str:
+    return f"{issuer_url()}/.well-known/openid-configuration"
+
+
+def _validate_discovery(doc: dict, url: str) -> dict:
+    issuer = doc.get("issuer")
+    jwks_uri = doc.get("jwks_uri")
+    if not isinstance(issuer, str) or not issuer:
+        raise ValueError(f"authorization server discovery missing issuer: {url}")
+    if not isinstance(jwks_uri, str) or not jwks_uri:
+        raise ValueError(f"authorization server discovery missing jwks_uri: {url}")
+    return doc
+
+
+async def authorization_server_metadata() -> dict:
+    project_id = configured_project_id()
+    cached = _discovery_cache.get(project_id)
+    if cached is not None:
+        return cached
+
+    url = discovery_url()
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        metadata = _validate_discovery(resp.json(), url)
+
+    _discovery_cache[project_id] = metadata
+    return metadata
+
+
+def authorization_server_metadata_sync() -> dict:
+    project_id = configured_project_id()
+    cached = _discovery_cache.get(project_id)
+    if cached is not None:
+        return cached
+
+    url = discovery_url()
+    resp = httpx.get(url, timeout=10.0, follow_redirects=True)
+    resp.raise_for_status()
+    metadata = _validate_discovery(resp.json(), url)
+    _discovery_cache[project_id] = metadata
+    return metadata
 
 
 async def supported_scopes() -> list[str]:
@@ -79,30 +123,20 @@ async def supported_scopes() -> list[str]:
     exactly the set the project's OAuth server will grant, so it never drifts from
     the tool surface. Raises if discovery is unreachable or malformed (the
     authorization server is the same Appwrite deployment this MCP depends on)."""
-    project_id = configured_project_id()
-    cached = _scopes_cache.get(project_id)
-    if cached is not None:
-        return cached
-
-    url = f"{issuer_url()}/.well-known/openid-configuration"
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        scopes = resp.json().get("scopes_supported")
+    metadata = await authorization_server_metadata()
+    scopes = metadata.get("scopes_supported")
     if not isinstance(scopes, list):
         raise ValueError(
-            f"authorization server discovery missing scopes_supported: {url}"
+            f"authorization server discovery missing scopes_supported: {discovery_url()}"
         )
-
-    _scopes_cache[project_id] = scopes
     return scopes
 
 
-def build_resource_metadata(scopes: list[str]) -> dict:
+def build_resource_metadata(scopes: list[str], authorization_servers=None) -> dict:
     """RFC 9728 Protected Resource Metadata document."""
     return {
         "resource": canonical_resource(),
-        "authorization_servers": [issuer_url()],
+        "authorization_servers": authorization_servers or [issuer_url()],
         "scopes_supported": scopes,
         "bearer_methods_supported": ["header"],
     }
@@ -110,18 +144,29 @@ def build_resource_metadata(scopes: list[str]) -> dict:
 
 async def protected_resource_metadata() -> dict:
     """RFC 9728 Protected Resource Metadata, with scopes sourced from AS discovery."""
-    return build_resource_metadata(await supported_scopes())
+    metadata = await authorization_server_metadata()
+    scopes = metadata.get("scopes_supported")
+    if not isinstance(scopes, list):
+        raise ValueError(
+            f"authorization server discovery missing scopes_supported: {discovery_url()}"
+        )
+    return build_resource_metadata(scopes, [metadata["issuer"]])
 
 
 def project_id_from_issuer(iss: str | None) -> str | None:
-    """Extract and validate the project ID from a token's ``iss`` claim. Returns
-    None unless the issuer matches this server's configured Appwrite OAuth base."""
-    if not iss:
+    """Extract the project ID from an Appwrite OAuth issuer."""
+    if not isinstance(iss, str) or not iss:
         return None
-    prefix = f"{appwrite_endpoint()}/oauth2/"
-    if not iss.startswith(prefix):
+    issuer = urlsplit(iss)
+    endpoint = urlsplit(appwrite_endpoint())
+    if issuer.scheme != endpoint.scheme:
         return None
-    project_id = iss[len(prefix) :].strip("/")
+    endpoint_path = endpoint.path.rstrip("/")
+    prefix = f"{endpoint_path}/oauth2/" if endpoint_path else "/oauth2/"
+    issuer_path = issuer.path.rstrip("/")
+    if not issuer_path.startswith(prefix):
+        return None
+    project_id = issuer_path[len(prefix) :].strip("/")
     # Project IDs are a single path segment.
     if not project_id or "/" in project_id:
         return None
@@ -142,14 +187,11 @@ class AppwriteTokenVerifier(TokenVerifier):
         # only the served project's client is ever created.
         self._jwks_clients: dict[str, PyJWKClient] = {}
 
-    def _jwks_client(self, project_id: str) -> PyJWKClient:
-        client = self._jwks_clients.get(project_id)
+    def _jwks_client(self, issuer: str, jwks_uri: str) -> PyJWKClient:
+        client = self._jwks_clients.get(issuer)
         if client is None:
-            jwks_uri = (
-                f"{appwrite_endpoint()}/oauth2/{project_id}/.well-known/jwks.json"
-            )
             client = PyJWKClient(jwks_uri)
-            self._jwks_clients[project_id] = client
+            self._jwks_clients[issuer] = client
         return client
 
     def _verify_sync(self, token: str) -> AccessToken | None:
@@ -158,9 +200,24 @@ class AppwriteTokenVerifier(TokenVerifier):
         except jwt.PyJWTError:
             return None
 
-        project_id = project_id_from_issuer(unverified.get("iss"))
+        issuer = unverified.get("iss")
+        try:
+            metadata = authorization_server_metadata_sync()
+        except Exception as exc:
+            _log(f"Rejecting token: authorization server discovery failed ({exc}).")
+            return None
+
+        expected_issuer = metadata["issuer"]
+        if issuer != expected_issuer:
+            _log(
+                f"Rejecting token: issuer {issuer!r} does not match discovered "
+                f"issuer {expected_issuer!r}."
+            )
+            return None
+
+        project_id = project_id_from_issuer(issuer)
         if not project_id:
-            _log("Rejecting token: issuer does not match this Appwrite endpoint.")
+            _log("Rejecting token: issuer is not an Appwrite OAuth issuer.")
             return None
         if project_id != configured_project_id():
             _log(
@@ -170,7 +227,9 @@ class AppwriteTokenVerifier(TokenVerifier):
             return None
 
         try:
-            signing_key = self._jwks_client(project_id).get_signing_key_from_jwt(token)
+            signing_key = self._jwks_client(
+                expected_issuer, metadata["jwks_uri"]
+            ).get_signing_key_from_jwt(token)
             claims = jwt.decode(
                 token,
                 signing_key.key,
