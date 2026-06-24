@@ -173,6 +173,21 @@ class OperatorTests(unittest.TestCase):
         self.assertIn('"mode": "api_key_project"', result[0].text)
         self.assertIn('"$id": "project-1"', result[0].text)
 
+    def test_get_context_returns_large_payload_inline(self):
+        runtime = Operator(
+            ToolManager(),
+            lambda name, arguments, *_: [],
+            context_provider=lambda arguments: {
+                "connection": {"mode": "api_key_project"},
+                "projects": [{"$id": "project-1", "description": "x" * 1200}],
+            },
+        )
+
+        result = runtime.execute_public_tool("appwrite_get_context", {})
+
+        self.assertNotIn("appwrite://operator/results/", result[0].text)
+        self.assertIn("x" * 1200, result[0].text)
+
     def test_search_tools_infers_mutating_search_for_create_query(self):
         runtime = self.make_runtime(lambda name, arguments, *_: [])
 

@@ -269,10 +269,7 @@ class Operator:
         if self._context_provider is None:
             raise RuntimeError("Appwrite context provider is not configured.")
         context = self._context_provider(arguments)
-        return self._preview_or_store_result(
-            "appwrite_get_context",
-            [types.TextContent(type="text", text=json.dumps(context, indent=2))],
-        )
+        return [types.TextContent(type="text", text=json.dumps(context, indent=2))]
 
     def list_resources(self) -> list[types.Resource]:
         resources = [
