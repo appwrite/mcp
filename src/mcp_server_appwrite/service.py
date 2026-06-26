@@ -45,14 +45,18 @@ class Service:
             "oneOf": [
                 {
                     "type": "string",
-                    "description": "Path to a local file on the machine running the MCP server.",
+                    "description": "A public http(s) URL the server downloads the file from, or a local file path (paths only work when the server runs locally).",
                 },
                 {
                     "type": "object",
                     "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "Public http(s) URL the server downloads the file from. Preferred for images and any non-trivial file on the hosted server.",
+                        },
                         "path": {
                             "type": "string",
-                            "description": "Path to a local file on the machine running the MCP server.",
+                            "description": "Path to a local file. Only works when the server runs locally; on the hosted server use `url` instead.",
                         },
                         "filename": {
                             "type": "string",
