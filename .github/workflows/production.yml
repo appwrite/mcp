@@ -21,7 +21,7 @@ env:
   REGISTRY_GITHUB: ghcr.io
   REGISTRY_DOCKERHUB: docker.io
   IMAGE_NAME: appwrite/mcp
-  TAG: ${{ github.event.release.tag_name || github.sha }}
+  TAG: ${{ github.event.release.tag_name }}
 
 jobs:
   build:
