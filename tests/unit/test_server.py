@@ -11,8 +11,10 @@ import mcp.types as types
 from appwrite.enums.browser import Browser
 from appwrite.input_file import InputFile
 
+from mcp_server_appwrite import server as server_module
 from mcp_server_appwrite.server import (
     _coerce_argument,
+    _configure_uploads,
     _format_tool_result,
     _prepare_arguments,
     _validate_service,
@@ -24,6 +26,45 @@ from mcp_server_appwrite.server import (
     validate_services,
 )
 from mcp_server_appwrite.tool_manager import ToolManager
+
+
+class _FakeResponse:
+    def __init__(self, *, data=b"", headers=None, url="https://example.com/pic.png"):
+        self._data = data
+        self.headers = headers or {}
+        self.url = url
+
+    def raise_for_status(self):
+        return None
+
+    def iter_bytes(self):
+        for index in range(0, len(self._data), 64):
+            yield self._data[index : index + 64]
+
+
+class _FakeStream:
+    def __init__(self, response):
+        self._response = response
+
+    def __enter__(self):
+        return self._response
+
+    def __exit__(self, *args):
+        return False
+
+
+class _FakeClient:
+    def __init__(self, response):
+        self._response = response
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def stream(self, method, url):
+        return _FakeStream(self._response)
 
 
 class ServerHelperTests(unittest.TestCase):
@@ -455,6 +496,123 @@ class ServerHelperTests(unittest.TestCase):
         ):
             with self.assertRaises(SystemExit):
                 parse_args()
+
+
+_PUBLIC_ADDRINFO = [(None, None, None, None, ("93.184.216.34", 80))]
+
+
+class UploadInputFileTests(unittest.TestCase):
+    """File-upload coercion: URL fetch, SSRF guard, size caps, transport gating."""
+
+    def setUp(self):
+        _configure_uploads("http")
+
+    def tearDown(self):
+        _configure_uploads("stdio")
+
+    def _patch_fetch(self, response, addrinfo=_PUBLIC_ADDRINFO):
+        return (
+            patch(
+                "mcp_server_appwrite.server.socket.getaddrinfo", return_value=addrinfo
+            ),
+            patch(
+                "mcp_server_appwrite.server.httpx.Client",
+                return_value=_FakeClient(response),
+            ),
+        )
+
+    def test_url_object_uses_content_disposition_filename(self):
+        response = _FakeResponse(
+            data=b"\x89PNG\r\n",
+            headers={
+                "content-type": "image/png",
+                "content-disposition": 'attachment; filename="pic.png"',
+            },
+        )
+        addr, client = self._patch_fetch(response)
+        with addr, client:
+            coerced = _coerce_argument(
+                "file", {"url": "https://example.com/x"}, InputFile
+            )
+
+        self.assertEqual(coerced.source_type, "bytes")
+        self.assertEqual(coerced.data, b"\x89PNG\r\n")
+        self.assertEqual(coerced.filename, "pic.png")
+        self.assertEqual(coerced.mime_type, "image/png")
+
+    def test_bare_url_string_derives_filename_from_path(self):
+        response = _FakeResponse(data=b"abc", headers={"content-type": "image/png"})
+        addr, client = self._patch_fetch(response)
+        with addr, client:
+            coerced = _coerce_argument(
+                "file", "https://example.com/dir/a.png", InputFile
+            )
+
+        self.assertEqual(coerced.source_type, "bytes")
+        self.assertEqual(coerced.filename, "a.png")
+
+    def test_url_fetch_rejects_private_ip(self):
+        response = _FakeResponse(data=b"secret")
+        for ip in ("127.0.0.1", "169.254.169.254", "10.0.0.1"):
+            with self.subTest(ip=ip):
+                addr, client = self._patch_fetch(
+                    response, addrinfo=[(None, None, None, None, (ip, 80))]
+                )
+                with addr, client as client_mock:
+                    with self.assertRaises(ValueError) as ctx:
+                        _coerce_argument(
+                            "file", {"url": "https://evil.example/x"}, InputFile
+                        )
+                self.assertIn("private", str(ctx.exception).lower())
+                client_mock.assert_not_called()
+
+    def test_url_fetch_rejects_non_http_scheme(self):
+        with self.assertRaises(ValueError) as ctx:
+            _coerce_argument("file", {"url": "file:///etc/passwd"}, InputFile)
+        self.assertIn("scheme", str(ctx.exception).lower())
+
+    def test_url_fetch_size_cap_via_stream(self):
+        response = _FakeResponse(data=b"0123456789")  # 10 bytes, no content-length
+        addr, client = self._patch_fetch(response)
+        with addr, client, patch.object(server_module, "_MAX_FETCH_BYTES", 4):
+            with self.assertRaises(ValueError) as ctx:
+                _coerce_argument("file", {"url": "https://example.com/x"}, InputFile)
+        self.assertIn("max", str(ctx.exception).lower())
+
+    def test_inline_content_size_cap(self):
+        with patch.object(server_module, "_MAX_INLINE_BYTES", 4):
+            with self.assertRaises(ValueError) as ctx:
+                _coerce_argument(
+                    "file",
+                    {
+                        "filename": "big.bin",
+                        "content": base64.b64encode(b"hello").decode("ascii"),
+                        "encoding": "base64",
+                    },
+                    InputFile,
+                )
+        self.assertIn("url", str(ctx.exception).lower())
+
+    def test_path_string_rejected_on_http(self):
+        with self.assertRaises(ValueError) as ctx:
+            _coerce_argument("file", "/home/me/pic.png", InputFile)
+        message = str(ctx.exception)
+        self.assertIn("url", message.lower())
+        self.assertNotIn("stdio", message.lower())
+        self.assertNotIn("self-host", message.lower())
+
+    def test_path_string_allowed_on_stdio(self):
+        _configure_uploads("stdio")
+        with tempfile.NamedTemporaryFile(suffix=".txt") as handle:
+            coerced = _coerce_argument("file", handle.name, InputFile)
+        self.assertEqual(coerced.source_type, "path")
+
+    def test_http_instructions_mention_url_upload(self):
+        http = build_instructions("http")
+        stdio = build_instructions("stdio")
+        self.assertIn("url", http.lower())
+        self.assertIn("upload", http.lower())
+        self.assertNotIn("upload", stdio.lower())
 
 
 if __name__ == "__main__":
