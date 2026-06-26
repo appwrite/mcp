@@ -43,7 +43,7 @@ from .operator import Operator
 from .service import Service
 from .tool_manager import ToolManager
 
-SERVER_VERSION = "0.7.0"
+SERVER_VERSION = "0.7.1"
 
 DEFAULT_ENDPOINT = "https://cloud.appwrite.io/v1"
 DEFAULT_TRANSPORT = "stdio"
