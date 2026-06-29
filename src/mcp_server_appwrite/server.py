@@ -45,7 +45,7 @@ from .operator import CATALOG_URI, Operator, _parse_tool_name
 from .service import Service
 from .tool_manager import ToolManager
 
-SERVER_VERSION = "0.8.0"
+SERVER_VERSION = "0.8.1"
 
 DEFAULT_ENDPOINT = "https://cloud.appwrite.io/v1"
 DEFAULT_TRANSPORT = "stdio"
