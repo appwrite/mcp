@@ -20,9 +20,10 @@ Design notes:
 
 Configuration (env):
 
-* ``OTEL_EXPORTER_OTLP_ENDPOINT`` / ``OTEL_EXPORTER_OTLP_HEADERS`` — standard OTel.
-* ``_APP_TELEMETRY_OTLP_ENDPOINT`` / ``_APP_TELEMETRY_OTLP_HEADERS`` — cloud-style
-  aliases, accepted for parity with the PHP services and existing deploy config.
+* ``OTEL_EXPORTER_OTLP_ENDPOINT`` — OTLP/HTTP endpoint; setting it enables export.
+* ``OTEL_EXPORTER_OTLP_HEADERS`` — export headers. If unset, it is assembled from
+  ``CF_ACCESS_CLIENT_ID`` + ``CF_ACCESS_CLIENT_SECRET`` (the shared Cloudflare
+  Access service-token secret) so the deployment passes those two vars directly.
 * ``OTEL_SERVICE_NAME`` / ``OTEL_RESOURCE_ATTRIBUTES`` — picked up by the SDK to set
   ``service.name`` and ``deployment.environment`` / ``deployment.region`` etc., so
   the existing Grafana dashboards' label filters apply unchanged.
@@ -64,9 +65,22 @@ def is_enabled() -> bool:
 
 
 def _resolve_endpoint() -> str | None:
-    return os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT") or os.getenv(
-        "_APP_TELEMETRY_OTLP_ENDPOINT"
-    )
+    return os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+
+
+def _ensure_otlp_headers_env() -> None:
+    """Assemble ``OTEL_EXPORTER_OTLP_HEADERS`` (a single string the SDK reads) from
+    the two Cloudflare Access service-token vars, so the deployment can pass
+    ``CF_ACCESS_CLIENT_ID`` + ``CF_ACCESS_CLIENT_SECRET`` directly and reuse the
+    shared ``telemetry-auth`` secret. A pre-set header value wins."""
+    if os.getenv("OTEL_EXPORTER_OTLP_HEADERS"):
+        return
+    cf_id = os.getenv("CF_ACCESS_CLIENT_ID")
+    cf_secret = os.getenv("CF_ACCESS_CLIENT_SECRET")
+    if cf_id and cf_secret:
+        os.environ["OTEL_EXPORTER_OTLP_HEADERS"] = (
+            f"CF-Access-Client-Id={cf_id},CF-Access-Client-Secret={cf_secret}"
+        )
 
 
 def init_telemetry(transport: str, version: str) -> bool:
@@ -97,12 +111,8 @@ def init_telemetry(transport: str, version: str) -> bool:
             from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
             from opentelemetry.sdk.resources import Resource
 
-            # Map the cloud-style aliases onto the standard OTel env vars the SDK
-            # reads, without clobbering an explicit standard setting.
             os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint)
-            alias_headers = os.getenv("_APP_TELEMETRY_OTLP_HEADERS")
-            if alias_headers and not os.getenv("OTEL_EXPORTER_OTLP_HEADERS"):
-                os.environ["OTEL_EXPORTER_OTLP_HEADERS"] = alias_headers
+            _ensure_otlp_headers_env()
 
             # Resource.create() merges OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES
             # from the environment over these defaults.

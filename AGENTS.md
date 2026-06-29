@@ -46,9 +46,12 @@ the operator/handler/auth boundaries.
 * **Hosted-only & no-op by default.** Telemetry is enabled only when the transport
   is `http` *and* an OTLP endpoint is set. The self-hosted `stdio` transport never
   emits, and an unconfigured hosted server is a silent no-op.
-* **Config (env):** `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_HEADERS`
-  (standard OTel), or the cloud-style aliases `_APP_TELEMETRY_OTLP_ENDPOINT` /
-  `_APP_TELEMETRY_OTLP_HEADERS`. Set `OTEL_RESOURCE_ATTRIBUTES` to carry
+* **Config (env):** `OTEL_EXPORTER_OTLP_ENDPOINT` enables export. Headers come from
+  `OTEL_EXPORTER_OTLP_HEADERS`, or — if that is unset — are assembled from
+  `CF_ACCESS_CLIENT_ID` + `CF_ACCESS_CLIENT_SECRET` (the shared `telemetry-auth`
+  Cloudflare Access secret) into `CF-Access-Client-Id=…,CF-Access-Client-Secret=…`,
+  so the deployment passes those two vars directly and reuses the existing secret.
+  Set `OTEL_RESOURCE_ATTRIBUTES` to carry
   `deployment.environment.name` / `deployment.region.name` / `deployment.cluster.name`
   so the metrics match the fleet-wide Grafana dashboard variable filters
   (`deployment_environment_name`, etc.).
