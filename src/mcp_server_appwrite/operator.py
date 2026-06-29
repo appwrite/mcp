@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -11,6 +12,7 @@ from uuid import uuid4
 import mcp.types as types
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 
+from . import telemetry
 from .docs_search import DocsSearch
 from .tool_manager import ToolManager
 
@@ -254,6 +256,19 @@ class Operator:
     def execute_public_tool(
         self, name: str, arguments: dict[str, Any] | None
     ) -> list[ToolContent]:
+        start = time.monotonic()
+        outcome = "success"
+        try:
+            return self._dispatch_public_tool(name, arguments)
+        except Exception:
+            outcome = "error"
+            raise
+        finally:
+            telemetry.record_tool_call(name, outcome, time.monotonic() - start)
+
+    def _dispatch_public_tool(
+        self, name: str, arguments: dict[str, Any] | None
+    ) -> list[ToolContent]:
         if name == "appwrite_get_context":
             return self._get_context(arguments or {})
         if name == "appwrite_search_tools":
@@ -269,6 +284,15 @@ class Operator:
         if self._context_provider is None:
             raise RuntimeError("Appwrite context provider is not configured.")
         context = self._context_provider(arguments)
+        mode = "unknown"
+        if isinstance(context, dict):
+            connection = context.get("connection")
+            if isinstance(connection, dict):
+                mode = str(connection.get("mode", "unknown"))
+        include_services = bool(
+            arguments.get("include_services", arguments.get("includeServices", True))
+        )
+        telemetry.record_context_request(mode=mode, include_services=include_services)
         return [types.TextContent(type="text", text=json.dumps(context, indent=2))]
 
     def list_resources(self) -> list[types.Resource]:
@@ -381,6 +405,9 @@ class Operator:
             include_mutating=include_mutating,
             limit=_normalize_limit(arguments.get("limit"), self._search_limit),
         )
+        telemetry.record_search_tools(
+            include_mutating=include_mutating, match_count=len(matches)
+        )
 
         lines: list[str] = []
         if not matches:
@@ -426,10 +453,13 @@ class Operator:
         confirm_write = bool(
             raw_arguments.get("confirm_write", raw_arguments.get("confirmWrite", False))
         )
-        if entry.classification != "read" and not confirm_write:
-            raise RuntimeError(
-                f"Tool {tool_name} is {entry.classification}. Re-run appwrite_call_tool with confirm_write=true if you intend to mutate Appwrite state."
-            )
+        if entry.classification != "read":
+            if not confirm_write:
+                telemetry.record_write_confirmation(entry.classification, "blocked")
+                raise RuntimeError(
+                    f"Tool {tool_name} is {entry.classification}. Re-run appwrite_call_tool with confirm_write=true if you intend to mutate Appwrite state."
+                )
+            telemetry.record_write_confirmation(entry.classification, "confirmed")
 
         project_id = raw_arguments.get("project_id", raw_arguments.get("projectId"))
         organization_id = raw_arguments.get(
@@ -454,6 +484,7 @@ class Operator:
             stored_result = self._result_store.save(
                 tool_name, content, _serialize_content(content)
             )
+            telemetry.record_result_stored(tool_name)
             preview = full_text[: self._preview_threshold]
             return [
                 types.TextContent(
@@ -468,6 +499,7 @@ class Operator:
         stored_result = self._result_store.save(
             tool_name, content, _serialize_content(content)
         )
+        telemetry.record_result_stored(tool_name)
         summary = ", ".join(_summarize_content_item(item) for item in content)
         return [
             types.TextContent(

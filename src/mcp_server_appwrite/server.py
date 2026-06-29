@@ -13,6 +13,7 @@ import pkgutil
 import re
 import socket
 import sys
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -37,9 +38,10 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.models import InitializationOptions
 
+from . import telemetry
 from .context import _normalize_sample_limit, get_appwrite_context
 from .docs_search import DocsSearch
-from .operator import Operator
+from .operator import CATALOG_URI, Operator, _parse_tool_name
 from .service import Service
 from .tool_manager import ToolManager
 
@@ -297,18 +299,21 @@ def validate_services(tools_manager: ToolManager) -> None:
     try:
         _validate_service(service)
     except AppwriteException as exc:
+        telemetry.record_startup_validation(service.service_name, "error")
         raise RuntimeError(
             "Appwrite startup validation failed during the minimal startup probe. "
             "Check your endpoint, project ID, API key, and required scopes.\n"
             f"- {service.service_name}: {_format_appwrite_error(exc)}"
         ) from exc
     except Exception as exc:
+        telemetry.record_startup_validation(service.service_name, "error")
         raise RuntimeError(
             "Appwrite startup validation failed during the minimal startup probe. "
             "Check your endpoint, project ID, API key, and required scopes.\n"
             f"- {service.service_name}: {exc}"
         ) from exc
 
+    telemetry.record_startup_validation(service.service_name, "success")
     _log_startup(f"Validated startup access via {service.service_name}")
 
 
@@ -370,17 +375,20 @@ def _validate_fetch_url(url: str) -> None:
     """
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https"):
+        telemetry.record_upload_error("scheme")
         raise ValueError(
             f"Unsupported URL scheme '{parts.scheme}' — only http and https are allowed."
         )
     host = parts.hostname
     if not host:
+        telemetry.record_upload_error("scheme")
         raise ValueError("URL is missing a host.")
 
     port = parts.port or (443 if parts.scheme == "https" else 80)
     try:
         infos = socket.getaddrinfo(host, port)
     except socket.gaierror as exc:
+        telemetry.record_upload_error("dns")
         raise ValueError(f"Could not resolve host '{host}'.") from exc
 
     for info in infos:
@@ -393,6 +401,7 @@ def _validate_fetch_url(url: str) -> None:
             or ip.is_multicast
             or ip.is_unspecified
         ):
+            telemetry.record_upload_error("ssrf")
             raise ValueError(
                 "Refusing to fetch a URL that resolves to a private, loopback, or "
                 "link-local address."
@@ -438,6 +447,7 @@ def _fetch_input_file(url: str, param_name: str) -> InputFile:
                 declared = resp.headers.get("content-length")
                 if declared is not None and declared.isdigit():
                     if int(declared) > _MAX_FETCH_BYTES:
+                        telemetry.record_upload_error("too_large")
                         raise ValueError(
                             f"File at URL for '{param_name}' is too large "
                             f"({declared} bytes); max is {_MAX_FETCH_BYTES} bytes."
@@ -448,6 +458,7 @@ def _fetch_input_file(url: str, param_name: str) -> InputFile:
                 for chunk in resp.iter_bytes():
                     total += len(chunk)
                     if total > _MAX_FETCH_BYTES:
+                        telemetry.record_upload_error("too_large")
                         raise ValueError(
                             f"File at URL for '{param_name}' exceeds the max of "
                             f"{_MAX_FETCH_BYTES} bytes."
@@ -460,10 +471,13 @@ def _fetch_input_file(url: str, param_name: str) -> InputFile:
                 )
                 filename = _derive_filename(resp, url)
     except httpx.HTTPError as exc:
+        reason = "timeout" if isinstance(exc, httpx.TimeoutException) else "http_error"
+        telemetry.record_upload_error(reason)
         raise ValueError(
             f"Failed to fetch file from URL for '{param_name}': {exc}"
         ) from exc
 
+    telemetry.record_upload(source="url", outcome="success", size_bytes=len(data))
     return InputFile.from_bytes(data, filename, mime_type or None)
 
 
@@ -475,26 +489,31 @@ def _coerce_inline_content(value: Mapping, param_name: str) -> InputFile:
         try:
             data = base64.b64decode(content)
         except Exception as exc:
+            telemetry.record_upload_error("decode")
             raise ValueError(f"Invalid base64 content for '{param_name}'.") from exc
     elif encoding == "utf-8":
         data = str(content).encode("utf-8")
     else:
+        telemetry.record_upload_error("encoding")
         raise ValueError(
             f"Invalid encoding for '{param_name}'. Expected 'utf-8' or 'base64'."
         )
 
     if len(data) > _MAX_INLINE_BYTES:
+        telemetry.record_upload_error("too_large")
         raise ValueError(
             f"Inline content for '{param_name}' is too large "
             f"({len(data)} bytes, max {_MAX_INLINE_BYTES}). For larger files pass "
             '{"url": "https://..."} so the server can download it directly.'
         )
 
+    telemetry.record_upload(source="inline", outcome="success", size_bytes=len(data))
     return InputFile.from_bytes(data, str(filename), value.get("mime_type"))
 
 
 def _coerce_path(path: str, param_name: str) -> InputFile:
     if _UPLOAD_TRANSPORT != "stdio":
+        telemetry.record_upload_error("path_unsupported")
         raise ValueError(_HOSTED_PATH_GUIDANCE.format(param=param_name))
     return InputFile.from_path(path)
 
@@ -710,11 +729,39 @@ def execute_registered_tool(
         client = resolve_client(target_project, organization_id)
     bound_method = getattr(service_cls(client), method_name)
 
+    parsed = _parse_tool_name(name)
+    start = time.monotonic()
     try:
         result = bound_method(**prepared_arguments)
     except AppwriteException as exc:
+        telemetry.record_appwrite_call(
+            service=parsed["service_name"],
+            action=parsed["action_verb"],
+            classification=parsed["classification"],
+            outcome="error",
+            duration_s=time.monotonic() - start,
+            error_code=getattr(exc, "code", None),
+            error_type=getattr(exc, "type", None),
+        )
         raise RuntimeError(_format_appwrite_error(exc)) from exc
+    except Exception:
+        telemetry.record_appwrite_call(
+            service=parsed["service_name"],
+            action=parsed["action_verb"],
+            classification=parsed["classification"],
+            outcome="error",
+            duration_s=time.monotonic() - start,
+            error_type="internal",
+        )
+        raise
 
+    telemetry.record_appwrite_call(
+        service=parsed["service_name"],
+        action=parsed["action_verb"],
+        classification=parsed["classification"],
+        outcome="success",
+        duration_s=time.monotonic() - start,
+    )
     return _format_tool_result(name, result, prepared_arguments)
 
 
@@ -859,20 +906,44 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
 
     @server.list_tools()
     async def handle_list_tools() -> list[types.Tool]:
-        return operator.get_public_tools()
+        _emit_initialize(server)
+        start = time.monotonic()
+        try:
+            result = operator.get_public_tools()
+        except Exception:
+            telemetry.record_request("tools/list", "error", time.monotonic() - start)
+            raise
+        telemetry.record_request("tools/list", "success", time.monotonic() - start)
+        return result
 
     @server.call_tool()
     async def handle_call_tool(
         name: str, arguments: dict | None
     ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
-        if operator.has_public_tool(name):
-            return operator.execute_public_tool(name, arguments)
-
-        raise ValueError(f"Tool {name} not found")
+        _emit_initialize(server)
+        start = time.monotonic()
+        try:
+            if not operator.has_public_tool(name):
+                raise ValueError(f"Tool {name} not found")
+            result = operator.execute_public_tool(name, arguments)
+        except Exception:
+            telemetry.record_request("tools/call", "error", time.monotonic() - start)
+            raise
+        telemetry.record_request("tools/call", "success", time.monotonic() - start)
+        return result
 
     @server.list_resources()
     async def handle_list_resources() -> list[types.Resource]:
-        return operator.list_resources()
+        start = time.monotonic()
+        try:
+            result = operator.list_resources()
+        except Exception:
+            telemetry.record_request(
+                "resources/list", "error", time.monotonic() - start
+            )
+            raise
+        telemetry.record_request("resources/list", "success", time.monotonic() - start)
+        return result
 
     @server.list_resource_templates()
     async def handle_list_resource_templates() -> list[types.ResourceTemplate]:
@@ -880,9 +951,55 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
 
     @server.read_resource()
     async def handle_read_resource(uri) -> list[ReadResourceContents]:
-        return operator.read_resource(str(uri))
+        start = time.monotonic()
+        uri_str = str(uri)
+        resource_type = "catalog" if uri_str == CATALOG_URI else "result"
+        telemetry.record_resource_read(resource_type)
+        try:
+            result = operator.read_resource(uri_str)
+        except Exception:
+            telemetry.record_request(
+                "resources/read", "error", time.monotonic() - start
+            )
+            raise
+        telemetry.record_request("resources/read", "success", time.monotonic() - start)
+        return result
 
     return server
+
+
+def _emit_initialize(server: Server) -> None:
+    """Emit an ``mcp.initializations`` event and refresh active-user/client tracking
+    for the current session. Deduped per session in the telemetry layer. Best-effort:
+    any failure to read the request context is swallowed."""
+    try:
+        session = server.request_context.session
+        params = session.client_params
+    except Exception:
+        return
+    if params is None:
+        return
+
+    client_info = getattr(params, "clientInfo", None)
+    oauth_client_id = None
+    subject = None
+    try:
+        access_token = get_access_token()
+        if access_token is not None:
+            claims = access_token.claims or {}
+            oauth_client_id = claims.get("client_id") or claims.get("azp")
+            subject = access_token.subject or claims.get("sub")
+    except Exception:
+        pass
+
+    telemetry.record_initialize(
+        session_id=id(session),
+        client_name=getattr(client_info, "name", None),
+        client_version=getattr(client_info, "version", None),
+        protocol_version=getattr(params, "protocolVersion", None),
+        oauth_client_id=oauth_client_id,
+        subject=subject,
+    )
 
 
 def build_operator(

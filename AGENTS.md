@@ -30,9 +30,38 @@ Source lives in `src/mcp_server_appwrite/`:
 | `operator.py` | The compact "operator" surface — `appwrite_search_tools`, `appwrite_call_tool`, result/resource storage, write confirmation. |
 | `context.py` | `appwrite_get_context` — workspace summary (project, services, account/org for OAuth). |
 | `docs_search.py` | In-process semantic docs search (`appwrite_search_docs`) over a prebuilt index. |
+| `telemetry.py` | OpenTelemetry metrics layer (OTLP/HTTP). No-op unless an OTLP endpoint is configured and the transport is `http`. |
 | `data/` | Committed docs index artifact (`docs_index.npz`, `docs_index_meta.json`), shipped in the wheel/image. |
 
 `scripts/build_docs_index.py` rebuilds the docs index (requires `OPENAI_API_KEY`).
+
+### Telemetry (metrics)
+
+The hosted HTTP server emits OpenTelemetry metrics over OTLP/HTTP to the shared
+Appwrite observability stack (OpenTelemetry Collector → Prometheus/Mimir → Grafana
+at `telemetry.appwrite.systems`), mirroring the `utopia-php/telemetry` pattern used
+by the PHP services. All instrumentation lives in `telemetry.py` and is wired in at
+the operator/handler/auth boundaries.
+
+* **Hosted-only & no-op by default.** Telemetry is enabled only when the transport
+  is `http` *and* an OTLP endpoint is set. The self-hosted `stdio` transport never
+  emits, and an unconfigured hosted server is a silent no-op.
+* **Config (env):** `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_HEADERS`
+  (standard OTel), or the cloud-style aliases `_APP_TELEMETRY_OTLP_ENDPOINT` /
+  `_APP_TELEMETRY_OTLP_HEADERS`. Set `OTEL_RESOURCE_ATTRIBUTES` to carry
+  `deployment.environment.name` / `deployment.region.name` / `deployment.cluster.name`
+  so the metrics match the fleet-wide Grafana dashboard variable filters
+  (`deployment_environment_name`, etc.).
+* **Metrics** are prefixed `mcp.` (e.g. `mcp.requests`, `mcp.appwrite.calls`,
+  `mcp.initializations`, `mcp.auth.validations`). User ids (`sub`) are never used as
+  labels — distinct-user/-client counts are derived in-process and exposed only as
+  the aggregate gauges `mcp.users.active` / `mcp.clients.active`.
+* **Dashboards** live in the separate `dashboards` repo under `MCP/`
+  (`overview.json`, `adoption.json`).
+* **Local check:** run an OTel Collector on `:4318` with a debug exporter, start the
+  server with `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 ... --transport http`,
+  and confirm metrics appear. Unit tests use an in-memory reader
+  (`tests/unit/test_telemetry.py`) — no collector required.
 
 ### Tool surface (key design point)
 

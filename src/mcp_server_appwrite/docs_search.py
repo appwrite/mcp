@@ -15,10 +15,13 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Callable
 
 import mcp.types as types
+
+from . import telemetry
 
 ToolContent = types.TextContent | types.ImageContent | types.EmbeddedResource
 
@@ -90,6 +93,7 @@ class DocsSearch:
         self._vectors = None  # np.ndarray [N, D], L2-normalized
         self._chunk_page = None  # np.ndarray [N] int, index into self._pages
         self._pages: list[dict[str, Any]] = []
+        self._last_embedding_duration_s: float | None = None
         self._index_loaded = self._load_index()
 
     @property
@@ -155,7 +159,13 @@ class DocsSearch:
             )
 
         limit = _clamp_limit(arguments.get("limit"), self._default_limit)
+        self._last_embedding_duration_s = None
         results = self._rank(query, limit)
+        telemetry.record_search_docs(
+            outcome="success",
+            match_count=len(results),
+            embedding_duration_s=self._last_embedding_duration_s,
+        )
 
         if not results:
             return [
@@ -176,7 +186,9 @@ class DocsSearch:
     def _rank(self, query: str, limit: int) -> list[dict[str, Any]]:
         import numpy as np
 
+        embed_start = time.monotonic()
         embedding = np.asarray(self._embedder(query), dtype=np.float32)
+        self._last_embedding_duration_s = time.monotonic() - embed_start
         norm = float(np.linalg.norm(embedding))
         if norm == 0.0:
             return []
