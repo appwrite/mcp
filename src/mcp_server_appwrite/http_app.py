@@ -147,7 +147,7 @@ async def health_endpoint(request: Request) -> PlainTextResponse:
 def build_app() -> Starlette:
     telemetry.init_telemetry("http", SERVER_VERSION)
     tools_manager = build_catalog_tools_manager()
-    operator = build_operator(tools_manager)
+    operator = build_operator(tools_manager, store_results=False)
     server = build_mcp_server(operator, transport="http")
 
     # Streamable HTTP with SSE responses (the MCP SDK/ecosystem default). Stateless,

@@ -277,6 +277,57 @@ class OperatorTests(unittest.TestCase):
         self.assertEqual(contents[0].mime_type, "application/json")
         self.assertIn('"type": "text"', contents[0].content)
 
+    def test_store_results_false_returns_large_result_inline(self):
+        manager = ToolManager()
+        manager.tools_registry = {
+            "tables_db_list": {
+                "definition": make_tool("tables_db_list", "List all databases."),
+                "function": object(),
+                "parameter_types": {},
+            },
+        }
+        runtime = Operator(
+            manager,
+            lambda name, arguments, *_: [
+                types.TextContent(type="text", text="x" * 1200)
+            ],
+            store_results=False,
+        )
+
+        result = runtime.execute_public_tool(
+            "appwrite_call_tool",
+            {"tool_name": "tables_db_list"},
+        )
+
+        self.assertEqual(result[0].text, "x" * 1200)
+        self.assertNotIn("appwrite://operator/results/", result[0].text)
+
+    def test_store_results_false_returns_image_inline(self):
+        manager = ToolManager()
+        manager.tools_registry = {
+            "avatars_get_qr": {
+                "definition": make_tool("avatars_get_qr", "Get a QR code."),
+                "function": object(),
+                "parameter_types": {},
+            },
+        }
+        runtime = Operator(
+            manager,
+            lambda name, arguments, *_: [
+                types.ImageContent(type="image", data="aW1hZ2U=", mimeType="image/png")
+            ],
+            store_results=False,
+        )
+
+        result = runtime.execute_public_tool(
+            "appwrite_call_tool",
+            {"tool_name": "avatars_get_qr"},
+        )
+
+        self.assertEqual(len(result), 1)
+        self.assertIsInstance(result[0], types.ImageContent)
+        self.assertEqual(result[0].mimeType, "image/png")
+
 
 if __name__ == "__main__":
     unittest.main()

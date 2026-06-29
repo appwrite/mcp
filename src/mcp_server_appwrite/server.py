@@ -865,6 +865,11 @@ def _format_appwrite_error(exc: AppwriteException) -> str:
 
 
 def build_instructions(transport: str = "http") -> str:
+    result_handling = (
+        "Large results are stored as resources; read the URI returned by the tool."
+        if transport == "stdio"
+        else "Hosted HTTP returns tool results inline, including images and other binary payloads."
+    )
     common = (
         "Appwrite workflow: use appwrite_get_context to understand the current "
         "connection and available project resources, then use appwrite_search_tools "
@@ -872,7 +877,7 @@ def build_instructions(transport: str = "http") -> str:
         "Mutating hidden tools require confirm_write=true. "
         "For questions about Appwrite concepts, products, or guides, use "
         "appwrite_search_docs to search the documentation when available. "
-        "Large results are stored as resources; read the URI returned by the tool."
+        f"{result_handling}"
     )
 
     if transport == "stdio":
@@ -1003,7 +1008,10 @@ def _emit_initialize(server: Server) -> None:
 
 
 def build_operator(
-    tools_manager: ToolManager, client: Client | None = None
+    tools_manager: ToolManager,
+    client: Client | None = None,
+    *,
+    store_results: bool = True,
 ) -> Operator:
     """Wire the operator surface to the per-request execution path. The execution
     callback re-binds each call to a per-request client via `resolve_client` in
@@ -1032,6 +1040,7 @@ def build_operator(
         ),
         context_provider=lambda arguments: _get_context_for_request(arguments, client),
         docs_search=docs_search,
+        store_results=store_results,
     )
 
 
