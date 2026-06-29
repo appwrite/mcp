@@ -1,4 +1,3 @@
-import os
 import unittest
 
 import mcp.types as types
@@ -242,46 +241,6 @@ class NoOpTests(unittest.TestCase):
 
     def test_init_is_noop_for_stdio(self):
         self.assertFalse(telemetry.init_telemetry("stdio", "test"))
-
-
-class OtlpHeadersResolutionTests(unittest.TestCase):
-    """_ensure_otlp_headers_env composes OTEL_EXPORTER_OTLP_HEADERS from the
-    accepted inputs without clobbering an explicit value."""
-
-    def setUp(self):
-        self._keys = (
-            "OTEL_EXPORTER_OTLP_HEADERS",
-            "CF_ACCESS_CLIENT_ID",
-            "CF_ACCESS_CLIENT_SECRET",
-        )
-        self._saved = {k: os.environ.pop(k, None) for k in self._keys}
-
-    def tearDown(self):
-        for k in self._keys:
-            os.environ.pop(k, None)
-            if self._saved[k] is not None:
-                os.environ[k] = self._saved[k]
-
-    def test_assembles_header_from_cf_access_vars(self):
-        os.environ["CF_ACCESS_CLIENT_ID"] = "abc.access"
-        os.environ["CF_ACCESS_CLIENT_SECRET"] = "shh"
-        telemetry._ensure_otlp_headers_env()
-        self.assertEqual(
-            os.environ["OTEL_EXPORTER_OTLP_HEADERS"],
-            "CF-Access-Client-Id=abc.access,CF-Access-Client-Secret=shh",
-        )
-
-    def test_does_not_clobber_explicit_headers(self):
-        os.environ["OTEL_EXPORTER_OTLP_HEADERS"] = "X-Custom=1"
-        os.environ["CF_ACCESS_CLIENT_ID"] = "abc"
-        os.environ["CF_ACCESS_CLIENT_SECRET"] = "shh"
-        telemetry._ensure_otlp_headers_env()
-        self.assertEqual(os.environ["OTEL_EXPORTER_OTLP_HEADERS"], "X-Custom=1")
-
-    def test_noop_when_only_one_cf_access_var(self):
-        os.environ["CF_ACCESS_CLIENT_ID"] = "abc"
-        telemetry._ensure_otlp_headers_env()
-        self.assertNotIn("OTEL_EXPORTER_OTLP_HEADERS", os.environ)
 
 
 if __name__ == "__main__":

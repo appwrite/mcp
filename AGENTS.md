@@ -46,15 +46,12 @@ the operator/handler/auth boundaries.
 * **Hosted-only & no-op by default.** Telemetry is enabled only when the transport
   is `http` *and* an OTLP endpoint is set. The self-hosted `stdio` transport never
   emits, and an unconfigured hosted server is a silent no-op.
-* **Config (env):** `OTEL_EXPORTER_OTLP_ENDPOINT` enables export. Headers come from
-  `OTEL_EXPORTER_OTLP_HEADERS`, or — if that is unset — are assembled from
-  `CF_ACCESS_CLIENT_ID` + `CF_ACCESS_CLIENT_SECRET` (the shared `telemetry-auth`
-  Cloudflare Access secret) into `CF-Access-Client-Id=…,CF-Access-Client-Secret=…`,
-  so the deployment passes those two vars directly and reuses the existing secret.
-  Set `OTEL_RESOURCE_ATTRIBUTES` to carry
-  `deployment.environment.name` / `deployment.region.name` / `deployment.cluster.name`
-  so the metrics match the fleet-wide Grafana dashboard variable filters
-  (`deployment_environment_name`, etc.).
+* **Config (env):** `OTEL_EXPORTER_OTLP_ENDPOINT` enables export and points at the
+  in-cluster Alloy collector (`http://alloy.telemetry.svc.cluster.local:4318`). Alloy
+  authenticates and forwards upstream and **upserts** the `deployment.environment.name`
+  / `deployment.region.name` / `deployment.cluster.name` resource attributes that the
+  fleet-wide Grafana dashboards filter on — so the app needs no credentials and no
+  `OTEL_RESOURCE_ATTRIBUTES`.
 * **Metrics** are prefixed `mcp.` (e.g. `mcp.requests`, `mcp.appwrite.calls`,
   `mcp.initializations`, `mcp.auth.validations`). User ids (`sub`) are never used as
   labels — distinct-user/-client counts are derived in-process and exposed only as

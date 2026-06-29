@@ -21,12 +21,11 @@ Design notes:
 Configuration (env):
 
 * ``OTEL_EXPORTER_OTLP_ENDPOINT`` — OTLP/HTTP endpoint; setting it enables export.
-* ``OTEL_EXPORTER_OTLP_HEADERS`` — export headers. If unset, it is assembled from
-  ``CF_ACCESS_CLIENT_ID`` + ``CF_ACCESS_CLIENT_SECRET`` (the shared Cloudflare
-  Access service-token secret) so the deployment passes those two vars directly.
+  In the cluster this points at the in-cluster Alloy collector, which authenticates
+  and forwards upstream and stamps the ``deployment.*`` resource attributes — so the
+  app needs no credentials and no per-deployment resource attributes.
 * ``OTEL_SERVICE_NAME`` / ``OTEL_RESOURCE_ATTRIBUTES`` — picked up by the SDK to set
-  ``service.name`` and ``deployment.environment`` / ``deployment.region`` etc., so
-  the existing Grafana dashboards' label filters apply unchanged.
+  ``service.name`` etc.
 """
 
 from __future__ import annotations
@@ -68,21 +67,6 @@ def _resolve_endpoint() -> str | None:
     return os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 
 
-def _ensure_otlp_headers_env() -> None:
-    """Assemble ``OTEL_EXPORTER_OTLP_HEADERS`` (a single string the SDK reads) from
-    the two Cloudflare Access service-token vars, so the deployment can pass
-    ``CF_ACCESS_CLIENT_ID`` + ``CF_ACCESS_CLIENT_SECRET`` directly and reuse the
-    shared ``telemetry-auth`` secret. A pre-set header value wins."""
-    if os.getenv("OTEL_EXPORTER_OTLP_HEADERS"):
-        return
-    cf_id = os.getenv("CF_ACCESS_CLIENT_ID")
-    cf_secret = os.getenv("CF_ACCESS_CLIENT_SECRET")
-    if cf_id and cf_secret:
-        os.environ["OTEL_EXPORTER_OTLP_HEADERS"] = (
-            f"CF-Access-Client-Id={cf_id},CF-Access-Client-Secret={cf_secret}"
-        )
-
-
 def init_telemetry(transport: str, version: str) -> bool:
     """Configure the global meter provider and build instruments.
 
@@ -112,7 +96,6 @@ def init_telemetry(transport: str, version: str) -> bool:
             from opentelemetry.sdk.resources import Resource
 
             os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint)
-            _ensure_otlp_headers_env()
 
             # Resource.create() merges OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES
             # from the environment over these defaults.
