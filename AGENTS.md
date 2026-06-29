@@ -30,9 +30,18 @@ Source lives in `src/mcp_server_appwrite/`:
 | `operator.py` | The compact "operator" surface — `appwrite_search_tools`, `appwrite_call_tool`, result/resource storage, write confirmation. |
 | `context.py` | `appwrite_get_context` — workspace summary (project, services, account/org for OAuth). |
 | `docs_search.py` | In-process semantic docs search (`appwrite_search_docs`) over a prebuilt index. |
+| `telemetry.py` | OpenTelemetry metrics layer (OTLP/HTTP). No-op unless an OTLP endpoint is configured and the transport is `http`. |
 | `data/` | Committed docs index artifact (`docs_index.npz`, `docs_index_meta.json`), shipped in the wheel/image. |
 
 `scripts/build_docs_index.py` rebuilds the docs index (requires `OPENAI_API_KEY`).
+
+### Telemetry (metrics)
+
+`telemetry.py` emits OpenTelemetry metrics (prefixed `mcp.`) over OTLP/HTTP. It is a
+no-op unless the transport is `http` and `OTEL_EXPORTER_OTLP_ENDPOINT` is set, so
+`stdio` and unconfigured servers stay silent. In the cluster that endpoint is the
+Alloy collector, which adds the `deployment.*` labels and forwards upstream — the app
+needs no credentials. Dashboards live in the `dashboards` repo under `MCP/`.
 
 ### Tool surface (key design point)
 

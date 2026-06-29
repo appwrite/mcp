@@ -31,6 +31,7 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
+from . import telemetry
 from .auth import (
     AppwriteTokenVerifier,
     protected_resource_metadata,
@@ -111,6 +112,11 @@ class RequireBearer:
 
         user = scope.get("user")
         if not isinstance(user, AuthenticatedUser):
+            # A presented-but-invalid token was already counted (with its specific
+            # reason) by the token verifier. Only count the no-token case here so we
+            # don't double-count rejections.
+            if not _has_authorization_header(scope):
+                telemetry.record_auth(outcome="rejected", reason="missing")
             await _send_401(send)
             return
 
@@ -120,6 +126,13 @@ class RequireBearer:
         headers = [(k.lower().encode(), v.encode()) for k, v in _CORS_HEADERS.items()]
         await send({"type": "http.response.start", "status": 204, "headers": headers})
         await send({"type": "http.response.body", "body": b""})
+
+
+def _has_authorization_header(scope: Scope) -> bool:
+    for name, _value in scope.get("headers", []):
+        if name == b"authorization":
+            return True
+    return False
 
 
 async def protected_resource_metadata_endpoint(request: Request) -> JSONResponse:
@@ -132,6 +145,7 @@ async def health_endpoint(request: Request) -> PlainTextResponse:
 
 
 def build_app() -> Starlette:
+    telemetry.init_telemetry("http", SERVER_VERSION)
     tools_manager = build_catalog_tools_manager()
     operator = build_operator(tools_manager)
     server = build_mcp_server(operator, transport="http")

@@ -25,6 +25,8 @@ import jwt
 from jwt import PyJWKClient
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 
+from . import telemetry
+
 DEFAULT_ENDPOINT = "https://cloud.appwrite.io/v1"
 DEFAULT_PROJECT_ID = "console"
 
@@ -198,6 +200,7 @@ class AppwriteTokenVerifier(TokenVerifier):
         try:
             unverified = jwt.decode(token, options={"verify_signature": False})
         except jwt.PyJWTError:
+            telemetry.record_auth(outcome="rejected", reason="malformed")
             return None
 
         issuer = unverified.get("iss")
@@ -205,6 +208,7 @@ class AppwriteTokenVerifier(TokenVerifier):
             metadata = authorization_server_metadata_sync()
         except Exception as exc:
             _log(f"Rejecting token: authorization server discovery failed ({exc}).")
+            telemetry.record_auth(outcome="rejected", reason="discovery_failed")
             return None
 
         expected_issuer = metadata["issuer"]
@@ -213,17 +217,20 @@ class AppwriteTokenVerifier(TokenVerifier):
                 f"Rejecting token: issuer {issuer!r} does not match discovered "
                 f"issuer {expected_issuer!r}."
             )
+            telemetry.record_auth(outcome="rejected", reason="issuer_mismatch")
             return None
 
         project_id = project_id_from_issuer(issuer)
         if not project_id:
             _log("Rejecting token: issuer is not an Appwrite OAuth issuer.")
+            telemetry.record_auth(outcome="rejected", reason="issuer_mismatch")
             return None
         if project_id != configured_project_id():
             _log(
                 f"Rejecting token: issuer project {project_id!r} is not the served "
                 f"project {configured_project_id()!r}."
             )
+            telemetry.record_auth(outcome="rejected", reason="project_mismatch")
             return None
 
         try:
@@ -238,10 +245,12 @@ class AppwriteTokenVerifier(TokenVerifier):
             )
         except jwt.PyJWTError as exc:
             _log(f"Rejecting token: verification failed ({exc}).")
+            telemetry.record_auth(outcome="rejected", reason="signature")
             return None
 
         expected_resource = canonical_resource()
         if not self._audience_ok(claims.get("aud"), expected_resource):
+            telemetry.record_auth(outcome="rejected", reason="audience")
             return None
 
         scope_claim = claims.get("scope") or claims.get("scp") or ""
@@ -276,9 +285,18 @@ class AppwriteTokenVerifier(TokenVerifier):
         return False
 
     async def verify_token(self, token: str) -> AccessToken | None:
+        start = time.monotonic()
         access_token = await anyio.to_thread.run_sync(self._verify_sync, token)
+        duration = time.monotonic() - start
         if access_token is None:
+            # The specific rejection reason was already counted in _verify_sync;
+            # here we only attach the duration to the rejected outcome.
+            telemetry.record_auth(outcome="rejected", duration_s=duration, count=False)
             return None
         if access_token.expires_at and access_token.expires_at < int(time.time()):
+            telemetry.record_auth(
+                outcome="rejected", reason="expired", duration_s=duration
+            )
             return None
+        telemetry.record_auth(outcome="success", duration_s=duration)
         return access_token

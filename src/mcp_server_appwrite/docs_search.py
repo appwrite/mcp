@@ -15,10 +15,13 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Callable
 
 import mcp.types as types
+
+from . import telemetry
 
 ToolContent = types.TextContent | types.ImageContent | types.EmbeddedResource
 
@@ -155,7 +158,12 @@ class DocsSearch:
             )
 
         limit = _clamp_limit(arguments.get("limit"), self._default_limit)
-        results = self._rank(query, limit)
+        results, embedding_duration_s = self._rank(query, limit)
+        telemetry.record_search_docs(
+            outcome="success",
+            match_count=len(results),
+            embedding_duration_s=embedding_duration_s,
+        )
 
         if not results:
             return [
@@ -173,13 +181,16 @@ class DocsSearch:
             )
         ]
 
-    def _rank(self, query: str, limit: int) -> list[dict[str, Any]]:
+    def _rank(self, query: str, limit: int) -> tuple[list[dict[str, Any]], float]:
+        """Return the ranked pages and the embedding call's duration in seconds."""
         import numpy as np
 
+        embed_start = time.monotonic()
         embedding = np.asarray(self._embedder(query), dtype=np.float32)
+        embedding_duration_s = time.monotonic() - embed_start
         norm = float(np.linalg.norm(embedding))
         if norm == 0.0:
-            return []
+            return [], embedding_duration_s
         embedding /= norm
 
         scores = self._vectors @ embedding  # cosine similarity (both normalized)
@@ -207,4 +218,4 @@ class DocsSearch:
                     "content": page.get("content", ""),
                 }
             )
-        return results
+        return results, embedding_duration_s
