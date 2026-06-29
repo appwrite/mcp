@@ -37,31 +37,11 @@ Source lives in `src/mcp_server_appwrite/`:
 
 ### Telemetry (metrics)
 
-The hosted HTTP server emits OpenTelemetry metrics over OTLP/HTTP to the shared
-Appwrite observability stack (OpenTelemetry Collector → Prometheus/Mimir → Grafana
-at `telemetry.appwrite.systems`), mirroring the `utopia-php/telemetry` pattern used
-by the PHP services. All instrumentation lives in `telemetry.py` and is wired in at
-the operator/handler/auth boundaries.
-
-* **Hosted-only & no-op by default.** Telemetry is enabled only when the transport
-  is `http` *and* an OTLP endpoint is set. The self-hosted `stdio` transport never
-  emits, and an unconfigured hosted server is a silent no-op.
-* **Config (env):** `OTEL_EXPORTER_OTLP_ENDPOINT` enables export and points at the
-  in-cluster Alloy collector (`http://alloy.telemetry.svc.cluster.local:4318`). Alloy
-  authenticates and forwards upstream and **upserts** the `deployment.environment.name`
-  / `deployment.region.name` / `deployment.cluster.name` resource attributes that the
-  fleet-wide Grafana dashboards filter on — so the app needs no credentials and no
-  `OTEL_RESOURCE_ATTRIBUTES`.
-* **Metrics** are prefixed `mcp.` (e.g. `mcp.requests`, `mcp.appwrite.calls`,
-  `mcp.initializations`, `mcp.auth.validations`). User ids (`sub`) are never used as
-  labels — distinct-user/-client counts are derived in-process and exposed only as
-  the aggregate gauges `mcp.users.active` / `mcp.clients.active`.
-* **Dashboards** live in the separate `dashboards` repo under `MCP/`
-  (`overview.json`, `adoption.json`).
-* **Local check:** run an OTel Collector on `:4318` with a debug exporter, start the
-  server with `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 ... --transport http`,
-  and confirm metrics appear. Unit tests use an in-memory reader
-  (`tests/unit/test_telemetry.py`) — no collector required.
+`telemetry.py` emits OpenTelemetry metrics (prefixed `mcp.`) over OTLP/HTTP. It is a
+no-op unless the transport is `http` and `OTEL_EXPORTER_OTLP_ENDPOINT` is set, so
+`stdio` and unconfigured servers stay silent. In the cluster that endpoint is the
+Alloy collector, which adds the `deployment.*` labels and forwards upstream — the app
+needs no credentials. Dashboards live in the `dashboards` repo under `MCP/`.
 
 ### Tool surface (key design point)
 
