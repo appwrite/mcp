@@ -104,6 +104,7 @@ class Operator:
         docs_search: DocsSearch | None = None,
         context_provider: ContextProvider | None = None,
         preview_threshold: int = PREVIEW_THRESHOLD,
+        store_results: bool = True,
         search_limit: int = SEARCH_LIMIT,
     ):
         self._tools_manager = tools_manager
@@ -111,6 +112,7 @@ class Operator:
         self._docs_search = docs_search
         self._context_provider = context_provider
         self._preview_threshold = preview_threshold
+        self._store_results = store_results
         self._search_limit = search_limit
         self._result_store = ResultStore()
         self._catalog = self._build_catalog()
@@ -474,6 +476,9 @@ class Operator:
     def _preview_or_store_result(
         self, tool_name: str, content: list[ToolContent]
     ) -> list[ToolContent]:
+        if not self._store_results:
+            return content
+
         if all(isinstance(item, types.TextContent) for item in content):
             full_text = "\n".join(
                 item.text for item in content if isinstance(item, types.TextContent)

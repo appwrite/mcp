@@ -103,6 +103,8 @@ class ServerHelperTests(unittest.TestCase):
         self.assertNotIn("Appwrite console", stdio)
         self.assertIn("Appwrite console", http)
         self.assertIn("project_id", http)
+        self.assertIn("Large results are stored as resources", stdio)
+        self.assertIn("returns tool results inline", http)
 
     def test_coerce_input_file_from_path(self):
         with tempfile.NamedTemporaryFile(suffix=".txt") as handle:
