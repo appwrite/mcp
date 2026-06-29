@@ -15,10 +15,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       DOCS_SEARCH_MIN_SCORE: ${DOCS_SEARCH_MIN_SCORE:-0.25}
       DOCS_SEARCH_LIMIT: ${DOCS_SEARCH_LIMIT:-5}
-      # OpenTelemetry metrics (hosted HTTP transport only). Unset endpoint = no-op.
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
-      OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
-      OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-}
     healthcheck:
       test:
         [
