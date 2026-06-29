@@ -242,6 +242,23 @@ class NoOpTests(unittest.TestCase):
     def test_init_is_noop_for_stdio(self):
         self.assertFalse(telemetry.init_telemetry("stdio", "test"))
 
+    def test_record_initialize_does_not_grow_sets_when_disabled(self):
+        # When disabled, the active-user/client sets must not accumulate — they are
+        # only pruned by the gauge callbacks, which never run while disabled.
+        telemetry._enabled = False
+        telemetry._active_users.clear()
+        telemetry._active_clients.clear()
+        telemetry.record_initialize(
+            session_id=7,
+            client_name="claude",
+            client_version="1.0",
+            protocol_version="2025-06-18",
+            oauth_client_id="app",
+            subject="user-x",
+        )
+        self.assertEqual(len(telemetry._active_users), 0)
+        self.assertEqual(len(telemetry._active_clients), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

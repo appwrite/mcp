@@ -359,11 +359,14 @@ def record_initialize(
     oauth_client_id: str | None,
     subject: str | None,
 ) -> None:
-    # Track active users/clients regardless of whether this is a new session.
-    _touch_user(subject)
-    _touch_client(client_name, subject)
     if not _enabled:
         return
+    # Refresh active-user/client tracking on every request (not just new sessions)
+    # so the rolling-window gauges reflect recency. Entries are expired by the gauge
+    # callbacks during the SDK's collection cycle — which only runs while enabled, so
+    # these sets must not be touched when telemetry is disabled (they'd never prune).
+    _touch_user(subject)
+    _touch_client(client_name, subject)
     with _active_lock:
         if session_id in _seen_sessions:
             return

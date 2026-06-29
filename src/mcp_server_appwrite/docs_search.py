@@ -93,7 +93,6 @@ class DocsSearch:
         self._vectors = None  # np.ndarray [N, D], L2-normalized
         self._chunk_page = None  # np.ndarray [N] int, index into self._pages
         self._pages: list[dict[str, Any]] = []
-        self._last_embedding_duration_s: float | None = None
         self._index_loaded = self._load_index()
 
     @property
@@ -159,12 +158,11 @@ class DocsSearch:
             )
 
         limit = _clamp_limit(arguments.get("limit"), self._default_limit)
-        self._last_embedding_duration_s = None
-        results = self._rank(query, limit)
+        results, embedding_duration_s = self._rank(query, limit)
         telemetry.record_search_docs(
             outcome="success",
             match_count=len(results),
-            embedding_duration_s=self._last_embedding_duration_s,
+            embedding_duration_s=embedding_duration_s,
         )
 
         if not results:
@@ -183,15 +181,16 @@ class DocsSearch:
             )
         ]
 
-    def _rank(self, query: str, limit: int) -> list[dict[str, Any]]:
+    def _rank(self, query: str, limit: int) -> tuple[list[dict[str, Any]], float]:
+        """Return the ranked pages and the embedding call's duration in seconds."""
         import numpy as np
 
         embed_start = time.monotonic()
         embedding = np.asarray(self._embedder(query), dtype=np.float32)
-        self._last_embedding_duration_s = time.monotonic() - embed_start
+        embedding_duration_s = time.monotonic() - embed_start
         norm = float(np.linalg.norm(embedding))
         if norm == 0.0:
-            return []
+            return [], embedding_duration_s
         embedding /= norm
 
         scores = self._vectors @ embedding  # cosine similarity (both normalized)
@@ -219,4 +218,4 @@ class DocsSearch:
                     "content": page.get("content", ""),
                 }
             )
-        return results
+        return results, embedding_duration_s

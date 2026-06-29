@@ -381,7 +381,7 @@ def _validate_fetch_url(url: str) -> None:
         )
     host = parts.hostname
     if not host:
-        telemetry.record_upload_error("scheme")
+        telemetry.record_upload_error("no_host")
         raise ValueError("URL is missing a host.")
 
     port = parts.port or (443 if parts.scheme == "https" else 80)
