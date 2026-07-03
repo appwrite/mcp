@@ -1,6 +1,7 @@
 import unittest
 
 from appwrite.client import Client
+from appwrite.exception import AppwriteException
 
 from mcp_server_appwrite.context import get_appwrite_context
 from mcp_server_appwrite.server import _get_context_for_request
@@ -115,6 +116,63 @@ class AppwriteContextTests(unittest.TestCase):
         self.assertIn((None, None), seen)
         self.assertIn((None, "org-1"), seen)
         self.assertIn(("project-1", "org-1"), seen)
+
+    def test_oauth_context_falls_back_to_accessible_resources_when_narrowed(self):
+        # A consent-narrowed grant (no console-wide `all`) cannot use the
+        # console-tier /organizations and per-org project listings; discovery
+        # must fall back to the always-granted OAuth2 accessible-resources
+        # endpoints and still surface the bound organization and project.
+        def denied(_params):
+            raise AppwriteException("missing scopes", 401, "general_unauthorized_scope")
+
+        console = FakeClient(
+            {
+                ("get", "/account"): denied,
+                ("get", "/organizations"): denied,
+                ("get", "/oauth2/console/organizations"): {
+                    "total": 1,
+                    "organizations": [{"$id": "org-1"}],
+                },
+                ("get", "/oauth2/console/projects"): {
+                    "total": 1,
+                    "projects": [{"$id": "project-a"}],
+                },
+            },
+            project="console",
+        )
+        org = FakeClient({("get", "/organization/projects"): denied})
+        project = FakeClient(
+            {
+                ("get", "/project"): {"$id": "project-a", "name": "Project A"},
+                ("get", "/tablesdb"): {
+                    "total": 1,
+                    "databases": [{"$id": "db-1", "name": "Main"}],
+                },
+                ("get", "/storage/buckets"): denied,
+            },
+            project="project-a",
+        )
+
+        def factory(project_id, organization_id):
+            if project_id:
+                return project
+            if organization_id:
+                return org
+            return console
+
+        context = get_appwrite_context(
+            console,
+            mode="oauth_console",
+            client_factory=factory,
+        )
+
+        self.assertIn("error", context["account"])
+        self.assertEqual(context["organizations"], [{"$id": "org-1"}])
+        self.assertEqual(context["projects"][0]["$id"], "project-a")
+        self.assertEqual(context["projects"][0]["name"], "Project A")
+        self.assertEqual(context["projects"][0]["services"]["tablesdb"]["total"], 1)
+        # Ungranted probes surface their scope error instead of failing the call.
+        self.assertIn("error", context["projects"][0]["services"]["storage"])
 
     def test_compact_output_preserves_false_resource_state(self):
         client = FakeClient(

@@ -92,6 +92,30 @@ def get_appwrite_context(
                 )
             )
 
+    if not projects:
+        # Per-organization project listings need organization-tier scopes; a
+        # grant narrowed to project scopes only still enumerates its bound
+        # projects through the accessible-resources endpoint.
+        for accessible in _accessible_resource_ids(console_client, "projects"):
+            accessible_id = accessible.get("$id")
+            if not isinstance(accessible_id, str) or not accessible_id:
+                continue
+            if project_id and accessible_id != project_id:
+                continue
+            project_client = client_factory(accessible_id, organization_id)
+            project = _get_current_project(project_client, accessible_id) or {
+                "$id": accessible_id
+            }
+            projects.append(
+                _project_context(
+                    project,
+                    project_client,
+                    organization_id=organization_id,
+                    include_services=include_services,
+                    sample_limit=sample_limit,
+                )
+            )
+
     if project_id and not projects:
         project_client = client_factory(project_id, organization_id)
         project = _get_current_project(project_client, project_id) or {
@@ -153,11 +177,45 @@ def _get_current_project(client: Client, project_id: str) -> dict[str, Any] | No
     return {"$id": project_id, "error": result.error} if not result.ok else None
 
 
+def _accessible_resource_ids(client: Client, resource: str) -> list[dict[str, Any]]:
+    """Fallback discovery via the OAuth2 accessible-resources endpoints
+    (``/oauth2/<project>/organizations`` / ``/oauth2/<project>/projects``).
+    Their scopes are granted on every token, so a consent-narrowed grant (no
+    console-wide ``all``) can still enumerate exactly the resources it is
+    bound to. Returns id-only documents."""
+    project_id = client.get_config("project") or ""
+    if not project_id:
+        return []
+    result = _safe_call(client, "get", f"/oauth2/{project_id}/{resource}")
+    if not result.ok or not isinstance(result.value, dict):
+        return []
+    items = result.value.get(resource)
+    if not isinstance(items, list):
+        return []
+    return [
+        {"$id": item["$id"]}
+        for item in items
+        if isinstance(item, dict) and isinstance(item.get("$id"), str)
+    ]
+
+
 def _list_organizations(
     client: Client, organization_id: str | None
 ) -> list[dict[str, Any]]:
     result = _safe_call(client, "get", "/organizations")
     if not result.ok or not isinstance(result.value, dict):
+        # The console-wide organizations listing needs scopes only the `all`
+        # grant carries; a narrowed grant falls back to the accessible-
+        # resources enumeration (ids only, names resolved by later calls).
+        accessible = _accessible_resource_ids(client, "organizations")
+        if accessible:
+            if organization_id:
+                return [
+                    organization
+                    for organization in accessible
+                    if organization.get("$id") == organization_id
+                ]
+            return accessible
         return (
             [{"$id": organization_id, "error": result.error}] if organization_id else []
         )
