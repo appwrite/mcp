@@ -27,9 +27,9 @@ from mcp.server.auth.provider import AccessToken, TokenVerifier
 
 from . import telemetry
 from .constants import (
+    CACHE_TTL_SECONDS,
     DEFAULT_ENDPOINT,
     DEFAULT_PROJECT_ID,
-    DISCOVERY_TTL_SECONDS,
     PREFERRED_SCOPES,
 )
 
@@ -89,7 +89,7 @@ def _cached_discovery(project_id: str, *, allow_stale: bool = False) -> dict | N
     if entry is None:
         return None
     fetched_at, document = entry
-    if allow_stale or time.monotonic() - fetched_at < DISCOVERY_TTL_SECONDS:
+    if allow_stale or time.monotonic() - fetched_at < CACHE_TTL_SECONDS:
         return document
     return None
 

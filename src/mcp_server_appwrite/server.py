@@ -22,7 +22,7 @@ from enum import Enum
 from pathlib import Path
 from types import UnionType
 from typing import Any, Union, get_args, get_origin
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 import httpx
 import mcp.server.stdio
@@ -41,8 +41,10 @@ from pydantic import AnyUrl
 
 from . import telemetry
 from .constants import (
+    CACHE_TTL_SECONDS,
     CATALOG_URI,
     DEFAULT_ENDPOINT,
+    DEFAULT_REGION,
     DEFAULT_TRANSPORT,
     EXCLUDED_SERVICES,
     FETCH_MAX_REDIRECTS,
@@ -221,6 +223,70 @@ def build_client_for_request(
     return client
 
 
+# Appwrite Cloud is multi-region: project metadata is global (any gateway can
+# list projects), but a project's data plane lives only in its home region and
+# must be addressed through the region subdomain (e.g.
+# ``https://sgp.cloud.appwrite.io/v1``); other gateways reject project-scoped
+# calls with 401 general_access_forbidden. Regions are looked up once per
+# project via the console API and cached briefly; the 'default' sentinel is
+# cached like any region, so a project that migrates regions may be routed to
+# its old home for up to CACHE_TTL_SECONDS.
+_project_region_cache: dict[str, tuple[str, float]] = {}
+
+
+def resolve_region_endpoint(base_endpoint: str, region: str | None) -> str:
+    """Return the endpoint for a project homed in ``region`` by prefixing the
+    region subdomain onto the configured endpoint. Single-region deployments
+    (which report the ``default`` region), malformed regions, and endpoints
+    already prefixed with the region pass through unchanged."""
+    if not region or region == DEFAULT_REGION or not region.isalnum():
+        return base_endpoint
+    split = urlsplit(base_endpoint)
+    hostname = split.hostname or ""
+    if not hostname or hostname.startswith(f"{region}."):
+        return base_endpoint
+    if "@" in split.netloc:
+        # Prefixing the netloc would land the region on the userinfo, not the
+        # host; credential-bearing endpoints are never regional, so pass through.
+        return base_endpoint
+    return urlunsplit(split._replace(netloc=f"{region}.{split.netloc}"))
+
+
+def _lookup_project_region(
+    console_project_id: str, bearer_token: str, target_project: str
+) -> str | None:
+    """Fetch ``target_project``'s home region from the console API. Project
+    metadata is global, so this succeeds from any gateway. Successful lookups
+    are cached; on failure the caller falls back to the configured endpoint,
+    preserving the previous behavior."""
+    cached = _project_region_cache.get(target_project)
+    if cached and cached[1] > time.monotonic():
+        return cached[0]
+    client = build_client_for_request(console_project_id, bearer_token)
+    try:
+        project = client.call(
+            "get",
+            f"/projects/{target_project}",
+            # The SDK does not turn set_project into a header on raw call();
+            # send the console project header explicitly (as context.py does).
+            headers={
+                "accept": "application/json",
+                "x-appwrite-project": console_project_id,
+            },
+            params={},
+        )
+    except Exception:
+        return None
+    region = project.get("region") if isinstance(project, dict) else None
+    if not isinstance(region, str) or not region:
+        return None
+    _project_region_cache[target_project] = (
+        region,
+        time.monotonic() + CACHE_TTL_SECONDS,
+    )
+    return region
+
+
 def resolve_client(
     target_project: str | None = None, organization_id: str | None = None
 ) -> Client:
@@ -228,7 +294,8 @@ def resolve_client(
     token. The token is read from the request context populated by the auth
     middleware and carries the project it was issued for (the console). Pass
     ``target_project``/``organization_id`` to scope the call to one of the user's
-    own projects/organizations."""
+    own projects/organizations. Project-scoped calls are routed to the target
+    project's home-region endpoint (see ``resolve_region_endpoint``)."""
     access_token = get_access_token()
     if access_token is None:
         raise RuntimeError("No authenticated Appwrite access token in request context.")
@@ -237,9 +304,16 @@ def resolve_client(
     project_id = claims.get("project_id")
     if not project_id:
         raise RuntimeError("Authenticated token is missing a project identifier.")
+
+    base_endpoint = os.getenv("APPWRITE_ENDPOINT", DEFAULT_ENDPOINT)
+    endpoint = base_endpoint
+    if target_project:
+        region = _lookup_project_region(project_id, access_token.token, target_project)
+        endpoint = resolve_region_endpoint(base_endpoint, region)
     return build_client_for_request(
         project_id,
         access_token.token,
+        endpoint=endpoint,
         target_project=target_project,
         organization_id=organization_id,
     )

@@ -5,7 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import mcp.types as types
 from appwrite.enums.browser import Browser
@@ -23,6 +23,7 @@ from mcp_server_appwrite.server import (
     build_operator,
     parse_args,
     register_services,
+    resolve_region_endpoint,
     validate_services,
 )
 from mcp_server_appwrite.tool_manager import ToolManager
@@ -615,6 +616,59 @@ class UploadInputFileTests(unittest.TestCase):
         self.assertIn("url", http.lower())
         self.assertIn("upload", http.lower())
         self.assertNotIn("upload", stdio.lower())
+
+
+class RegionRoutingTests(unittest.TestCase):
+    BASE = "https://cloud.appwrite.io/v1"
+
+    def setUp(self):
+        server_module._project_region_cache.clear()
+
+    def test_resolve_region_endpoint(self):
+        self.assertEqual(
+            resolve_region_endpoint(self.BASE, "sgp"),
+            "https://sgp.cloud.appwrite.io/v1",
+        )
+        # No region, single-region deployments, malformed regions, and
+        # already-prefixed endpoints pass through unchanged.
+        for region in (None, "default", "sgp.evil.example", "sgp/../x", ""):
+            self.assertEqual(resolve_region_endpoint(self.BASE, region), self.BASE)
+        prefixed = "https://sgp.cloud.appwrite.io/v1"
+        self.assertEqual(resolve_region_endpoint(prefixed, "sgp"), prefixed)
+
+    def test_lookup_project_region_caches_successful_lookups(self):
+        client = Mock()
+        client.call.return_value = {"region": "sgp"}
+        with patch.object(
+            server_module, "build_client_for_request", return_value=client
+        ):
+            for _ in range(2):
+                region = server_module._lookup_project_region("console", "tok", "proj")
+                self.assertEqual(region, "sgp")
+        client.call.assert_called_once()
+
+    def test_lookup_project_region_failure_falls_back_uncached(self):
+        client = Mock()
+        client.call.side_effect = RuntimeError("console unavailable")
+        with patch.object(
+            server_module, "build_client_for_request", return_value=client
+        ):
+            self.assertIsNone(
+                server_module._lookup_project_region("console", "tok", "proj")
+            )
+        self.assertEqual(server_module._project_region_cache, {})
+
+    def test_resolve_client_routes_target_project_to_home_region(self):
+        token = Mock(token="tok", claims={"project_id": "console"})
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(server_module, "get_access_token", return_value=token),
+            patch.object(server_module, "_lookup_project_region", return_value="sgp"),
+        ):
+            client = server_module.resolve_client(target_project="proj")
+        # _endpoint is SDK-internal, but it is the only place the resolved
+        # endpoint is observable without a network call (context.py reads it too).
+        self.assertEqual(client._endpoint, "https://sgp.cloud.appwrite.io/v1")
 
 
 if __name__ == "__main__":

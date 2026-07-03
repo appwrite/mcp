@@ -127,7 +127,7 @@ class AuthHelperTests(unittest.TestCase):
             # Age the entry past the TTL.
             fetched_at, doc = auth._discovery_cache[pid]
             auth._discovery_cache[pid] = (
-                fetched_at - auth.DISCOVERY_TTL_SECONDS - 1,
+                fetched_at - auth.CACHE_TTL_SECONDS - 1,
                 doc,
             )
             self.assertIsNone(auth._cached_discovery(pid))
@@ -142,7 +142,7 @@ class AuthHelperTests(unittest.TestCase):
         auth._store_discovery(pid, stale_doc)
         fetched_at, doc = auth._discovery_cache[pid]
         auth._discovery_cache[pid] = (
-            fetched_at - auth.DISCOVERY_TTL_SECONDS - 1,
+            fetched_at - auth.CACHE_TTL_SECONDS - 1,
             doc,
         )
 
