@@ -17,6 +17,8 @@ from appwrite.models.user import User
 SERVER_VERSION = "0.8.3"
 
 DEFAULT_ENDPOINT = "https://cloud.appwrite.io/v1"
+# Region reported by single-region deployments; carries no region subdomain.
+DEFAULT_REGION = "default"
 DEFAULT_TRANSPORT = "stdio"
 TRANSPORTS = {"stdio", "http"}
 VALIDATION_SERVICE_ORDER = (
@@ -57,7 +59,8 @@ PREFERRED_SCOPES = [
     "all",
 ]
 
-DISCOVERY_TTL_SECONDS = 300.0
+# Shared TTL for cached upstream lookups (OAuth discovery, project regions).
+CACHE_TTL_SECONDS = 300.0
 
 # --- http_app -------------------------------------------------------------
 
