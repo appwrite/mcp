@@ -666,6 +666,8 @@ class RegionRoutingTests(unittest.TestCase):
             patch.object(server_module, "_lookup_project_region", return_value="sgp"),
         ):
             client = server_module.resolve_client(target_project="proj")
+        # _endpoint is SDK-internal, but it is the only place the resolved
+        # endpoint is observable without a network call (context.py reads it too).
         self.assertEqual(client._endpoint, "https://sgp.cloud.appwrite.io/v1")
 
 

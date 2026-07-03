@@ -228,7 +228,9 @@ def build_client_for_request(
 # must be addressed through the region subdomain (e.g.
 # ``https://sgp.cloud.appwrite.io/v1``); other gateways reject project-scoped
 # calls with 401 general_access_forbidden. Regions are looked up once per
-# project via the console API and cached briefly.
+# project via the console API and cached briefly; the 'default' sentinel is
+# cached like any region, so a project that migrates regions may be routed to
+# its old home for up to CACHE_TTL_SECONDS.
 _project_region_cache: dict[str, tuple[str, float]] = {}
 
 
@@ -242,6 +244,10 @@ def resolve_region_endpoint(base_endpoint: str, region: str | None) -> str:
     split = urlsplit(base_endpoint)
     hostname = split.hostname or ""
     if not hostname or hostname.startswith(f"{region}."):
+        return base_endpoint
+    if "@" in split.netloc:
+        # Prefixing the netloc would land the region on the userinfo, not the
+        # host; credential-bearing endpoints are never regional, so pass through.
         return base_endpoint
     return urlunsplit(split._replace(netloc=f"{region}.{split.netloc}"))
 
