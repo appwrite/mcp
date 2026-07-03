@@ -84,6 +84,57 @@ class Send401Tests(unittest.TestCase):
         self.assertIn('resource_metadata="', challenge)
         self.assertIn('scope="openid all project:users.read"', challenge)
 
+    def test_401_scope_hint_drops_tokens_outside_rfc6749_grammar(self):
+        # The hint lands inside a quoted-string header value; a malicious or
+        # misconfigured authorization server must not be able to inject headers
+        # (CRLF) or break out of the quoted string (double quote, backslash).
+        pid = "console"
+        auth._store_discovery(
+            pid,
+            {
+                "issuer": "https://cloud.appwrite.io/v1/oauth2/console",
+                "jwks_uri": "https://cloud.appwrite.io/v1/oauth2/console/jwks",
+                "scopes_supported": [
+                    "openid",
+                    'evil"',
+                    "back\\slash",
+                    "crlf\r\nSet-Cookie: pwned=1",
+                    "tab\tseparated",
+                    "spa ce",
+                    "",
+                    42,
+                    "project:users.read",
+                ],
+            },
+        )
+        try:
+            challenge = self._challenge()
+        finally:
+            auth._discovery_cache.pop(pid, None)
+        self.assertIn('scope="openid project:users.read"', challenge)
+        self.assertNotIn("Set-Cookie", challenge)
+        self.assertNotIn("\r", challenge)
+        self.assertNotIn("\n", challenge)
+        self.assertNotIn("evil", challenge)
+        self.assertNotIn("back", challenge)
+
+    def test_401_omits_scope_hint_when_no_valid_scope_tokens_remain(self):
+        pid = "console"
+        auth._store_discovery(
+            pid,
+            {
+                "issuer": "https://cloud.appwrite.io/v1/oauth2/console",
+                "jwks_uri": "https://cloud.appwrite.io/v1/oauth2/console/jwks",
+                "scopes_supported": ['bad"scope', "crlf\r\n"],
+            },
+        )
+        try:
+            challenge = self._challenge()
+        finally:
+            auth._discovery_cache.pop(pid, None)
+        self.assertIn('resource_metadata="', challenge)
+        self.assertNotIn("scope=", challenge)
+
     def test_401_omits_scope_hint_when_discovery_unavailable(self):
         # An unauthenticated 401 must never fail because discovery is down.
         with mock.patch.dict(

@@ -62,6 +62,15 @@ def _log(message: str) -> None:
     print(f"[appwrite-mcp][http] {message}", file=sys.stderr, flush=True)
 
 
+def _is_valid_scope_token(scope: str) -> bool:
+    """RFC 6749 §3.3 scope-token grammar: 1*( %x21 / %x23-5B / %x5D-7E ) —
+    printable ASCII minus space, double quote, and backslash."""
+    return bool(scope) and all(
+        char == "\x21" or "\x23" <= char <= "\x5b" or "\x5d" <= char <= "\x7e"
+        for char in scope
+    )
+
+
 async def _send_401(send: Send) -> None:
     """RFC 9728 §5.1 — 401 with a WWW-Authenticate pointing to resource metadata."""
     metadata_url = resource_metadata_url()
@@ -73,9 +82,17 @@ async def _send_401(send: Send) -> None:
     # MCP spec 2025-11-25 (SEP-835): clients treat the `scope` parameter as
     # authoritative for what to request. Sourced from the same discovery-backed
     # metadata as /.well-known; omitted entirely if discovery is unavailable —
-    # an unauthenticated 401 must never turn into a 500.
+    # an unauthenticated 401 must never turn into a 500. The values land inside
+    # a quoted-string header, so anything outside the RFC 6749 §3.3 scope-token
+    # grammar (quotes, backslashes, control characters such as CRLF) is dropped
+    # rather than injected into the response head.
     try:
         scopes = (await protected_resource_metadata()).get("scopes_supported") or []
+        scopes = [
+            scope
+            for scope in scopes
+            if isinstance(scope, str) and _is_valid_scope_token(scope)
+        ]
         if scopes:
             parts.append(f'scope="{" ".join(scopes)}"')
     except Exception:
