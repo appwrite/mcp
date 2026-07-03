@@ -19,16 +19,19 @@ import sys
 import time
 from urllib.parse import urlsplit, urlunsplit
 
-import anyio
 import httpx
 import jwt
+from anyio import to_thread
 from jwt import PyJWKClient
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 
 from . import telemetry
-
-DEFAULT_ENDPOINT = "https://cloud.appwrite.io/v1"
-DEFAULT_PROJECT_ID = "console"
+from .constants import (
+    DEFAULT_ENDPOINT,
+    DEFAULT_PROJECT_ID,
+    DISCOVERY_TTL_SECONDS,
+    PREFERRED_SCOPES,
+)
 
 
 def _log(message: str) -> None:
@@ -69,10 +72,30 @@ def resource_metadata_url() -> str:
     return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
 
 
-# Cache of scopes_supported, keyed by served project id (process lifetime; the
-# project OAuth config is effectively static). Failed lookups raise and are not
-# cached, so they retry.
-_discovery_cache: dict[str, dict] = {}
+def preferred_scopes() -> list[str]:
+    override = os.getenv("MCP_OAUTH_SCOPES", "").split()
+    return override or list(PREFERRED_SCOPES)
+
+
+# Discovery cache keyed by served project id: (monotonic fetch time, document).
+# Entries are refreshed after a TTL so authorization-server changes (issuer host,
+# scope model) propagate without a redeploy; if a refresh fails, the stale copy
+# keeps serving so an authorization-server blip doesn't take the MCP down.
+_discovery_cache: dict[str, tuple[float, dict]] = {}
+
+
+def _cached_discovery(project_id: str, *, allow_stale: bool = False) -> dict | None:
+    entry = _discovery_cache.get(project_id)
+    if entry is None:
+        return None
+    fetched_at, document = entry
+    if allow_stale or time.monotonic() - fetched_at < DISCOVERY_TTL_SECONDS:
+        return document
+    return None
+
+
+def _store_discovery(project_id: str, document: dict) -> None:
+    _discovery_cache[project_id] = (time.monotonic(), document)
 
 
 def discovery_url() -> str:
@@ -91,47 +114,68 @@ def _validate_discovery(doc: dict, url: str) -> dict:
 
 async def authorization_server_metadata() -> dict:
     project_id = configured_project_id()
-    cached = _discovery_cache.get(project_id)
+    cached = _cached_discovery(project_id)
     if cached is not None:
         return cached
 
     url = discovery_url()
-    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        metadata = _validate_discovery(resp.json(), url)
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            metadata = _validate_discovery(resp.json(), url)
+    except Exception as exc:
+        stale = _cached_discovery(project_id, allow_stale=True)
+        if stale is not None:
+            _log(f"Discovery refresh failed ({exc}); serving stale metadata.")
+            return stale
+        raise
 
-    _discovery_cache[project_id] = metadata
+    _store_discovery(project_id, metadata)
     return metadata
 
 
 def authorization_server_metadata_sync() -> dict:
     project_id = configured_project_id()
-    cached = _discovery_cache.get(project_id)
+    cached = _cached_discovery(project_id)
     if cached is not None:
         return cached
 
     url = discovery_url()
-    resp = httpx.get(url, timeout=10.0, follow_redirects=True)
-    resp.raise_for_status()
-    metadata = _validate_discovery(resp.json(), url)
-    _discovery_cache[project_id] = metadata
+    try:
+        resp = httpx.get(url, timeout=10.0, follow_redirects=True)
+        resp.raise_for_status()
+        metadata = _validate_discovery(resp.json(), url)
+    except Exception as exc:
+        stale = _cached_discovery(project_id, allow_stale=True)
+        if stale is not None:
+            _log(f"Discovery refresh failed ({exc}); serving stale metadata.")
+            return stale
+        raise
+
+    _store_discovery(project_id, metadata)
     return metadata
 
 
-async def supported_scopes() -> list[str]:
-    """Scopes advertised in the protected-resource metadata, sourced live from the
-    served project's authorization-server discovery (`scopes_supported`). This is
-    exactly the set the project's OAuth server will grant, so it never drifts from
-    the tool surface. Raises if discovery is unreachable or malformed (the
-    authorization server is the same Appwrite deployment this MCP depends on)."""
-    metadata = await authorization_server_metadata()
-    scopes = metadata.get("scopes_supported")
-    if not isinstance(scopes, list):
+def _advertised_scopes(metadata: dict) -> list[str]:
+    """The scope set to advertise: the preferred scopes intersected with the
+    authorization server's live ``scopes_supported`` (so a renamed/removed scope
+    is never advertised). Falls back to mirroring the full discovery list when
+    none of the preferred scopes exist — e.g. a self-hosted project with a
+    custom, compact scope catalog."""
+    discovered = metadata.get("scopes_supported")
+    if not isinstance(discovered, list):
         raise ValueError(
             f"authorization server discovery missing scopes_supported: {discovery_url()}"
         )
-    return scopes
+    scopes = [scope for scope in preferred_scopes() if scope in discovered]
+    if scopes:
+        return scopes
+    _log(
+        "None of the preferred scopes are in the authorization server's "
+        "scopes_supported; advertising the full discovered list."
+    )
+    return discovered
 
 
 def build_resource_metadata(scopes: list[str], authorization_servers=None) -> dict:
@@ -145,14 +189,10 @@ def build_resource_metadata(scopes: list[str], authorization_servers=None) -> di
 
 
 async def protected_resource_metadata() -> dict:
-    """RFC 9728 Protected Resource Metadata, with scopes sourced from AS discovery."""
+    """RFC 9728 Protected Resource Metadata, with scopes validated against AS
+    discovery."""
     metadata = await authorization_server_metadata()
-    scopes = metadata.get("scopes_supported")
-    if not isinstance(scopes, list):
-        raise ValueError(
-            f"authorization server discovery missing scopes_supported: {discovery_url()}"
-        )
-    return build_resource_metadata(scopes, [metadata["issuer"]])
+    return build_resource_metadata(_advertised_scopes(metadata), [metadata["issuer"]])
 
 
 def project_id_from_issuer(iss: str | None) -> str | None:
@@ -286,7 +326,7 @@ class AppwriteTokenVerifier(TokenVerifier):
 
     async def verify_token(self, token: str) -> AccessToken | None:
         start = time.monotonic()
-        access_token = await anyio.to_thread.run_sync(self._verify_sync, token)
+        access_token = await to_thread.run_sync(self._verify_sync, token)
         duration = time.monotonic() - start
         if access_token is None:
             # The specific rejection reason was already counted in _verify_sync;

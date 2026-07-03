@@ -32,6 +32,7 @@ integration = [
 dev = [
     "black>=25.1.0",
     "ruff>=0.10.0",
+    "pyright>=1.1.390",
     # Only needed by scripts/build_docs_index.py to (re)build the docs index.
     "pyyaml>=6.0",
 ]
@@ -55,6 +56,13 @@ line-length = 88
 # Line length (E501) is owned by black, so it is disabled here.
 select = ["E", "F", "W", "I"]
 ignore = ["E501"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+include = ["src"]
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "basic"
 
 [build-system]
 requires = ["hatchling"]

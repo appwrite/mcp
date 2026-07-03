@@ -576,13 +576,13 @@ class UploadInputFileTests(unittest.TestCase):
     def test_url_fetch_size_cap_via_stream(self):
         response = _FakeResponse(data=b"0123456789")  # 10 bytes, no content-length
         addr, client = self._patch_fetch(response)
-        with addr, client, patch.object(server_module, "_MAX_FETCH_BYTES", 4):
+        with addr, client, patch.object(server_module, "MAX_FETCH_BYTES", 4):
             with self.assertRaises(ValueError) as ctx:
                 _coerce_argument("file", {"url": "https://example.com/x"}, InputFile)
         self.assertIn("max", str(ctx.exception).lower())
 
     def test_inline_content_size_cap(self):
-        with patch.object(server_module, "_MAX_INLINE_BYTES", 4):
+        with patch.object(server_module, "MAX_INLINE_BYTES", 4):
             with self.assertRaises(ValueError) as ctx:
                 _coerce_argument(
                     "file",

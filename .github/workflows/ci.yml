@@ -33,6 +33,9 @@ jobs:
       - name: Check formatting
         run: uv run --group dev black --check src tests
 
+      - name: Type check
+        run: uv run --group dev pyright
+
   unit:
     name: Unit
     runs-on: ubuntu-latest

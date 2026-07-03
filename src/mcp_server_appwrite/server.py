@@ -37,34 +37,28 @@ from mcp.server import NotificationOptions, Server
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.models import InitializationOptions
+from pydantic import AnyUrl
 
 from . import telemetry
+from .constants import (
+    CATALOG_URI,
+    DEFAULT_ENDPOINT,
+    DEFAULT_TRANSPORT,
+    EXCLUDED_SERVICES,
+    FETCH_MAX_REDIRECTS,
+    FETCH_TIMEOUT_SECONDS,
+    HOSTED_PATH_GUIDANCE,
+    MAX_FETCH_BYTES,
+    MAX_INLINE_BYTES,
+    SERVER_VERSION,
+    TRANSPORTS,
+    VALIDATION_SERVICE_ORDER,
+)
 from .context import _normalize_sample_limit, get_appwrite_context
 from .docs_search import DocsSearch
-from .operator import CATALOG_URI, Operator, _parse_tool_name
+from .operator import Operator, _parse_tool_name
 from .service import Service
 from .tool_manager import ToolManager
-
-SERVER_VERSION = "0.8.1"
-
-DEFAULT_ENDPOINT = "https://cloud.appwrite.io/v1"
-DEFAULT_TRANSPORT = "stdio"
-TRANSPORTS = {"stdio", "http"}
-VALIDATION_SERVICE_ORDER = (
-    "tables_db",
-    "users",
-    "teams",
-    "functions",
-    "sites",
-    "storage",
-    "messaging",
-    "locale",
-    "avatars",
-)
-
-# Service modules in the Appwrite SDK to skip (none by default — every service the
-# installed SDK ships is exposed). Add a module name here to hide a service.
-EXCLUDED_SERVICES: frozenset[str] = frozenset()
 
 
 def _discover_service_classes() -> dict[str, type]:
@@ -348,17 +342,6 @@ def _coerce_enum(enum_type: type[Enum], value: Any, param_name: str) -> Any:
 #          paths are rejected with guidance; uploads come via URL fetch or inline bytes.
 _UPLOAD_TRANSPORT: str = "stdio"
 
-_MAX_FETCH_BYTES = 25 * 1024 * 1024  # 25 MB cap on server-fetched files
-_MAX_INLINE_BYTES = 256 * 1024  # 256 KB cap on decoded inline content
-_FETCH_TIMEOUT_SECONDS = 30.0
-_FETCH_MAX_REDIRECTS = 5
-
-_HOSTED_PATH_GUIDANCE = (
-    "The hosted Appwrite MCP server cannot read local file paths. For '{param}', pass a "
-    'public URL as {{"url": "https://..."}} (preferred), or a small file inline as '
-    '{{"filename": "...", "content": "<base64>", "encoding": "base64"}}.'
-)
-
 
 def _configure_uploads(transport: str) -> None:
     """Set the upload mode for this server process. Called once from build_mcp_server."""
@@ -434,9 +417,9 @@ def _fetch_input_file(url: str, param_name: str) -> InputFile:
     _validate_fetch_url(url)
     try:
         with httpx.Client(
-            timeout=_FETCH_TIMEOUT_SECONDS,
+            timeout=FETCH_TIMEOUT_SECONDS,
             follow_redirects=True,
-            max_redirects=_FETCH_MAX_REDIRECTS,
+            max_redirects=FETCH_MAX_REDIRECTS,
             limits=httpx.Limits(max_connections=1),
         ) as client:
             with client.stream("GET", url) as resp:
@@ -446,22 +429,22 @@ def _fetch_input_file(url: str, param_name: str) -> InputFile:
 
                 declared = resp.headers.get("content-length")
                 if declared is not None and declared.isdigit():
-                    if int(declared) > _MAX_FETCH_BYTES:
+                    if int(declared) > MAX_FETCH_BYTES:
                         telemetry.record_upload_error("too_large")
                         raise ValueError(
                             f"File at URL for '{param_name}' is too large "
-                            f"({declared} bytes); max is {_MAX_FETCH_BYTES} bytes."
+                            f"({declared} bytes); max is {MAX_FETCH_BYTES} bytes."
                         )
 
                 chunks: list[bytes] = []
                 total = 0
                 for chunk in resp.iter_bytes():
                     total += len(chunk)
-                    if total > _MAX_FETCH_BYTES:
+                    if total > MAX_FETCH_BYTES:
                         telemetry.record_upload_error("too_large")
                         raise ValueError(
                             f"File at URL for '{param_name}' exceeds the max of "
-                            f"{_MAX_FETCH_BYTES} bytes."
+                            f"{MAX_FETCH_BYTES} bytes."
                         )
                     chunks.append(chunk)
 
@@ -484,6 +467,9 @@ def _fetch_input_file(url: str, param_name: str) -> InputFile:
 def _coerce_inline_content(value: Mapping, param_name: str) -> InputFile:
     filename = value.get("filename")
     content = value.get("content")
+    if content is None:
+        telemetry.record_upload_error("decode")
+        raise ValueError(f"Missing inline 'content' for '{param_name}'.")
     encoding = str(value.get("encoding", "utf-8")).lower()
     if encoding == "base64":
         try:
@@ -499,11 +485,11 @@ def _coerce_inline_content(value: Mapping, param_name: str) -> InputFile:
             f"Invalid encoding for '{param_name}'. Expected 'utf-8' or 'base64'."
         )
 
-    if len(data) > _MAX_INLINE_BYTES:
+    if len(data) > MAX_INLINE_BYTES:
         telemetry.record_upload_error("too_large")
         raise ValueError(
             f"Inline content for '{param_name}' is too large "
-            f"({len(data)} bytes, max {_MAX_INLINE_BYTES}). For larger files pass "
+            f"({len(data)} bytes, max {MAX_INLINE_BYTES}). For larger files pass "
             '{"url": "https://..."} so the server can download it directly.'
         )
 
@@ -514,7 +500,7 @@ def _coerce_inline_content(value: Mapping, param_name: str) -> InputFile:
 def _coerce_path(path: str, param_name: str) -> InputFile:
     if _UPLOAD_TRANSPORT != "stdio":
         telemetry.record_upload_error("path_unsupported")
-        raise ValueError(_HOSTED_PATH_GUIDANCE.format(param=param_name))
+        raise ValueError(HOSTED_PATH_GUIDANCE.format(param=param_name))
     return InputFile.from_path(path)
 
 
@@ -594,9 +580,8 @@ def _expected_argument_names(tool_info: dict) -> set[str]:
     if parameter_names:
         return parameter_names
 
-    input_schema = (
-        tool_info.get("definition").inputSchema if tool_info.get("definition") else None
-    )
+    definition = tool_info.get("definition")
+    input_schema = definition.inputSchema if definition is not None else None
     properties = (
         input_schema.get("properties", {}) if isinstance(input_schema, dict) else {}
     )
@@ -688,9 +673,8 @@ def _validate_argument_keys(
 
 def _prepare_arguments(tool_info: dict, arguments: dict[str, Any]) -> dict[str, Any]:
     prepared_arguments = _normalize_argument_keys(tool_info, arguments)
-    tool_name = (
-        tool_info.get("definition").name if tool_info.get("definition") else "tool"
-    )
+    definition = tool_info.get("definition")
+    tool_name = definition.name if definition is not None else "tool"
     _validate_argument_keys(tool_name, tool_info, prepared_arguments)
     for param_name, param_type in tool_info.get("parameter_types", {}).items():
         if param_name not in prepared_arguments:
@@ -821,7 +805,7 @@ def _guess_mime_type(data: bytes, tool_name: str, arguments: dict[str, Any]) -> 
 
 def _format_binary_result(
     tool_name: str, data: bytes, arguments: dict[str, Any]
-) -> list[types.ImageContent | types.EmbeddedResource]:
+) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
     mime_type = _guess_mime_type(data, tool_name, arguments)
     encoded = base64.b64encode(data).decode("ascii")
     if mime_type.startswith("image/"):
@@ -831,7 +815,7 @@ def _format_binary_result(
         types.EmbeddedResource(
             type="resource",
             resource=types.BlobResourceContents(
-                uri=f"appwrite://tool/{tool_name}",
+                uri=AnyUrl(f"appwrite://tool/{tool_name}"),
                 blob=encoded,
                 mimeType=mime_type,
             ),

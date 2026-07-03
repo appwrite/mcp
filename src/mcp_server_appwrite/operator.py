@@ -11,22 +11,24 @@ from uuid import uuid4
 
 import mcp.types as types
 from mcp.server.lowlevel.helper_types import ReadResourceContents
+from pydantic import AnyUrl
 
 from . import telemetry
+from .constants import (
+    CATALOG_URI,
+    CREATE_HINTS,
+    DELETE_HINTS,
+    PREVIEW_THRESHOLD,
+    READ_HINTS,
+    READ_VERBS,
+    RESULT_STORE_SIZE,
+    RESULT_URI_TEMPLATE,
+    SEARCH_LIMIT,
+    UPDATE_HINTS,
+    VERBS,
+)
 from .docs_search import DocsSearch
 from .tool_manager import ToolManager
-
-SEARCH_LIMIT = 8
-PREVIEW_THRESHOLD = 800
-RESULT_STORE_SIZE = 50
-CATALOG_URI = "appwrite://operator/catalog"
-RESULT_URI_TEMPLATE = "appwrite://operator/results/{result_id}"
-VERBS = {"list", "get", "create", "update", "delete"}
-READ_VERBS = {"list", "get"}
-CREATE_HINTS = {"add", "build", "create", "insert", "make", "new", "provision"}
-UPDATE_HINTS = {"change", "edit", "modify", "rename", "set", "update"}
-DELETE_HINTS = {"delete", "destroy", "drop", "remove"}
-READ_HINTS = {"fetch", "find", "get", "list", "read", "search", "show", "view"}
 
 ToolContent = types.TextContent | types.ImageContent | types.EmbeddedResource
 # (tool_name, arguments, project_id, organization_id) -> content
@@ -300,7 +302,7 @@ class Operator:
     def list_resources(self) -> list[types.Resource]:
         resources = [
             types.Resource(
-                uri=CATALOG_URI,
+                uri=AnyUrl(CATALOG_URI),
                 name="Appwrite Hidden Tool Catalog",
                 description="Full internal Appwrite tool catalog used by the Appwrite operator surface.",
                 mimeType="application/json",
@@ -311,7 +313,7 @@ class Operator:
         for stored_result in self._result_store.list():
             resources.append(
                 types.Resource(
-                    uri=stored_result.uri,
+                    uri=AnyUrl(stored_result.uri),
                     name=f"{stored_result.tool_name} result",
                     description="Stored Appwrite tool result. Read this resource to inspect the full output.",
                     mimeType="application/json",

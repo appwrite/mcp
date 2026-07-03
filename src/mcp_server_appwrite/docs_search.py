@@ -22,19 +22,19 @@ from typing import Any, Callable
 import mcp.types as types
 
 from . import telemetry
+from .constants import (
+    DATA_DIR,
+    DOCS_DEFAULT_LIMIT,
+    DOCS_DEFAULT_MIN_SCORE,
+    DOCS_MAX_LIMIT,
+    DOCS_MIN_QUERY_LENGTH,
+    DOCS_TOOL_NAME,
+    EMBED_MODEL,
+    META_FILE,
+    VECTORS_FILE,
+)
 
 ToolContent = types.TextContent | types.ImageContent | types.EmbeddedResource
-
-TOOL_NAME = "appwrite_search_docs"
-EMBED_MODEL = "text-embedding-3-small"
-DEFAULT_LIMIT = 5
-MAX_LIMIT = 10
-DEFAULT_MIN_SCORE = 0.25
-MIN_QUERY_LENGTH = 3
-
-DATA_DIR = Path(__file__).parent / "data"
-VECTORS_FILE = "docs_index.npz"
-META_FILE = "docs_index_meta.json"
 
 # An embedder maps a query string to its embedding vector.
 Embedder = Callable[[str], list[float]]
@@ -63,7 +63,7 @@ def _clamp_limit(value: Any, default: int) -> int:
     limit = int(value)
     if limit < 1:
         raise ValueError("limit must be at least 1.")
-    return min(limit, MAX_LIMIT)
+    return min(limit, DOCS_MAX_LIMIT)
 
 
 class DocsSearch:
@@ -80,14 +80,14 @@ class DocsSearch:
         data_dir: Path | None = None,
         embedder: Embedder | None = None,
         min_score: float | None = None,
-        default_limit: int = DEFAULT_LIMIT,
+        default_limit: int = DOCS_DEFAULT_LIMIT,
     ):
         self._data_dir = data_dir or DATA_DIR
         self._embedder = embedder if embedder is not None else _default_embedder()
         self._min_score = (
             min_score
             if min_score is not None
-            else float(os.getenv("DOCS_SEARCH_MIN_SCORE", DEFAULT_MIN_SCORE))
+            else float(os.getenv("DOCS_SEARCH_MIN_SCORE", DOCS_DEFAULT_MIN_SCORE))
         )
         self._default_limit = int(os.getenv("DOCS_SEARCH_LIMIT", default_limit))
         self._vectors = None  # np.ndarray [N, D], L2-normalized
@@ -118,7 +118,7 @@ class DocsSearch:
 
     def get_tool(self) -> types.Tool:
         return types.Tool(
-            name=TOOL_NAME,
+            name=DOCS_TOOL_NAME,
             description=(
                 "Search the Appwrite documentation with a natural-language query and "
                 "return the most relevant documentation pages with their full content. "
@@ -136,7 +136,7 @@ class DocsSearch:
                     "limit": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": MAX_LIMIT,
+                        "maximum": DOCS_MAX_LIMIT,
                         "description": f"Maximum number of pages to return. Defaults to {self._default_limit}.",
                     },
                 },
@@ -148,9 +148,9 @@ class DocsSearch:
     def search(self, arguments: dict[str, Any] | None) -> list[ToolContent]:
         arguments = arguments or {}
         query = str(arguments.get("query", "")).strip()
-        if len(query) < MIN_QUERY_LENGTH:
+        if len(query) < DOCS_MIN_QUERY_LENGTH:
             raise ValueError(
-                f"query must be at least {MIN_QUERY_LENGTH} characters long."
+                f"query must be at least {DOCS_MIN_QUERY_LENGTH} characters long."
             )
         if not self.available:
             raise RuntimeError(
@@ -184,6 +184,12 @@ class DocsSearch:
     def _rank(self, query: str, limit: int) -> tuple[list[dict[str, Any]], float]:
         """Return the ranked pages and the embedding call's duration in seconds."""
         import numpy as np
+
+        # _rank is only reachable when the index is loaded and an embedder exists
+        # (guarded by `available`); narrow the optionals for the type checker.
+        assert self._embedder is not None
+        assert self._vectors is not None
+        assert self._chunk_page is not None
 
         embed_start = time.monotonic()
         embedding = np.asarray(self._embedder(query), dtype=np.float32)

@@ -13,6 +13,20 @@ ENV = {
     "APPWRITE_PROJECT_ID": "console",
 }
 
+# The issuer the authorization server *discovers to* is the regional host, which
+# deliberately differs from the configured APPWRITE_ENDPOINT host — production
+# Cloud discovery returns e.g. fra.cloud.appwrite.io while the MCP is configured
+# with cloud.appwrite.io.
+DISCOVERED_ISSUER = "https://fra.cloud.appwrite.io/v1/oauth2/console"
+
+
+def discovery_doc(scopes: list[str], issuer: str = DISCOVERED_ISSUER) -> dict:
+    return {
+        "issuer": issuer,
+        "jwks_uri": f"{issuer}/.well-known/jwks.json",
+        "scopes_supported": scopes,
+    }
+
 
 class AuthHelperTests(unittest.TestCase):
     def setUp(self):
@@ -40,20 +54,112 @@ class AuthHelperTests(unittest.TestCase):
         self.assertEqual(meta["bearer_methods_supported"], ["header"])
         self.assertEqual(meta["scopes_supported"], ["users.read", "teams.read"])
 
-    def test_supported_scopes_uses_cache_without_network(self):
+    def test_advertised_scopes_use_cache_without_network(self):
         pid = auth.configured_project_id()
-        auth._discovery_cache[pid] = {
-            "issuer": "https://fra.cloud.appwrite.io/v1/oauth2/console",
-            "jwks_uri": "https://fra.cloud.appwrite.io/v1/oauth2/console/.well-known/jwks.json",
-            "scopes_supported": ["rows.read", "rows.write"],
-        }
+        auth._store_discovery(pid, discovery_doc(["rows.read", "rows.write"]))
         try:
-            scopes = asyncio.run(auth.supported_scopes())
+            scopes = asyncio.run(auth.protected_resource_metadata())["scopes_supported"]
         finally:
             auth._discovery_cache.pop(pid, None)
+        # None of the preferred scopes exist, so the full discovered list is
+        # mirrored (custom scope catalogs on self-hosted projects).
         self.assertEqual(scopes, ["rows.read", "rows.write"])
 
-    def test_supported_scopes_reads_dcr_enabled_discovery(self):
+    def test_advertised_scopes_prefer_curated_subset(self):
+        # The Cloud console authorization server advertises a very large
+        # fine-grained scope catalog; the MCP must advertise only the compact
+        # preferred set (clients request every advertised scope, and the
+        # authorize endpoint caps the scope parameter length).
+        pid = auth.configured_project_id()
+        auth._store_discovery(
+            pid,
+            discovery_doc(
+                [
+                    "openid",
+                    "profile",
+                    "email",
+                    "phone",
+                    "all",
+                    "project:all",
+                    "organization:all",
+                    "project:users.read",
+                    "project:users.write",
+                    "organization:projects.read",
+                ]
+            ),
+        )
+        try:
+            scopes = asyncio.run(auth.protected_resource_metadata())["scopes_supported"]
+        finally:
+            auth._discovery_cache.pop(pid, None)
+        self.assertEqual(
+            scopes,
+            ["openid", "profile", "email", "all", "project:all", "organization:all"],
+        )
+
+    def test_advertised_scopes_drop_preferred_scopes_missing_from_discovery(self):
+        pid = auth.configured_project_id()
+        auth._store_discovery(pid, discovery_doc(["openid", "email", "all"]))
+        try:
+            scopes = asyncio.run(auth.protected_resource_metadata())["scopes_supported"]
+        finally:
+            auth._discovery_cache.pop(pid, None)
+        self.assertEqual(scopes, ["openid", "email", "all"])
+
+    def test_advertised_scopes_env_override(self):
+        pid = auth.configured_project_id()
+        auth._store_discovery(
+            pid, discovery_doc(["openid", "email", "all", "project:all"])
+        )
+        try:
+            with mock.patch.dict(
+                os.environ, {"MCP_OAUTH_SCOPES": "openid project:all"}
+            ):
+                scopes = asyncio.run(auth.protected_resource_metadata())[
+                    "scopes_supported"
+                ]
+        finally:
+            auth._discovery_cache.pop(pid, None)
+        self.assertEqual(scopes, ["openid", "project:all"])
+
+    def test_discovery_cache_expires_after_ttl(self):
+        pid = auth.configured_project_id()
+        auth._store_discovery(pid, {"issuer": "x", "jwks_uri": "y"})
+        try:
+            self.assertIsNotNone(auth._cached_discovery(pid))
+            # Age the entry past the TTL.
+            fetched_at, doc = auth._discovery_cache[pid]
+            auth._discovery_cache[pid] = (
+                fetched_at - auth.DISCOVERY_TTL_SECONDS - 1,
+                doc,
+            )
+            self.assertIsNone(auth._cached_discovery(pid))
+            # A stale entry is still reachable as a fallback for failed refreshes.
+            self.assertIsNotNone(auth._cached_discovery(pid, allow_stale=True))
+        finally:
+            auth._discovery_cache.pop(pid, None)
+
+    def test_stale_discovery_served_when_refresh_fails(self):
+        pid = auth.configured_project_id()
+        stale_doc = discovery_doc(["openid"])
+        auth._store_discovery(pid, stale_doc)
+        fetched_at, doc = auth._discovery_cache[pid]
+        auth._discovery_cache[pid] = (
+            fetched_at - auth.DISCOVERY_TTL_SECONDS - 1,
+            doc,
+        )
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("network down")
+
+        try:
+            with mock.patch.object(auth.httpx, "get", _boom):
+                metadata = auth.authorization_server_metadata_sync()
+        finally:
+            auth._discovery_cache.pop(pid, None)
+        self.assertEqual(metadata, stale_doc)
+
+    def test_metadata_reads_dcr_enabled_discovery(self):
         # The authorization server's discovery document now also advertises
         # `registration_endpoint` (RFC 7591). Sourcing scopes must keep working
         # against that document — the MCP points clients at this same AS, and
@@ -90,7 +196,9 @@ class AuthHelperTests(unittest.TestCase):
 
         with mock.patch.object(auth.httpx, "AsyncClient", _FakeAsyncClient):
             try:
-                scopes = asyncio.run(auth.supported_scopes())
+                scopes = asyncio.run(auth.protected_resource_metadata())[
+                    "scopes_supported"
+                ]
             finally:
                 auth._discovery_cache.pop("console", None)
 
@@ -108,7 +216,7 @@ class AuthHelperTests(unittest.TestCase):
             f"{discovery['issuer']}/register",
         )
 
-    def test_supported_scopes_raises_when_discovery_unreachable(self):
+    def test_metadata_raises_when_discovery_unreachable(self):
         # Point discovery at an unroutable address so the fetch fails fast.
         with mock.patch.dict(
             os.environ,
@@ -118,7 +226,7 @@ class AuthHelperTests(unittest.TestCase):
             },
         ):
             with self.assertRaises(Exception):
-                asyncio.run(auth.supported_scopes())
+                asyncio.run(auth.protected_resource_metadata())
         self.assertNotIn("unreachableproj", auth._discovery_cache)
 
     def test_project_id_from_issuer_accepts_matching_issuer(self):
@@ -148,11 +256,7 @@ class AuthHelperTests(unittest.TestCase):
 
     def test_protected_resource_metadata_uses_discovered_issuer(self):
         pid = auth.configured_project_id()
-        auth._discovery_cache[pid] = {
-            "issuer": "https://fra.cloud.appwrite.io/v1/oauth2/console",
-            "jwks_uri": "https://fra.cloud.appwrite.io/v1/oauth2/console/.well-known/jwks.json",
-            "scopes_supported": ["users.read"],
-        }
+        auth._store_discovery(pid, discovery_doc(["users.read"]))
         try:
             meta = asyncio.run(auth.protected_resource_metadata())
         finally:
@@ -160,7 +264,7 @@ class AuthHelperTests(unittest.TestCase):
 
         self.assertEqual(
             meta["authorization_servers"],
-            ["https://fra.cloud.appwrite.io/v1/oauth2/console"],
+            [DISCOVERED_ISSUER],
         )
 
 
@@ -200,11 +304,7 @@ class AudienceTests(unittest.TestCase):
 
     def test_verify_rejects_token_with_undiscovered_issuer(self):
         pid = auth.configured_project_id()
-        auth._discovery_cache[pid] = {
-            "issuer": "https://fra.cloud.appwrite.io/v1/oauth2/console",
-            "jwks_uri": "https://fra.cloud.appwrite.io/v1/oauth2/console/.well-known/jwks.json",
-            "scopes_supported": ["users.read"],
-        }
+        auth._store_discovery(pid, discovery_doc(["users.read"]))
         token = jwt.encode(
             {"iss": "https://cloud.appwrite.io/v1/oauth2/console"},
             "x" * 32,
