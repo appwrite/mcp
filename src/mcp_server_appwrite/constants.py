@@ -14,7 +14,7 @@ from appwrite.models.user import User
 
 # --- server ---------------------------------------------------------------
 
-SERVER_VERSION = "0.8.3"
+SERVER_VERSION = "0.8.4"
 
 DEFAULT_ENDPOINT = "https://cloud.appwrite.io/v1"
 # Region reported by single-region deployments; carries no region subdomain.
