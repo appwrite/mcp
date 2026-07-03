@@ -92,10 +92,7 @@ class AuthHelperTests(unittest.TestCase):
             scopes = asyncio.run(auth.protected_resource_metadata())["scopes_supported"]
         finally:
             auth._discovery_cache.pop(pid, None)
-        self.assertEqual(
-            scopes,
-            ["openid", "profile", "email", "all", "project:all", "organization:all"],
-        )
+        self.assertEqual(scopes, ["openid", "profile", "email", "all"])
 
     def test_advertised_scopes_drop_preferred_scopes_missing_from_discovery(self):
         pid = auth.configured_project_id()

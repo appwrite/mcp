@@ -55,8 +55,6 @@ PREFERRED_SCOPES = [
     "profile",
     "email",
     "all",
-    "project:all",
-    "organization:all",
 ]
 
 DISCOVERY_TTL_SECONDS = 300.0
