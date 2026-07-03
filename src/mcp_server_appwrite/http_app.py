@@ -70,6 +70,16 @@ async def _send_401(send: Send) -> None:
         'error_description="Authentication required"',
         f'resource_metadata="{metadata_url}"',
     ]
+    # MCP spec 2025-11-25 (SEP-835): clients treat the `scope` parameter as
+    # authoritative for what to request. Sourced from the same discovery-backed
+    # metadata as /.well-known; omitted entirely if discovery is unavailable —
+    # an unauthenticated 401 must never turn into a 500.
+    try:
+        scopes = (await protected_resource_metadata()).get("scopes_supported") or []
+        if scopes:
+            parts.append(f'scope="{" ".join(scopes)}"')
+    except Exception:
+        pass
     www_authenticate = f"Bearer {', '.join(parts)}"
 
     body = json.dumps(

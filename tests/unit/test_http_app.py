@@ -1,7 +1,11 @@
+import asyncio
 import logging
+import os
 import unittest
+from unittest import mock
 
-from mcp_server_appwrite.http_app import HealthzAccessLogFilter
+from mcp_server_appwrite import auth
+from mcp_server_appwrite.http_app import HealthzAccessLogFilter, _send_401
 
 
 class HealthzAccessLogFilterTests(unittest.TestCase):
@@ -35,6 +39,64 @@ class HealthzAccessLogFilterTests(unittest.TestCase):
         record = self._record(("127.0.0.1:12345", "GET", "/mcp", "1.1", 401))
 
         self.assertTrue(self.filter.filter(record))
+
+
+class Send401Tests(unittest.TestCase):
+    ENV = {
+        "APPWRITE_ENDPOINT": "https://cloud.appwrite.io/v1",
+        "MCP_PUBLIC_URL": "https://mcp.appwrite.io",
+        "APPWRITE_PROJECT_ID": "console",
+    }
+
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ, self.ENV, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _challenge(self) -> str:
+        messages = []
+
+        async def send(message):
+            messages.append(message)
+
+        asyncio.run(_send_401(send))
+        start = messages[0]
+        self.assertEqual(start["status"], 401)
+        headers = dict(start["headers"])
+        return headers[b"www-authenticate"].decode()
+
+    def test_401_includes_scope_hint_from_discovery(self):
+        # SEP-835: the challenge's `scope` parameter mirrors the advertised
+        # catalog so clients know exactly what to request.
+        pid = "console"
+        auth._store_discovery(
+            pid,
+            {
+                "issuer": "https://cloud.appwrite.io/v1/oauth2/console",
+                "jwks_uri": "https://cloud.appwrite.io/v1/oauth2/console/jwks",
+                "scopes_supported": ["openid", "all", "project:users.read"],
+            },
+        )
+        try:
+            challenge = self._challenge()
+        finally:
+            auth._discovery_cache.pop(pid, None)
+        self.assertIn('resource_metadata="', challenge)
+        self.assertIn('scope="openid all project:users.read"', challenge)
+
+    def test_401_omits_scope_hint_when_discovery_unavailable(self):
+        # An unauthenticated 401 must never fail because discovery is down.
+        with mock.patch.dict(
+            os.environ,
+            {
+                "APPWRITE_ENDPOINT": "http://127.0.0.1:1/v1",
+                "APPWRITE_PROJECT_ID": "unreachableproj",
+            },
+        ):
+            challenge = self._challenge()
+        self.assertIn('error="invalid_token"', challenge)
+        self.assertIn('resource_metadata="', challenge)
+        self.assertNotIn("scope=", challenge)
 
 
 if __name__ == "__main__":

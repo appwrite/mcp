@@ -158,17 +158,21 @@ def authorization_server_metadata_sync() -> dict:
 
 
 def _advertised_scopes(metadata: dict) -> list[str]:
-    """The scope set to advertise: the preferred scopes intersected with the
-    authorization server's live ``scopes_supported`` (so a renamed/removed scope
-    is never advertised). Falls back to mirroring the full discovery list when
-    none of the preferred scopes exist — e.g. a self-hosted project with a
-    custom, compact scope catalog."""
+    """The scope set to advertise. By default (no curated list) this mirrors the
+    authorization server's full live ``scopes_supported`` catalog — clients then
+    request everything and consent-time narrowing is the control point. When a
+    curated list is configured (``MCP_OAUTH_SCOPES``), it is intersected with
+    the discovered catalog so a renamed/removed scope is never advertised,
+    falling back to the full discovered list when the intersection is empty."""
     discovered = metadata.get("scopes_supported")
     if not isinstance(discovered, list):
         raise ValueError(
             f"authorization server discovery missing scopes_supported: {discovery_url()}"
         )
-    scopes = [scope for scope in preferred_scopes() if scope in discovered]
+    preferred = preferred_scopes()
+    if not preferred:
+        return discovered
+    scopes = [scope for scope in preferred if scope in discovered]
     if scopes:
         return scopes
     _log(

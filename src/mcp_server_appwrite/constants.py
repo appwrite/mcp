@@ -50,12 +50,11 @@ HOSTED_PATH_GUIDANCE = (
 
 DEFAULT_PROJECT_ID = "console"
 
-PREFERRED_SCOPES = [
-    "openid",
-    "profile",
-    "email",
-    "all",
-]
+# Curated scope allowlist. Empty means "no curation": the MCP mirrors the
+# authorization server's full ``scopes_supported`` catalog so clients request
+# every granular scope and the consent screen becomes the narrowing control
+# point. A deployment can still pin a curated set via ``MCP_OAUTH_SCOPES``.
+PREFERRED_SCOPES: list[str] = []
 
 DISCOVERY_TTL_SECONDS = 300.0
 
