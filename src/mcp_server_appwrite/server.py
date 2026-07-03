@@ -261,7 +261,12 @@ def _lookup_project_region(
         project = client.call(
             "get",
             f"/projects/{target_project}",
-            headers={"accept": "application/json"},
+            # The SDK does not turn set_project into a header on raw call();
+            # send the console project header explicitly (as context.py does).
+            headers={
+                "accept": "application/json",
+                "x-appwrite-project": console_project_id,
+            },
             params={},
         )
     except Exception:
