@@ -5,57 +5,14 @@ from typing import Any
 
 from appwrite.client import Client
 from appwrite.exception import AppwriteException
-from appwrite.models.bucket import Bucket
-from appwrite.models.database import Database
-from appwrite.models.function import Function
-from appwrite.models.message import Message
 from appwrite.models.project import Project
-from appwrite.models.site import Site
 from appwrite.models.team import Team
 from appwrite.models.user import User
 from appwrite.query import Query
 
+from .constants import REDACTED_KEYS, SERVICE_PROBES
+
 ContextClientFactory = Callable[[str | None, str | None], Client]
-
-SERVICE_PROBES = {
-    "tablesdb": {
-        "path": "/tablesdb",
-        "items_key": "databases",
-        "model": Database,
-    },
-    "users": {
-        "path": "/users",
-        "items_key": "users",
-        "model": User,
-    },
-    "storage": {
-        "path": "/storage/buckets",
-        "items_key": "buckets",
-        "model": Bucket,
-    },
-    "functions": {
-        "path": "/functions",
-        "items_key": "functions",
-        "model": Function,
-    },
-    "sites": {
-        "path": "/sites",
-        "items_key": "sites",
-        "model": Site,
-    },
-    "messaging": {
-        "path": "/messaging/messages",
-        "items_key": "messages",
-        "model": Message,
-    },
-    "teams": {
-        "path": "/teams",
-        "items_key": "teams",
-        "model": Team,
-    },
-}
-
-REDACTED_KEYS = {"password", "secret", "key", "token", "otp", "cookie", "session"}
 
 
 def get_appwrite_context(

@@ -37,7 +37,7 @@ import threading
 import time
 from typing import Any, Iterable
 
-_ACTIVE_WINDOW_SECONDS = 300.0  # rolling window for "active users/clients" gauges
+from .constants import ACTIVE_WINDOW_SECONDS
 
 _enabled = False
 _lock = threading.Lock()
@@ -46,7 +46,7 @@ _lock = threading.Lock()
 _instruments: dict[str, Any] = {}
 
 # Rolling TTL sets for the active-user/active-client observable gauges. Keys expire
-# after _ACTIVE_WINDOW_SECONDS so the gauges reflect a recent window, not all time.
+# after ACTIVE_WINDOW_SECONDS so the gauges reflect a recent window, not all time.
 _active_users: dict[str, float] = {}
 _active_clients: dict[str, float] = {}  # key: client name -> last-seen monotonic-ish ts
 _active_lock = threading.Lock()
@@ -302,7 +302,7 @@ def _observe_active_clients(_options: Any) -> Iterable[Any]:
 def _touch_user(subject: str | None) -> None:
     if not subject:
         return
-    expiry = time.monotonic() + _ACTIVE_WINDOW_SECONDS
+    expiry = time.monotonic() + ACTIVE_WINDOW_SECONDS
     with _active_lock:
         _active_users[subject] = expiry
 
@@ -313,7 +313,7 @@ def _touch_client(client_name: str | None, subject: str | None) -> None:
     if not client_name:
         return
     key = f"{client_name}\x00{subject or ''}"
-    expiry = time.monotonic() + _ACTIVE_WINDOW_SECONDS
+    expiry = time.monotonic() + ACTIVE_WINDOW_SECONDS
     with _active_lock:
         _active_clients[key] = expiry
 

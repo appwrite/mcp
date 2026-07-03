@@ -29,7 +29,7 @@ from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route
-from starlette.types import Receive, Scope, Send
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import telemetry
 from .auth import (
@@ -37,19 +37,12 @@ from .auth import (
     protected_resource_metadata,
     resource_metadata_url,
 )
+from .constants import CORS_HEADERS, SERVER_VERSION
 from .server import (
-    SERVER_VERSION,
     build_catalog_tools_manager,
     build_mcp_server,
     build_operator,
 )
-
-_CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version",
-    "Access-Control-Expose-Headers": "Mcp-Session-Id, WWW-Authenticate",
-}
 
 
 class HealthzAccessLogFilter(logging.Filter):
@@ -98,7 +91,7 @@ class RequireBearer:
     against the token's granted scopes), so the gate only requires a valid token.
     """
 
-    def __init__(self, app: object) -> None:
+    def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -123,7 +116,7 @@ class RequireBearer:
         await self.app(scope, receive, send)
 
     async def _preflight(self, send: Send) -> None:
-        headers = [(k.lower().encode(), v.encode()) for k, v in _CORS_HEADERS.items()]
+        headers = [(k.lower().encode(), v.encode()) for k, v in CORS_HEADERS.items()]
         await send({"type": "http.response.start", "status": 204, "headers": headers})
         await send({"type": "http.response.body", "body": b""})
 
@@ -137,7 +130,7 @@ def _has_authorization_header(scope: Scope) -> bool:
 
 async def protected_resource_metadata_endpoint(request: Request) -> JSONResponse:
     metadata = await protected_resource_metadata()
-    return JSONResponse(metadata, headers=_CORS_HEADERS)
+    return JSONResponse(metadata, headers=CORS_HEADERS)
 
 
 async def health_endpoint(request: Request) -> PlainTextResponse:

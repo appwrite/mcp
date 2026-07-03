@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from mcp_server_appwrite.docs_search import MAX_LIMIT, DocsSearch, _clamp_limit
+from mcp_server_appwrite.docs_search import DOCS_MAX_LIMIT, DocsSearch, _clamp_limit
 
 
 def write_index(data_dir: Path) -> None:
@@ -117,7 +117,7 @@ class DocsSearchTests(unittest.TestCase):
 
     def test_clamp_limit(self):
         self.assertEqual(_clamp_limit(None, 5), 5)
-        self.assertEqual(_clamp_limit(50, 5), MAX_LIMIT)
+        self.assertEqual(_clamp_limit(50, 5), DOCS_MAX_LIMIT)
         with self.assertRaises(ValueError):
             _clamp_limit(0, 5)
 

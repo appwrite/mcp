@@ -115,7 +115,7 @@ class Service:
         if inspect.isclass(py_type) and issubclass(py_type, Enum):
             enum_values = [member.value for member in py_type]
             value_types = {type(value) for value in enum_values}
-            schema = {"enum": enum_values}
+            schema: dict[str, Any] = {"enum": enum_values}
             if len(value_types) == 1 and next(iter(value_types)) in type_mapping:
                 schema["type"] = type_mapping[next(iter(value_types))]
             return schema
@@ -181,7 +181,7 @@ class Service:
                 for doc_param in docstring.params:
                     if doc_param.arg_name == param_name:
                         properties[param_name]["description"] = self._clean_description(
-                            doc_param.description
+                            doc_param.description or ""
                         )
 
                 if param.default is param.empty:

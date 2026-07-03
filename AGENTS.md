@@ -93,20 +93,27 @@ Run these locally before opening a PR. They mirror the `CI` workflow
    ```
    Run `uv run --group dev black src tests` (without `--check`) to auto-fix.
 
-3. **Unit tests** (`unit` job)
+3. **Type check** (`lint` job)
+   ```bash
+   uv run --group dev pyright
+   ```
+   Pyright config lives in `pyproject.toml` (`[tool.pyright]`): basic mode over
+   `src/`, Python 3.12, resolving against the project `.venv`.
+
+4. **Unit tests** (`unit` job)
    ```bash
    uv sync
    uv run python -m unittest discover -s tests/unit -v
    ```
    Fast, no external services or credentials required.
 
-4. **Docker build** (`docker` job)
+5. **Docker build** (`docker` job)
    ```bash
    docker build -t appwrite-mcp:ci .
    ```
    The hosted HTTP image must build cleanly.
 
-5. **Integration tests** (`integration` job) — *CI runs these only for pushes and
+6. **Integration tests** (`integration` job) — *CI runs these only for pushes and
    for PRs from branches on the same repo (not forks).* They create and delete
    **real** Appwrite resources, so they need live credentials and are skipped
    when absent:
