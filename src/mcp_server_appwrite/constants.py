@@ -14,7 +14,7 @@ from appwrite.models.user import User
 
 # --- server ---------------------------------------------------------------
 
-SERVER_VERSION = "0.8.1"
+SERVER_VERSION = "0.8.2"
 
 DEFAULT_ENDPOINT = "https://cloud.appwrite.io/v1"
 DEFAULT_TRANSPORT = "stdio"
