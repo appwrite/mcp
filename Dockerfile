@@ -20,4 +20,4 @@ ENV HOST=0.0.0.0 \
 
 EXPOSE 8000
 
-CMD ["uv", "run", "mcp-server-appwrite", "--transport", "http"]
+CMD ["uv", "run", "--no-sync", "mcp-server-appwrite", "--transport", "http"]
