@@ -61,47 +61,32 @@ class AuthHelperTests(unittest.TestCase):
             scopes = asyncio.run(auth.protected_resource_metadata())["scopes_supported"]
         finally:
             auth._discovery_cache.pop(pid, None)
-        # None of the preferred scopes exist, so the full discovered list is
-        # mirrored (custom scope catalogs on self-hosted projects).
+        # No curated list configured, so the discovered catalog is mirrored.
         self.assertEqual(scopes, ["rows.read", "rows.write"])
 
-    def test_advertised_scopes_prefer_curated_subset(self):
-        # The Cloud console authorization server advertises a very large
-        # fine-grained scope catalog; the MCP must advertise only the compact
-        # preferred set (clients request every advertised scope, and the
-        # authorize endpoint caps the scope parameter length).
+    def test_advertised_scopes_mirror_full_catalog_by_default(self):
+        # The MCP mirrors the authorization server's full scope catalog so
+        # clients request everything and consent-time narrowing is the control
+        # point (granular MCP scopes design).
+        catalog = [
+            "openid",
+            "profile",
+            "email",
+            "phone",
+            "all",
+            "project:all",
+            "organization:all",
+            "project:users.read",
+            "project:users.write",
+            "organization:projects.read",
+        ]
         pid = auth.configured_project_id()
-        auth._store_discovery(
-            pid,
-            discovery_doc(
-                [
-                    "openid",
-                    "profile",
-                    "email",
-                    "phone",
-                    "all",
-                    "project:all",
-                    "organization:all",
-                    "project:users.read",
-                    "project:users.write",
-                    "organization:projects.read",
-                ]
-            ),
-        )
+        auth._store_discovery(pid, discovery_doc(catalog))
         try:
             scopes = asyncio.run(auth.protected_resource_metadata())["scopes_supported"]
         finally:
             auth._discovery_cache.pop(pid, None)
-        self.assertEqual(scopes, ["openid", "profile", "email", "all"])
-
-    def test_advertised_scopes_drop_preferred_scopes_missing_from_discovery(self):
-        pid = auth.configured_project_id()
-        auth._store_discovery(pid, discovery_doc(["openid", "email", "all"]))
-        try:
-            scopes = asyncio.run(auth.protected_resource_metadata())["scopes_supported"]
-        finally:
-            auth._discovery_cache.pop(pid, None)
-        self.assertEqual(scopes, ["openid", "email", "all"])
+        self.assertEqual(scopes, catalog)
 
     def test_advertised_scopes_env_override(self):
         pid = auth.configured_project_id()
@@ -118,6 +103,46 @@ class AuthHelperTests(unittest.TestCase):
         finally:
             auth._discovery_cache.pop(pid, None)
         self.assertEqual(scopes, ["openid", "project:all"])
+
+    def test_advertised_scopes_env_override_drops_undiscovered_scopes(self):
+        # A curated scope missing from the live catalog is never advertised.
+        pid = auth.configured_project_id()
+        auth._store_discovery(pid, discovery_doc(["openid", "email", "all"]))
+        try:
+            with mock.patch.dict(
+                os.environ, {"MCP_OAUTH_SCOPES": "openid email all phone"}
+            ):
+                scopes = asyncio.run(auth.protected_resource_metadata())[
+                    "scopes_supported"
+                ]
+        finally:
+            auth._discovery_cache.pop(pid, None)
+        self.assertEqual(scopes, ["openid", "email", "all"])
+
+    def test_advertised_scopes_env_override_falls_back_to_full_catalog(self):
+        # When none of the curated scopes exist in the live catalog, the full
+        # discovered list is mirrored instead of advertising nothing.
+        pid = auth.configured_project_id()
+        auth._store_discovery(pid, discovery_doc(["rows.read", "rows.write"]))
+        try:
+            with mock.patch.dict(os.environ, {"MCP_OAUTH_SCOPES": "openid all"}):
+                scopes = asyncio.run(auth.protected_resource_metadata())[
+                    "scopes_supported"
+                ]
+        finally:
+            auth._discovery_cache.pop(pid, None)
+        self.assertEqual(scopes, ["rows.read", "rows.write"])
+
+    def test_advertised_scopes_raise_when_discovery_missing_scopes_supported(self):
+        pid = auth.configured_project_id()
+        doc = discovery_doc([])
+        del doc["scopes_supported"]
+        auth._store_discovery(pid, doc)
+        try:
+            with self.assertRaises(ValueError):
+                asyncio.run(auth.protected_resource_metadata())
+        finally:
+            auth._discovery_cache.pop(pid, None)
 
     def test_discovery_cache_expires_after_ttl(self):
         pid = auth.configured_project_id()

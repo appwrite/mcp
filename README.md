@@ -11,6 +11,8 @@ through your browser. The first time you connect, your client opens an Appwrite
 consent screen; approve the scopes and you're connected. There are no keys to
 copy.
 
+![How the Appwrite MCP server handles OAuth and scopes](docs/appwrite-mcp-flow.svg)
+
 ## Connect your client
 
 Pick your client below. Each adds the hosted Appwrite Cloud server.

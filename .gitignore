@@ -13,3 +13,6 @@ wheels/
 .vscode
 
 .env
+# Playwright MCP artifacts
+.playwright-mcp/
+.DS_Store
