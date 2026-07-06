@@ -45,6 +45,9 @@ def _default_embedder() -> Embedder | None:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         return None
+    api_key = "".join(api_key.split())
+    if not api_key:
+        return None
 
     from openai import OpenAI
 
@@ -158,7 +161,14 @@ class DocsSearch:
             )
 
         limit = _clamp_limit(arguments.get("limit"), self._default_limit)
-        results, embedding_duration_s = self._rank(query, limit)
+        try:
+            results, embedding_duration_s = self._rank(query, limit)
+        except Exception as exc:
+            telemetry.record_search_docs(outcome="error", match_count=0)
+            raise RuntimeError(
+                "Documentation search embedding request failed. "
+                "Check OPENAI_API_KEY and outbound connectivity to OpenAI."
+            ) from exc
         telemetry.record_search_docs(
             outcome="success",
             match_count=len(results),
