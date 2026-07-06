@@ -19,6 +19,7 @@ import copy
 import json
 import logging
 import sys
+from importlib.resources import files
 
 from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser, BearerAuthBackend
@@ -27,7 +28,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, PlainTextResponse
+from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -35,6 +36,7 @@ from . import telemetry
 from .auth import (
     AppwriteTokenVerifier,
     protected_resource_metadata,
+    public_base_url,
     resource_metadata_url,
 )
 from .constants import CORS_HEADERS, SERVER_VERSION
@@ -69,6 +71,18 @@ def _is_valid_scope_token(scope: str) -> bool:
         char == "\x21" or "\x23" <= char <= "\x5b" or "\x5d" <= char <= "\x7e"
         for char in scope
     )
+
+
+def _icon_url() -> str:
+    return f"{public_base_url()}/favicon.svg"
+
+
+def _icon_link_header() -> str:
+    return f'<{_icon_url()}>; rel="icon"; type="image/svg+xml"'
+
+
+def _icon_svg() -> bytes:
+    return files("mcp_server_appwrite.assets").joinpath("favicon.svg").read_bytes()
 
 
 async def _send_401(send: Send) -> None:
@@ -106,6 +120,7 @@ async def _send_401(send: Send) -> None:
         (b"content-type", b"application/json"),
         (b"content-length", str(len(body)).encode()),
         (b"www-authenticate", www_authenticate.encode()),
+        (b"link", _icon_link_header().encode()),
     ]
     await send({"type": "http.response.start", "status": 401, "headers": headers})
     await send({"type": "http.response.body", "body": body})
@@ -157,11 +172,24 @@ def _has_authorization_header(scope: Scope) -> bool:
 
 async def protected_resource_metadata_endpoint(request: Request) -> JSONResponse:
     metadata = await protected_resource_metadata()
-    return JSONResponse(metadata, headers=CORS_HEADERS)
+    headers = {**CORS_HEADERS, "Link": _icon_link_header()}
+    return JSONResponse(metadata, headers=headers)
 
 
 async def health_endpoint(request: Request) -> PlainTextResponse:
     return PlainTextResponse(f"appwrite-mcp {SERVER_VERSION} ok")
+
+
+async def favicon_svg_endpoint(request: Request) -> Response:
+    return Response(
+        _icon_svg(),
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+async def favicon_ico_endpoint(request: Request) -> RedirectResponse:
+    return RedirectResponse("/favicon.svg", status_code=307)
 
 
 def build_app() -> Starlette:
@@ -195,6 +223,8 @@ def build_app() -> Starlette:
             endpoint=protected_resource_metadata_endpoint,
             methods=["GET", "OPTIONS"],
         ),
+        Route("/favicon.svg", endpoint=favicon_svg_endpoint, methods=["GET"]),
+        Route("/favicon.ico", endpoint=favicon_ico_endpoint, methods=["GET"]),
         Route("/healthz", endpoint=health_endpoint, methods=["GET"]),
         Route(
             "/mcp",

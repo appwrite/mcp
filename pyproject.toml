@@ -42,7 +42,7 @@ mcp-server-appwrite = "mcp_server_appwrite.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 # Ship the prebuilt docs search index (non-.py package data) in the wheel.
-artifacts = ["src/mcp_server_appwrite/data/*"]
+artifacts = ["src/mcp_server_appwrite/data/*", "src/mcp_server_appwrite/assets/*"]
 
 [tool.black]
 target-version = ["py312"]
