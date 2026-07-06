@@ -67,7 +67,7 @@ CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version",
-    "Access-Control-Expose-Headers": "Mcp-Session-Id, WWW-Authenticate",
+    "Access-Control-Expose-Headers": "Mcp-Session-Id, WWW-Authenticate, Link",
 }
 
 # --- operator -------------------------------------------------------------
