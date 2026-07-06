@@ -144,6 +144,17 @@ OPENAI_API_KEY=sk-... uv run python scripts/build_docs_index.py
 These are not gated on PRs the way `ci.yml` is, but be mindful when touching the
 `Dockerfile`, `pyproject.toml` version, or deployment config.
 
+### Release metadata
+
+When bumping the package version in `pyproject.toml`, keep `server.json` in sync:
+
+- `server.json.name` must stay `io.github.appwrite/mcp`.
+- `server.json.version` must match `[project].version` in `pyproject.toml`.
+- The `packages[]` entry for `mcp-server-appwrite` must use the same version.
+
+The publish workflow sends `server.json` to the MCP Registry after publishing the
+PyPI package, so stale registry metadata will be published if these drift.
+
 ## Conventions
 
 - Keep the exposed tool surface small — new Appwrite capabilities should flow
