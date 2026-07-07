@@ -354,6 +354,7 @@ def _service_summary_metadata(
         "reason": "project_count_exceeds_limit",
         "projectCount": project_count,
         "maxProjects": DEFAULT_SERVICE_PROJECT_LIMIT,
+        "detail": service_detail,
         "hint": "Pass project_id to inspect services for a specific project.",
     }
 

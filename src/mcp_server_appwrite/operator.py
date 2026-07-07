@@ -166,7 +166,7 @@ class Operator:
                             "type": "integer",
                             "minimum": 1,
                             "maximum": 25,
-                            "description": "Maximum sample items per service. Defaults to 5.",
+                            "description": "Maximum sample items per service when service_detail=samples. Defaults to 5.",
                         },
                     },
                     "additionalProperties": False,

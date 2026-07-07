@@ -233,10 +233,77 @@ class AppwriteContextTests(unittest.TestCase):
                 "reason": "project_count_exceeds_limit",
                 "projectCount": 6,
                 "maxProjects": 5,
+                "detail": "totals",
                 "hint": "Pass project_id to inspect services for a specific project.",
             },
         )
         self.assertEqual(project_clients, {})
+
+    def test_oauth_context_includes_sample_items_for_small_project_sets(self):
+        console = FakeClient(
+            {
+                ("get", "/organizations"): {
+                    "total": 1,
+                    "teams": [{"$id": "org-1", "name": "Org One"}],
+                },
+            }
+        )
+        org = FakeClient(
+            {
+                ("get", "/organization/projects"): {
+                    "total": 1,
+                    "projects": [
+                        {
+                            "$id": "project-1",
+                            "name": "Project One",
+                            "teamId": "org-1",
+                        }
+                    ],
+                }
+            }
+        )
+        project = FakeClient(
+            {
+                ("get", "/functions"): {
+                    "total": 1,
+                    "functions": [
+                        {
+                            "$id": "fn-1",
+                            "name": "Worker",
+                            "enabled": False,
+                        }
+                    ],
+                },
+            },
+            project="project-1",
+        )
+
+        def factory(project_id, organization_id):
+            if project_id:
+                return project
+            if organization_id:
+                return org
+            return console
+
+        context = get_appwrite_context(
+            console,
+            mode="oauth_console",
+            client_factory=factory,
+            service_detail="samples",
+            sample_limit=2,
+        )
+
+        services = context["projects"][0]["services"]
+        self.assertEqual(
+            context["serviceSummary"],
+            {"included": True, "detail": "samples", "projectCount": 1},
+        )
+        self.assertEqual(services["functions"]["total"], 1)
+        self.assertIs(services["functions"]["items"][0]["enabled"], False)
+        self.assertIn(
+            ("get", "/functions", {"queries": ['{"method":"limit","values":[2]}']}),
+            project.calls,
+        )
 
     def test_oauth_context_includes_services_for_focused_project_in_large_org(self):
         console = FakeClient(
