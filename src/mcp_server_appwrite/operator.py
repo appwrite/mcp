@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -74,12 +75,15 @@ class ResultStore:
     def __init__(self, max_size: int = RESULT_STORE_SIZE):
         self._entries: OrderedDict[str, StoredResult] = OrderedDict()
         self._max_size = max_size
+        self._lock = threading.Lock()
 
     def get(self, result_id: str) -> StoredResult | None:
-        return self._entries.get(result_id)
+        with self._lock:
+            return self._entries.get(result_id)
 
     def list(self) -> list[StoredResult]:
-        return list(self._entries.values())
+        with self._lock:
+            return list(self._entries.values())
 
     def save(
         self, tool_name: str, content: list[ToolContent], text: str
@@ -91,9 +95,10 @@ class ResultStore:
             text=text,
             tool_name=tool_name,
         )
-        self._entries[result.result_id] = result
-        while len(self._entries) > self._max_size:
-            self._entries.popitem(last=False)
+        with self._lock:
+            self._entries[result.result_id] = result
+            while len(self._entries) > self._max_size:
+                self._entries.popitem(last=False)
         return result
 
 

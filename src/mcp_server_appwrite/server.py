@@ -1046,7 +1046,9 @@ async def _execute_public_tool_for_transport(
     # The Appwrite Python SDK, docs embedding client, context discovery, and URL
     # upload fetches are synchronous. Running them on the ASGI event-loop thread
     # can make even /healthz stop responding while a tool call is slow or stuck.
-    return await to_thread.run_sync(operator.execute_public_tool, name, arguments)
+    return await to_thread.run_sync(
+        operator.execute_public_tool, name, arguments, abandon_on_cancel=True
+    )
 
 
 def _emit_initialize(server: Server) -> None:
