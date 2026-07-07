@@ -13,6 +13,9 @@ from appwrite.query import Query
 from .constants import REDACTED_KEYS, SERVICE_PROBES
 
 ContextClientFactory = Callable[[str | None, str | None], Client]
+DEFAULT_SERVICE_PROJECT_LIMIT = 5
+DEFAULT_SERVICE_DETAIL = "totals"
+SERVICE_DETAILS = {"totals", "samples"}
 
 
 def get_appwrite_context(
@@ -24,8 +27,10 @@ def get_appwrite_context(
     organization_id: str | None = None,
     include_services: bool = True,
     sample_limit: int = 5,
+    service_detail: str = DEFAULT_SERVICE_DETAIL,
 ) -> dict[str, Any]:
     sample_limit = _normalize_sample_limit(sample_limit)
+    service_detail = _normalize_service_detail(service_detail)
     client_factory = client_factory or (
         lambda _project_id, _organization_id: base_client
     )
@@ -51,8 +56,15 @@ def get_appwrite_context(
                 project_client,
                 include_services=include_services,
                 sample_limit=sample_limit,
+                service_detail=service_detail,
             )
         ]
+        context["serviceSummary"] = _service_summary_metadata(
+            include_services=include_services,
+            effective_include_services=include_services,
+            service_detail=service_detail,
+            project_count=1,
+        )
         return context
 
     console_client = client_factory(None, None)
@@ -65,7 +77,7 @@ def get_appwrite_context(
     organizations = _list_organizations(console_client, organization_id)
     context["organizations"] = organizations
 
-    projects: list[dict[str, Any]] = []
+    project_candidates: list[tuple[dict[str, Any], str | None]] = []
     if organization_id and not organizations:
         organizations = [{"$id": organization_id}]
 
@@ -81,18 +93,9 @@ def get_appwrite_context(
             discovered_project_id = project.get("$id")
             if project_id and discovered_project_id != project_id:
                 continue
-            project_client = client_factory(discovered_project_id, org_id)
-            projects.append(
-                _project_context(
-                    project,
-                    project_client,
-                    organization_id=org_id,
-                    include_services=include_services,
-                    sample_limit=sample_limit,
-                )
-            )
+            project_candidates.append((project, org_id))
 
-    if not projects:
+    if not project_candidates:
         # Per-organization project listings need organization-tier scopes; a
         # grant narrowed to project scopes only still enumerates its bound
         # projects through the accessible-resources endpoint.
@@ -106,32 +109,54 @@ def get_appwrite_context(
             project = _get_current_project(project_client, accessible_id) or {
                 "$id": accessible_id
             }
-            projects.append(
-                _project_context(
-                    project,
-                    project_client,
-                    organization_id=organization_id,
-                    include_services=include_services,
-                    sample_limit=sample_limit,
-                )
-            )
+            project_candidates.append((project, organization_id))
 
-    if project_id and not projects:
-        project_client = client_factory(project_id, organization_id)
-        project = _get_current_project(project_client, project_id) or {
-            "$id": project_id
-        }
+    if project_id and not project_candidates:
+        project_candidates.append(({"$id": project_id}, organization_id))
+
+    effective_include_services = _should_include_services(
+        include_services=include_services,
+        project_id=project_id,
+        project_count=len(project_candidates),
+    )
+    projects: list[dict[str, Any]] = []
+    for project, project_organization_id in project_candidates:
+        discovered_project_id = project.get("$id")
+        needs_project_client = effective_include_services or (
+            project_id is not None and project == {"$id": project_id}
+        )
+        project_client = (
+            client_factory(
+                (
+                    discovered_project_id
+                    if isinstance(discovered_project_id, str)
+                    else None
+                ),
+                project_organization_id,
+            )
+            if needs_project_client
+            else console_client
+        )
+        if project_id and project == {"$id": project_id}:
+            project = _get_current_project(project_client, project_id) or project
         projects.append(
             _project_context(
                 project,
                 project_client,
-                organization_id=organization_id,
-                include_services=include_services,
+                organization_id=project_organization_id,
+                include_services=effective_include_services,
                 sample_limit=sample_limit,
+                service_detail=service_detail,
             )
         )
 
     context["projects"] = projects
+    context["serviceSummary"] = _service_summary_metadata(
+        include_services=include_services,
+        effective_include_services=effective_include_services,
+        service_detail=service_detail,
+        project_count=len(projects),
+    )
     return context
 
 
@@ -257,6 +282,7 @@ def _project_context(
     organization_id: str | None = None,
     include_services: bool,
     sample_limit: int,
+    service_detail: str,
 ) -> dict[str, Any]:
     project_summary = _compact_document(_model_dict(project, Project))
     if organization_id:
@@ -264,13 +290,18 @@ def _project_context(
     if "error" in project:
         project_summary["error"] = project["error"]
     if include_services:
-        project_summary["services"] = _summarize_services(client, sample_limit)
+        project_summary["services"] = _summarize_services(
+            client, sample_limit, service_detail
+        )
     return project_summary
 
 
-def _summarize_services(client: Client, sample_limit: int) -> dict[str, Any]:
+def _summarize_services(
+    client: Client, sample_limit: int, service_detail: str
+) -> dict[str, Any]:
     services: dict[str, Any] = {}
-    params = {"queries": [Query.limit(sample_limit)]}
+    query_limit = 1 if service_detail == "totals" else sample_limit
+    params = {"queries": [Query.limit(query_limit)]}
     for service_name, probe in SERVICE_PROBES.items():
         result = _safe_call(client, "get", str(probe["path"]), params)
         if not result.ok:
@@ -280,15 +311,51 @@ def _summarize_services(client: Client, sample_limit: int) -> dict[str, Any]:
         items = payload.get(str(probe["items_key"]), [])
         if not isinstance(items, list):
             items = []
-        services[service_name] = {
-            "total": payload.get("total", len(items)),
-            "items": [
+        summary: dict[str, Any] = {"total": payload.get("total", len(items))}
+        if service_detail == "samples":
+            summary["items"] = [
                 _compact_document(_model_dict(item, probe["model"]))
                 for item in items
                 if isinstance(item, dict)
-            ],
-        }
+            ]
+        services[service_name] = summary
     return services
+
+
+def _should_include_services(
+    *, include_services: bool, project_id: str | None, project_count: int
+) -> bool:
+    if not include_services:
+        return False
+    return project_id is not None or project_count <= DEFAULT_SERVICE_PROJECT_LIMIT
+
+
+def _service_summary_metadata(
+    *,
+    include_services: bool,
+    effective_include_services: bool,
+    service_detail: str,
+    project_count: int,
+) -> dict[str, Any]:
+    if effective_include_services:
+        return {
+            "included": True,
+            "detail": service_detail,
+            "projectCount": project_count,
+        }
+    if not include_services:
+        return {
+            "included": False,
+            "reason": "disabled",
+            "projectCount": project_count,
+        }
+    return {
+        "included": False,
+        "reason": "project_count_exceeds_limit",
+        "projectCount": project_count,
+        "maxProjects": DEFAULT_SERVICE_PROJECT_LIMIT,
+        "hint": "Pass project_id to inspect services for a specific project.",
+    }
 
 
 def _model_dict(source: dict[str, Any], model_type: type) -> dict[str, Any]:
@@ -352,3 +419,9 @@ def _normalize_sample_limit(value: Any) -> int:
     except (TypeError, ValueError):
         limit = 5
     return max(1, min(limit, 25))
+
+
+def _normalize_service_detail(value: Any) -> str:
+    if isinstance(value, str) and value in SERVICE_DETAILS:
+        return value
+    return DEFAULT_SERVICE_DETAIL

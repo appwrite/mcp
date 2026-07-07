@@ -52,6 +52,11 @@ class AppwriteContextTests(unittest.TestCase):
         self.assertEqual(context["projects"][0]["$id"], "project-1")
         self.assertEqual(context["projects"][0]["services"]["tablesdb"]["total"], 1)
         self.assertEqual(context["projects"][0]["services"]["users"]["total"], 2)
+        self.assertNotIn("items", context["projects"][0]["services"]["tablesdb"])
+        self.assertEqual(
+            context["serviceSummary"],
+            {"included": True, "detail": "totals", "projectCount": 1},
+        )
 
     def test_oauth_context_discovers_organizations_projects_and_services(self):
         console = FakeClient(
@@ -113,6 +118,11 @@ class AppwriteContextTests(unittest.TestCase):
         self.assertEqual(context["projects"][0]["$id"], "project-1")
         self.assertEqual(context["projects"][0]["organizationId"], "org-1")
         self.assertEqual(context["projects"][0]["services"]["functions"]["total"], 1)
+        self.assertNotIn("items", context["projects"][0]["services"]["functions"])
+        self.assertEqual(
+            context["serviceSummary"],
+            {"included": True, "detail": "totals", "projectCount": 1},
+        )
         self.assertIn((None, None), seen)
         self.assertIn((None, "org-1"), seen)
         self.assertIn(("project-1", "org-1"), seen)
@@ -174,6 +184,137 @@ class AppwriteContextTests(unittest.TestCase):
         # Ungranted probes surface their scope error instead of failing the call.
         self.assertIn("error", context["projects"][0]["services"]["storage"])
 
+    def test_oauth_context_skips_service_fanout_for_large_project_sets(self):
+        console = FakeClient(
+            {
+                ("get", "/organizations"): {
+                    "total": 1,
+                    "teams": [{"$id": "org-1", "name": "Org One"}],
+                },
+            }
+        )
+        org = FakeClient(
+            {
+                ("get", "/organization/projects"): {
+                    "total": 6,
+                    "projects": [
+                        {
+                            "$id": f"project-{index}",
+                            "name": f"Project {index}",
+                            "teamId": "org-1",
+                        }
+                        for index in range(6)
+                    ],
+                }
+            }
+        )
+        project_clients = {}
+
+        def factory(project_id, organization_id):
+            if project_id:
+                project_clients[project_id] = FakeClient({}, project=project_id)
+                return project_clients[project_id]
+            if organization_id:
+                return org
+            return console
+
+        context = get_appwrite_context(
+            console,
+            mode="oauth_console",
+            client_factory=factory,
+        )
+
+        self.assertEqual(len(context["projects"]), 6)
+        self.assertNotIn("services", context["projects"][0])
+        self.assertEqual(
+            context["serviceSummary"],
+            {
+                "included": False,
+                "reason": "project_count_exceeds_limit",
+                "projectCount": 6,
+                "maxProjects": 5,
+                "hint": "Pass project_id to inspect services for a specific project.",
+            },
+        )
+        self.assertEqual(project_clients, {})
+
+    def test_oauth_context_includes_services_for_focused_project_in_large_org(self):
+        console = FakeClient(
+            {
+                ("get", "/organizations"): {
+                    "total": 1,
+                    "teams": [{"$id": "org-1", "name": "Org One"}],
+                },
+            }
+        )
+        org = FakeClient(
+            {
+                ("get", "/organization/projects"): {
+                    "total": 6,
+                    "projects": [
+                        {
+                            "$id": f"project-{index}",
+                            "name": f"Project {index}",
+                            "teamId": "org-1",
+                        }
+                        for index in range(6)
+                    ],
+                }
+            }
+        )
+        project = FakeClient(
+            {
+                ("get", "/tablesdb"): {"total": 1, "databases": []},
+            },
+            project="project-3",
+        )
+
+        def factory(project_id, organization_id):
+            if project_id:
+                return project
+            if organization_id:
+                return org
+            return console
+
+        context = get_appwrite_context(
+            console,
+            mode="oauth_console",
+            client_factory=factory,
+            project_id="project-3",
+        )
+
+        self.assertEqual(len(context["projects"]), 1)
+        self.assertEqual(context["projects"][0]["$id"], "project-3")
+        self.assertEqual(context["projects"][0]["services"]["tablesdb"]["total"], 1)
+        self.assertEqual(
+            context["serviceSummary"],
+            {"included": True, "detail": "totals", "projectCount": 1},
+        )
+
+    def test_include_services_false_skips_service_summary(self):
+        client = FakeClient(
+            {
+                ("get", "/project"): {"$id": "project-1", "name": "Project One"},
+                ("get", "/functions"): {
+                    "total": 1,
+                    "functions": [{"$id": "fn-1", "name": "Worker"}],
+                },
+            },
+            project="project-1",
+        )
+
+        context = get_appwrite_context(
+            client,
+            mode="api_key_project",
+            include_services=False,
+        )
+
+        self.assertNotIn("services", context["projects"][0])
+        self.assertEqual(
+            context["serviceSummary"],
+            {"included": False, "reason": "disabled", "projectCount": 1},
+        )
+
     def test_compact_output_preserves_false_resource_state(self):
         client = FakeClient(
             {
@@ -202,7 +343,9 @@ class AppwriteContextTests(unittest.TestCase):
             project="project-1",
         )
 
-        context = get_appwrite_context(client, mode="api_key_project")
+        context = get_appwrite_context(
+            client, mode="api_key_project", service_detail="samples"
+        )
         services = context["projects"][0]["services"]
 
         self.assertIs(services["functions"]["items"][0]["enabled"], False)
@@ -236,11 +379,37 @@ class AppwriteContextTests(unittest.TestCase):
             project="project-1",
         )
 
-        context = _get_context_for_request({"sample_limit": "five"}, client)
+        context = _get_context_for_request(
+            {"sample_limit": "five", "service_detail": "samples"}, client
+        )
 
         self.assertEqual(context["projects"][0]["$id"], "project-1")
         self.assertIn(
             ("get", "/tablesdb", {"queries": ['{"method":"limit","values":[5]}']}),
+            client.calls,
+        )
+
+    def test_invalid_service_detail_falls_back_to_totals(self):
+        client = FakeClient(
+            {
+                ("get", "/project"): {"$id": "project-1", "name": "Project One"},
+                ("get", "/tablesdb"): {
+                    "total": 1,
+                    "databases": [{"$id": "db-1", "name": "Main"}],
+                },
+            },
+            project="project-1",
+        )
+
+        context = _get_context_for_request({"service_detail": "verbose"}, client)
+
+        self.assertEqual(
+            context["serviceSummary"],
+            {"included": True, "detail": "totals", "projectCount": 1},
+        )
+        self.assertNotIn("items", context["projects"][0]["services"]["tablesdb"])
+        self.assertIn(
+            ("get", "/tablesdb", {"queries": ['{"method":"limit","values":[1]}']}),
             client.calls,
         )
 
