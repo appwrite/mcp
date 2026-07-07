@@ -82,6 +82,7 @@ def preferred_scopes() -> list[str]:
 # scope model) propagate without a redeploy; if a refresh fails, the stale copy
 # keeps serving so an authorization-server blip doesn't take the MCP down.
 _discovery_cache: dict[str, tuple[float, dict]] = {}
+_deprecated_scope_cache: dict[str, tuple[float, set[str]]] = {}
 
 
 def _cached_discovery(project_id: str, *, allow_stale: bool = False) -> dict | None:
@@ -96,6 +97,24 @@ def _cached_discovery(project_id: str, *, allow_stale: bool = False) -> dict | N
 
 def _store_discovery(project_id: str, document: dict) -> None:
     _discovery_cache[project_id] = (time.monotonic(), document)
+
+
+def _scope_catalog_cache_key(kind: str) -> str:
+    return f"{appwrite_endpoint()}:{kind}"
+
+
+def _cached_deprecated_scopes(kind: str) -> set[str] | None:
+    entry = _deprecated_scope_cache.get(_scope_catalog_cache_key(kind))
+    if entry is None:
+        return None
+    fetched_at, scopes = entry
+    if time.monotonic() - fetched_at < CACHE_TTL_SECONDS:
+        return scopes
+    return None
+
+
+def _store_deprecated_scopes(kind: str, scopes: set[str]) -> None:
+    _deprecated_scope_cache[_scope_catalog_cache_key(kind)] = (time.monotonic(), scopes)
 
 
 def discovery_url() -> str:
@@ -163,7 +182,9 @@ def _advertised_scopes(metadata: dict) -> list[str]:
     request everything and consent-time narrowing is the control point. When a
     curated list is configured (``MCP_OAUTH_SCOPES``), it is intersected with
     the discovered catalog so a renamed/removed scope is never advertised,
-    falling back to the full discovered list when the intersection is empty."""
+    falling back to the full discovered list when the intersection is empty. A
+    later pass removes discovered scopes marked deprecated in Cloud's public
+    scope catalog."""
     discovered = metadata.get("scopes_supported")
     if not isinstance(discovered, list):
         raise ValueError(
@@ -182,6 +203,101 @@ def _advertised_scopes(metadata: dict) -> list[str]:
     return discovered
 
 
+async def _load_deprecated_scopes(client: httpx.AsyncClient, kind: str) -> set[str]:
+    cached = _cached_deprecated_scopes(kind)
+    if cached is not None:
+        return cached
+
+    resp = await client.get(f"{appwrite_endpoint()}/console/scopes/{kind}")
+    resp.raise_for_status()
+    scopes = resp.json().get("scopes")
+    if not isinstance(scopes, list):
+        raise ValueError("scope catalog response missing scopes list")
+
+    deprecated = {
+        scope["$id"]
+        for scope in scopes
+        if isinstance(scope, dict)
+        and isinstance(scope.get("$id"), str)
+        and scope.get("deprecated") is True
+    }
+    _store_deprecated_scopes(kind, deprecated)
+    return deprecated
+
+
+async def _filter_deprecated_scopes(scopes: list[str]) -> list[str]:
+    """Drop deprecated Console scopes while preserving the discovery contract.
+
+    OIDC discovery remains the supported-scope source of truth. The public
+    Console scope catalogs only add deprecation metadata, and failures are
+    fail-open so a catalog outage does not break OAuth discovery.
+    """
+    needs_project_catalog = any(
+        isinstance(scope, str)
+        and scope.startswith("project:")
+        and scope != "project:all"
+        for scope in scopes
+    )
+    needs_organization_catalog = any(
+        isinstance(scope, str)
+        and scope.startswith("organization:")
+        and scope != "organization:all"
+        for scope in scopes
+    )
+    if not needs_project_catalog and not needs_organization_catalog:
+        return scopes
+
+    project_cached = (
+        _cached_deprecated_scopes("project") if needs_project_catalog else set()
+    )
+    organization_cached = (
+        _cached_deprecated_scopes("organization")
+        if needs_organization_catalog
+        else set()
+    )
+
+    try:
+        if project_cached is not None and organization_cached is not None:
+            deprecated_project_scopes = project_cached
+            deprecated_organization_scopes = organization_cached
+        else:
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                deprecated_project_scopes = (
+                    project_cached
+                    if project_cached is not None
+                    else await _load_deprecated_scopes(client, "project")
+                )
+                deprecated_organization_scopes = (
+                    organization_cached
+                    if organization_cached is not None
+                    else await _load_deprecated_scopes(client, "organization")
+                )
+    except Exception as exc:
+        _log(f"Scope catalog refresh failed ({exc}); advertising discovered scopes.")
+        return scopes
+
+    filtered = []
+    for scope in scopes:
+        if not isinstance(scope, str):
+            filtered.append(scope)
+            continue
+        if scope.startswith("project:"):
+            if (
+                scope != "project:all"
+                and scope.removeprefix("project:") in deprecated_project_scopes
+            ):
+                continue
+        elif scope.startswith("organization:"):
+            if (
+                scope != "organization:all"
+                and scope.removeprefix("organization:")
+                in deprecated_organization_scopes
+            ):
+                continue
+        filtered.append(scope)
+    return filtered
+
+
 def build_resource_metadata(scopes: list[str], authorization_servers=None) -> dict:
     """RFC 9728 Protected Resource Metadata document."""
     return {
@@ -196,7 +312,8 @@ async def protected_resource_metadata() -> dict:
     """RFC 9728 Protected Resource Metadata, with scopes validated against AS
     discovery."""
     metadata = await authorization_server_metadata()
-    return build_resource_metadata(_advertised_scopes(metadata), [metadata["issuer"]])
+    scopes = await _filter_deprecated_scopes(_advertised_scopes(metadata))
+    return build_resource_metadata(scopes, [metadata["issuer"]])
 
 
 def project_id_from_issuer(iss: str | None) -> str | None:

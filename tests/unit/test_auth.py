@@ -33,6 +33,8 @@ class AuthHelperTests(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, ENV, clear=False)
         patcher.start()
         self.addCleanup(patcher.stop)
+        auth._deprecated_scope_cache.clear()
+        self.addCleanup(auth._deprecated_scope_cache.clear)
 
     def test_issuer_and_resource_urls(self):
         self.assertEqual(
@@ -82,11 +84,130 @@ class AuthHelperTests(unittest.TestCase):
         ]
         pid = auth.configured_project_id()
         auth._store_discovery(pid, discovery_doc(catalog))
+
+        async def no_deprecated_scopes(_client, _kind):
+            return set()
+
         try:
-            scopes = asyncio.run(auth.protected_resource_metadata())["scopes_supported"]
+            with mock.patch.object(
+                auth, "_load_deprecated_scopes", no_deprecated_scopes
+            ):
+                scopes = asyncio.run(auth.protected_resource_metadata())[
+                    "scopes_supported"
+                ]
         finally:
             auth._discovery_cache.pop(pid, None)
         self.assertEqual(scopes, catalog)
+
+    def test_advertised_scopes_filter_deprecated_catalog_scopes(self):
+        catalog = [
+            "openid",
+            "project:all",
+            "organization:all",
+            "project:policies.read",
+            "project:project.policies.read",
+            "project:collections.read",
+            "project:rows.read",
+            "organization:keys.read",
+            "organization:organization.keys.read",
+        ]
+        pid = auth.configured_project_id()
+        auth._store_discovery(pid, discovery_doc(catalog))
+
+        async def deprecated_scopes(_client, kind):
+            if kind == "project":
+                return {"policies.read", "collections.read"}
+            if kind == "organization":
+                return {"keys.read"}
+            return set()
+
+        try:
+            with mock.patch.object(auth, "_load_deprecated_scopes", deprecated_scopes):
+                scopes = asyncio.run(auth.protected_resource_metadata())[
+                    "scopes_supported"
+                ]
+        finally:
+            auth._discovery_cache.pop(pid, None)
+
+        self.assertEqual(
+            scopes,
+            [
+                "openid",
+                "project:all",
+                "organization:all",
+                "project:project.policies.read",
+                "project:rows.read",
+                "organization:organization.keys.read",
+            ],
+        )
+
+    def test_advertised_scopes_fail_open_when_scope_catalog_unavailable(self):
+        catalog = ["openid", "project:policies.read", "project:rows.read"]
+        pid = auth.configured_project_id()
+        auth._store_discovery(pid, discovery_doc(catalog))
+
+        async def unavailable_catalog(_client, _kind):
+            raise RuntimeError("catalog unavailable")
+
+        try:
+            with mock.patch.object(
+                auth, "_load_deprecated_scopes", unavailable_catalog
+            ):
+                scopes = asyncio.run(auth.protected_resource_metadata())[
+                    "scopes_supported"
+                ]
+        finally:
+            auth._discovery_cache.pop(pid, None)
+
+        self.assertEqual(scopes, catalog)
+
+    def test_advertised_scopes_use_deprecated_scope_cache_without_client(self):
+        catalog = ["openid", "project:policies.read", "project:rows.read"]
+        pid = auth.configured_project_id()
+        auth._store_discovery(pid, discovery_doc(catalog))
+        auth._store_deprecated_scopes("project", {"policies.read"})
+
+        try:
+            with mock.patch.object(auth.httpx, "AsyncClient") as async_client:
+                scopes = asyncio.run(auth.protected_resource_metadata())[
+                    "scopes_supported"
+                ]
+        finally:
+            auth._discovery_cache.pop(pid, None)
+
+        async_client.assert_not_called()
+        self.assertEqual(scopes, ["openid", "project:rows.read"])
+
+    def test_advertised_scopes_never_filter_all_scopes(self):
+        catalog = [
+            "openid",
+            "project:all",
+            "project:rows.read",
+            "organization:all",
+            "organization:keys.read",
+        ]
+        pid = auth.configured_project_id()
+        auth._store_discovery(pid, discovery_doc(catalog))
+
+        async def deprecated_scopes(_client, kind):
+            if kind == "project":
+                return {"all"}
+            if kind == "organization":
+                return {"all", "keys.read"}
+            return set()
+
+        try:
+            with mock.patch.object(auth, "_load_deprecated_scopes", deprecated_scopes):
+                scopes = asyncio.run(auth.protected_resource_metadata())[
+                    "scopes_supported"
+                ]
+        finally:
+            auth._discovery_cache.pop(pid, None)
+
+        self.assertEqual(
+            scopes,
+            ["openid", "project:all", "project:rows.read", "organization:all"],
+        )
 
     def test_advertised_scopes_env_override(self):
         pid = auth.configured_project_id()
