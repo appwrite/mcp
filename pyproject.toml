@@ -5,6 +5,7 @@ description = "MCP (Model Context Protocol) server for Appwrite"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "anyio>=4.0.0",
     "appwrite>=21.0.0,<22",
     "docstring-parser>=0.16",
     "mcp[cli]>=1.12.0",

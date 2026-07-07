@@ -642,6 +642,7 @@ name = "mcp-server-appwrite"
 version = "0.8.6"
 source = { editable = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "appwrite" },
     { name = "docstring-parser" },
     { name = "httpx" },
@@ -676,6 +677,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4.0.0" },
     { name = "appwrite", specifier = ">=21.0.0,<22" },
     { name = "argon2-cffi", marker = "extra == 'integration'", specifier = ">=23.1.0" },
     { name = "bcrypt", marker = "extra == 'integration'", specifier = ">=4.1.2" },
