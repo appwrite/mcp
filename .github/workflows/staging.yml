@@ -50,6 +50,8 @@ jobs:
         with:
           context: .
           push: true
+          build-args: |
+            PACKAGE_VERSION=0.0.0+${{ github.sha }}
           tags: |
             ${{ env.REGISTRY_GITHUB }}/${{ env.IMAGE_NAME }}:${{ env.TAG }}
             ${{ env.REGISTRY_DOCKERHUB }}/${{ env.IMAGE_NAME }}:${{ env.TAG }}

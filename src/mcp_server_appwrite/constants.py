@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 
 from appwrite.models.bucket import Bucket
@@ -14,7 +15,15 @@ from appwrite.models.user import User
 
 # --- server ---------------------------------------------------------------
 
-SERVER_VERSION = "0.8.6"
+
+def _resolve_server_version() -> str:
+    try:
+        return importlib_metadata.version("mcp-server-appwrite")
+    except importlib_metadata.PackageNotFoundError:
+        return "0.0.0+unknown"
+
+
+SERVER_VERSION = _resolve_server_version()
 
 DEFAULT_ENDPOINT = "https://cloud.appwrite.io/v1"
 # Region reported by single-region deployments; carries no region subdomain.

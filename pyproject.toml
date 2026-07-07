@@ -1,6 +1,6 @@
 [project]
 name = "mcp-server-appwrite"
-version = "0.8.7"
+dynamic = ["version"]
 description = "MCP (Model Context Protocol) server for Appwrite"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -45,6 +45,9 @@ mcp-server-appwrite = "mcp_server_appwrite.__main__:main"
 # Ship the prebuilt docs search index (non-.py package data) in the wheel.
 artifacts = ["src/mcp_server_appwrite/data/*", "src/mcp_server_appwrite/assets/*"]
 
+[tool.hatch.version]
+source = "vcs"
+
 [tool.black]
 target-version = ["py312"]
 
@@ -66,5 +69,5 @@ venv = ".venv"
 typeCheckingMode = "basic"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"

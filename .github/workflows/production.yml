@@ -44,11 +44,23 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Derive package version
+        id: package-version
+        run: |
+          TAG="${{ github.event.release.tag_name || '' }}"
+          if [ -n "$TAG" ]; then
+            echo "package_version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "package_version=0.0.0+${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           push: true
+          build-args: |
+            PACKAGE_VERSION=${{ steps.package-version.outputs.package_version }}
           tags: |
             ${{ env.REGISTRY_GITHUB }}/${{ env.IMAGE_NAME }}:${{ env.TAG }}
             ${{ env.REGISTRY_DOCKERHUB }}/${{ env.IMAGE_NAME }}:${{ env.TAG }}
