@@ -146,14 +146,17 @@ These are not gated on PRs the way `ci.yml` is, but be mindful when touching the
 
 ### Release metadata
 
-When bumping the package version in `pyproject.toml`, keep `server.json` in sync:
+Release versions come from Git tags. Publish GitHub releases with tags in the
+form `vMAJOR.MINOR.PATCH` (for example, `v0.8.8`). Python package builds derive
+their version from the tag via Hatch VCS, and `server.json` is generated from
+`server.template.json` during the publish workflow before sending metadata to the
+MCP Registry.
 
-- `server.json.name` must stay `io.github.appwrite/mcp`.
-- `server.json.version` must match `[project].version` in `pyproject.toml`.
-- The `packages[]` entry for `mcp-server-appwrite` must use the same version.
-
-The publish workflow sends `server.json` to the MCP Registry after publishing the
-PyPI package, so stale registry metadata will be published if these drift.
+Do not hand-edit a version in `pyproject.toml`, `constants.py`, or `server.json`.
+For local registry metadata checks, render the generated file explicitly:
+```bash
+uv run python scripts/render_server_json.py 0.8.8
+```
 
 ## Conventions
 

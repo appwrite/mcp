@@ -13,6 +13,8 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -24,22 +26,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install build==1.5.0 twine==6.2.0
 
-      - name: Check release metadata
+      - name: Derive release version
         run: |
-          VERSION="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
           TAG="${{ github.event.release.tag_name }}"
-          if [ "$TAG" != "v$VERSION" ]; then
-            echo "Release tag $TAG does not match pyproject version v$VERSION" >&2
-            exit 1
-          fi
-          SERVER_VERSION="$(python -c 'import json; print(json.load(open("server.json"))["version"])')"
-          if [ "$SERVER_VERSION" != "$VERSION" ]; then
-            echo "server.json version $SERVER_VERSION does not match pyproject version $VERSION" >&2
-            exit 1
-          fi
-          PACKAGE_VERSION="$(python -c 'import json; data=json.load(open("server.json")); print(next(package["version"] for package in data["packages"] if package["identifier"] == "mcp-server-appwrite"))')"
-          if [ "$PACKAGE_VERSION" != "$VERSION" ]; then
-            echo "server.json package version $PACKAGE_VERSION does not match pyproject version $VERSION" >&2
+          if ! echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Release tag $TAG must match vMAJOR.MINOR.PATCH" >&2
             exit 1
           fi
 
@@ -62,6 +53,22 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Render MCP Registry metadata
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          if ! echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Release tag $TAG must match vMAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+          python scripts/render_server_json.py "${TAG#v}"
 
       - name: Install mcp-publisher
         env:

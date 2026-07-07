@@ -6,6 +6,9 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+ARG PACKAGE_VERSION=0.0.0+docker
+ENV SETUPTOOLS_SCM_PRETEND_VERSION=${PACKAGE_VERSION}
+
 COPY --from=ghcr.io/astral-sh/uv:0.11.22 /uv /usr/local/bin/uv
 
 COPY pyproject.toml uv.lock README.md ./
