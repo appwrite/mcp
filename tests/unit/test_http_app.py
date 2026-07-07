@@ -52,6 +52,8 @@ class Send401Tests(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, self.ENV, clear=False)
         patcher.start()
         self.addCleanup(patcher.stop)
+        auth._deprecated_scope_cache.clear()
+        self.addCleanup(auth._deprecated_scope_cache.clear)
 
     def _challenge(self) -> str:
         messages = []
@@ -64,6 +66,12 @@ class Send401Tests(unittest.TestCase):
         self.assertEqual(start["status"], 401)
         headers = dict(start["headers"])
         return headers[b"www-authenticate"].decode()
+
+    def _empty_deprecated_scope_catalog(self):
+        async def no_deprecated_scopes(_client, _kind):
+            return set()
+
+        return mock.patch.object(auth, "_load_deprecated_scopes", no_deprecated_scopes)
 
     def test_401_includes_scope_hint_from_discovery(self):
         # SEP-835: the challenge's `scope` parameter mirrors the advertised
@@ -78,7 +86,8 @@ class Send401Tests(unittest.TestCase):
             },
         )
         try:
-            challenge = self._challenge()
+            with self._empty_deprecated_scope_catalog():
+                challenge = self._challenge()
         finally:
             auth._discovery_cache.pop(pid, None)
         self.assertIn('resource_metadata="', challenge)
@@ -108,7 +117,8 @@ class Send401Tests(unittest.TestCase):
             },
         )
         try:
-            challenge = self._challenge()
+            with self._empty_deprecated_scope_catalog():
+                challenge = self._challenge()
         finally:
             auth._discovery_cache.pop(pid, None)
         self.assertIn('scope="openid project:users.read"', challenge)
