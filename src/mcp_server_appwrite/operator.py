@@ -152,13 +152,21 @@ class Operator:
                         },
                         "include_services": {
                             "type": "boolean",
-                            "description": "Include per-project service totals and small item samples. Defaults to true.",
+                            "description": (
+                                "Include per-project service summaries. Defaults to true, "
+                                "but large project sets are skipped unless project_id is provided."
+                            ),
+                        },
+                        "service_detail": {
+                            "type": "string",
+                            "enum": ["totals", "samples"],
+                            "description": "Service summary detail. Defaults to totals; samples includes small item previews.",
                         },
                         "sample_limit": {
                             "type": "integer",
                             "minimum": 1,
                             "maximum": 25,
-                            "description": "Maximum sample items per service. Defaults to 5.",
+                            "description": "Maximum sample items per service when service_detail=samples. Defaults to 5.",
                         },
                     },
                     "additionalProperties": False,

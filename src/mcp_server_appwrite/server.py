@@ -57,7 +57,11 @@ from .constants import (
     TRANSPORTS,
     VALIDATION_SERVICE_ORDER,
 )
-from .context import _normalize_sample_limit, get_appwrite_context
+from .context import (
+    _normalize_sample_limit,
+    _normalize_service_detail,
+    get_appwrite_context,
+)
 from .docs_search import DocsSearch
 from .operator import Operator, _parse_tool_name
 from .service import Service
@@ -1133,6 +1137,9 @@ def _get_context_for_request(
     sample_limit = _normalize_sample_limit(
         arguments.get("sample_limit", arguments.get("sampleLimit", 5))
     )
+    service_detail = _normalize_service_detail(
+        arguments.get("service_detail", arguments.get("serviceDetail", "totals"))
+    )
 
     if client is not None:
         return get_appwrite_context(
@@ -1141,6 +1148,7 @@ def _get_context_for_request(
             project_id=project_id,
             include_services=include_services,
             sample_limit=sample_limit,
+            service_detail=service_detail,
         )
 
     base_client = resolve_client()
@@ -1158,6 +1166,7 @@ def _get_context_for_request(
         organization_id=organization_id,
         include_services=include_services,
         sample_limit=sample_limit,
+        service_detail=service_detail,
     )
 
 
