@@ -27,6 +27,7 @@ from urllib.parse import unquote, urlsplit, urlunsplit
 import httpx
 import mcp.server.stdio
 import mcp.types as types
+from anyio import to_thread
 from appwrite.client import Client
 from appwrite.enums.browser import Browser
 from appwrite.exception import AppwriteException
@@ -988,7 +989,9 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
         try:
             if not operator.has_public_tool(name):
                 raise ValueError(f"Tool {name} not found")
-            result = operator.execute_public_tool(name, arguments)
+            result = await _execute_public_tool_for_transport(
+                operator, name, arguments, transport
+            )
         except Exception:
             telemetry.record_request("tools/call", "error", time.monotonic() - start)
             raise
@@ -1029,6 +1032,21 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
         return result
 
     return server
+
+
+async def _execute_public_tool_for_transport(
+    operator: Operator,
+    name: str,
+    arguments: dict | None,
+    transport: str,
+) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+    if transport != "http":
+        return operator.execute_public_tool(name, arguments)
+
+    # The Appwrite Python SDK, docs embedding client, context discovery, and URL
+    # upload fetches are synchronous. Running them on the ASGI event-loop thread
+    # can make even /healthz stop responding while a tool call is slow or stuck.
+    return await to_thread.run_sync(operator.execute_public_tool, name, arguments)
 
 
 def _emit_initialize(server: Server) -> None:

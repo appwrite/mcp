@@ -1,8 +1,10 @@
+import asyncio
 import base64
 import io
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -15,6 +17,7 @@ from mcp_server_appwrite import server as server_module
 from mcp_server_appwrite.server import (
     _coerce_argument,
     _configure_uploads,
+    _execute_public_tool_for_transport,
     _format_tool_result,
     _prepare_arguments,
     _validate_service,
@@ -106,6 +109,29 @@ class ServerHelperTests(unittest.TestCase):
         self.assertIn("project_id", http)
         self.assertIn("Large results are stored as resources", stdio)
         self.assertIn("returns tool results inline", http)
+
+    def test_http_tool_execution_does_not_block_event_loop(self):
+        class BlockingOperator:
+            def execute_public_tool(self, name, arguments):
+                time.sleep(0.2)
+                return [types.TextContent(type="text", text="ok")]
+
+        async def run_check():
+            start = time.monotonic()
+            task = asyncio.create_task(
+                _execute_public_tool_for_transport(
+                    BlockingOperator(), "appwrite_call_tool", {}, "http"
+                )
+            )
+
+            await asyncio.sleep(0.01)
+
+            self.assertLess(time.monotonic() - start, 0.1)
+            self.assertFalse(task.done())
+            result = await task
+            self.assertEqual(result[0].text, "ok")
+
+        asyncio.run(run_check())
 
     def test_coerce_input_file_from_path(self):
         with tempfile.NamedTemporaryFile(suffix=".txt") as handle:
