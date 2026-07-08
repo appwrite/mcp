@@ -274,14 +274,27 @@ class Operator:
         self, name: str, arguments: dict[str, Any] | None
     ) -> list[ToolContent]:
         start = time.monotonic()
-        outcome = "success"
+        status = "success"
+        error_type: str | None = None
+        output_chars = 0
+        telemetry.tool_call_started(name)
         try:
-            return self._dispatch_public_tool(name, arguments)
-        except Exception:
-            outcome = "error"
+            result = self._dispatch_public_tool(name, arguments)
+            output_chars = _content_size(result)
+            return result
+        except Exception as exc:
+            status = "error"
+            error_type = type(exc).__name__
             raise
         finally:
-            telemetry.record_tool_call(name, outcome, time.monotonic() - start)
+            telemetry.record_tool_call(
+                name,
+                status,
+                time.monotonic() - start,
+                error_type=error_type,
+                input_chars=len(json.dumps(arguments)) if arguments else 0,
+                output_chars=output_chars,
+            )
 
     def _dispatch_public_tool(
         self, name: str, arguments: dict[str, Any] | None
@@ -463,6 +476,7 @@ class Operator:
 
         entry = self._catalog_map.get(tool_name)
         if not entry:
+            telemetry.record_hallucination(tool_name)
             raise ValueError(
                 f"Tool {tool_name} was not found. Use appwrite_search_tools first."
             )
@@ -771,6 +785,20 @@ def _normalize_arguments(raw_arguments: dict[str, Any]) -> dict[str, Any]:
             merged_arguments[key] = value
 
     return merged_arguments
+
+
+def _content_size(content: list[ToolContent]) -> int:
+    total = 0
+    for item in content:
+        if isinstance(item, types.TextContent):
+            total += len(item.text)
+        elif isinstance(item, types.ImageContent):
+            total += len(item.data)
+        else:
+            text = getattr(item.resource, "text", None)
+            blob = getattr(item.resource, "blob", None)
+            total += len(text or blob or "")
+    return total
 
 
 def _serialize_content(content: list[ToolContent]) -> str:
