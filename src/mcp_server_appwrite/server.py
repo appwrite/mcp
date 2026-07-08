@@ -40,7 +40,7 @@ from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.models import InitializationOptions
 from pydantic import AnyUrl
 
-from . import telemetry
+from . import error_monitoring, telemetry
 from .constants import (
     CACHE_TTL_SECONDS,
     CATALOG_URI,
@@ -814,8 +814,16 @@ def execute_registered_tool(
             error_code=getattr(exc, "code", None),
             error_type=getattr(exc, "type", None),
         )
+        error_monitoring.capture_appwrite_exception(
+            exc,
+            service=parsed["service_name"],
+            action=parsed["action_verb"],
+            classification=parsed["classification"],
+            project_id=target_project,
+            organization_id=organization_id,
+        )
         raise RuntimeError(_format_appwrite_error(exc)) from exc
-    except Exception:
+    except Exception as exc:
         telemetry.record_appwrite_call(
             service=parsed["service_name"],
             action=parsed["action_verb"],
@@ -823,6 +831,26 @@ def execute_registered_tool(
             outcome="error",
             duration_s=time.monotonic() - start,
             error_type="internal",
+        )
+        error_monitoring.capture_exception(
+            exc,
+            tags={
+                "appwrite.service": parsed["service_name"],
+                "appwrite.action": parsed["action_verb"],
+                "appwrite.classification": parsed["classification"],
+                "appwrite.project_id": target_project,
+                "appwrite.organization_id": organization_id,
+            },
+            context={
+                "appwrite": {
+                    "service": parsed["service_name"],
+                    "action": parsed["action_verb"],
+                    "classification": parsed["classification"],
+                    "project_id": target_project,
+                    "organization_id": organization_id,
+                },
+            },
+            transaction=(f"appwrite.{parsed['service_name']}.{parsed['action_verb']}"),
         )
         raise
 
@@ -986,8 +1014,14 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
         start = time.monotonic()
         try:
             result = operator.get_public_tools()
-        except Exception:
+        except Exception as exc:
             telemetry.record_request("tools/list", "error", time.monotonic() - start)
+            error_monitoring.capture_exception(
+                exc,
+                tags={"mcp.method": "tools/list", "transport": transport},
+                context={"mcp": {"method": "tools/list", "transport": transport}},
+                transaction="mcp.tools/list",
+            )
             raise
         telemetry.record_request("tools/list", "success", time.monotonic() - start)
         return result
@@ -1004,8 +1038,26 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
             result = await _execute_public_tool_for_transport(
                 operator, name, arguments, transport
             )
-        except Exception:
+        except Exception as exc:
             telemetry.record_request("tools/call", "error", time.monotonic() - start)
+            error_monitoring.capture_exception(
+                exc,
+                tags={
+                    "mcp.method": "tools/call",
+                    "tool.name": name,
+                    "transport": transport,
+                    **_target_context_tags(arguments),
+                },
+                context={
+                    "mcp": {
+                        "method": "tools/call",
+                        "tool_name": name,
+                        "transport": transport,
+                    },
+                    "appwrite": _target_context(arguments),
+                },
+                transaction=f"mcp.tools/call:{name}",
+            )
             raise
         telemetry.record_request("tools/call", "success", time.monotonic() - start)
         return result
@@ -1015,9 +1067,15 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
         start = time.monotonic()
         try:
             result = operator.list_resources()
-        except Exception:
+        except Exception as exc:
             telemetry.record_request(
                 "resources/list", "error", time.monotonic() - start
+            )
+            error_monitoring.capture_exception(
+                exc,
+                tags={"mcp.method": "resources/list", "transport": transport},
+                context={"mcp": {"method": "resources/list", "transport": transport}},
+                transaction="mcp.resources/list",
             )
             raise
         telemetry.record_request("resources/list", "success", time.monotonic() - start)
@@ -1035,15 +1093,59 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
         telemetry.record_resource_read(resource_type)
         try:
             result = operator.read_resource(uri_str)
-        except Exception:
+        except Exception as exc:
             telemetry.record_request(
                 "resources/read", "error", time.monotonic() - start
+            )
+            error_monitoring.capture_exception(
+                exc,
+                tags={
+                    "mcp.method": "resources/read",
+                    "resource.type": resource_type,
+                    "transport": transport,
+                },
+                context={
+                    "mcp": {
+                        "method": "resources/read",
+                        "resource_type": resource_type,
+                        "transport": transport,
+                    },
+                },
+                transaction=f"mcp.resources/read:{resource_type}",
             )
             raise
         telemetry.record_request("resources/read", "success", time.monotonic() - start)
         return result
 
     return server
+
+
+def _target_context(arguments: dict | None) -> dict[str, Any]:
+    if not isinstance(arguments, dict):
+        return {}
+
+    project_id = arguments.get("project_id", arguments.get("projectId"))
+    organization_id = arguments.get("organization_id", arguments.get("organizationId"))
+    return {
+        key: value
+        for key, value in {
+            "project_id": project_id,
+            "organization_id": organization_id,
+        }.items()
+        if value is not None
+    }
+
+
+def _target_context_tags(arguments: dict | None) -> dict[str, Any]:
+    context = _target_context(arguments)
+    return {
+        key: context[source]
+        for key, source in {
+            "appwrite.project_id": "project_id",
+            "appwrite.organization_id": "organization_id",
+        }.items()
+        if source in context
+    }
 
 
 async def _execute_public_tool_for_transport(

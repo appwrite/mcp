@@ -33,6 +33,9 @@ docker compose up --build
 > To enable docs search locally, set `OPENAI_API_KEY` in your shell or `.env`
 > before running Compose.
 
+> To enable hosted HTTP error monitoring locally, set `SENTRY_DSN`. You can also
+> set `SENTRY_ENVIRONMENT`; Compose defaults it to `development`.
+
 **`uv` directly — HTTP:**
 
 ```bash
