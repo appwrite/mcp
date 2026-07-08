@@ -25,7 +25,7 @@ _SENSITIVE_KEYS = {
     "secret",
     "session",
     "token",
-    "x-appwrite-key",
+    "x_appwrite_key",
 }
 
 

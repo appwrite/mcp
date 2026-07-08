@@ -131,6 +131,7 @@ class ErrorMonitoringTests(unittest.TestCase):
                 "headers": {
                     "Authorization": "Bearer secret",
                     "Content-Type": "application/json",
+                    "X-Appwrite-Key": "appwrite-secret",
                 },
                 "data": {"token": "secret"},
             },
@@ -140,6 +141,7 @@ class ErrorMonitoringTests(unittest.TestCase):
         scrubbed = error_monitoring._before_send(event, {})
 
         self.assertEqual(scrubbed["request"]["headers"]["Authorization"], "[Filtered]")
+        self.assertEqual(scrubbed["request"]["headers"]["X-Appwrite-Key"], "[Filtered]")
         self.assertEqual(
             scrubbed["request"]["headers"]["Content-Type"], "application/json"
         )
