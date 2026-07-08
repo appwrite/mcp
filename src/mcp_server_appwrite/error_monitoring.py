@@ -158,7 +158,7 @@ def capture_appwrite_exception(
 def _should_capture(exc: BaseException) -> bool:
     if _already_captured(exc):
         return False
-    if isinstance(exc, ValueError):
+    if _find_exception(exc, ValueError) is not None:
         return False
     appwrite_error = _find_appwrite_exception(exc)
     if appwrite_error is not None and _is_appwrite_client_error(appwrite_error):
@@ -167,11 +167,18 @@ def _should_capture(exc: BaseException) -> bool:
 
 
 def _find_appwrite_exception(exc: BaseException) -> AppwriteException | None:
+    found = _find_exception(exc, AppwriteException)
+    return found if isinstance(found, AppwriteException) else None
+
+
+def _find_exception(
+    exc: BaseException, exc_type: type[BaseException]
+) -> BaseException | None:
     current: BaseException | None = exc
     seen: set[int] = set()
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        if isinstance(current, AppwriteException):
+        if isinstance(current, exc_type):
             return current
         current = current.__cause__ or current.__context__
     return None
@@ -204,6 +211,11 @@ def _mark_captured(exc: BaseException) -> None:
 
 
 def _before_send(event: Any, hint: Any) -> Any:
+    exc_info = hint.get("exc_info") if isinstance(hint, Mapping) else None
+    if isinstance(exc_info, tuple) and len(exc_info) >= 2:
+        exc = exc_info[1]
+        if isinstance(exc, BaseException) and not _should_capture(exc):
+            return None
     return _sanitize(event)
 
 

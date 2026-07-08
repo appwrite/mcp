@@ -959,7 +959,10 @@ def _format_appwrite_error(exc: AppwriteException) -> str:
     if getattr(exc, "type", None):
         details.append(f"type={exc.type}")
     detail_text = f" ({', '.join(details)})" if details else ""
-    return f"Appwrite request failed{detail_text}: {exc}"
+    message = str(exc).replace("\n", " ").strip()
+    if len(message) > 500:
+        message = f"{message[:500]}..."
+    return f"Appwrite request failed{detail_text}: {message}"
 
 
 def build_instructions(transport: str = "http") -> str:

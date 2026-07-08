@@ -52,6 +52,19 @@ class ErrorMonitoringTests(unittest.TestCase):
         self.assertFalse(captured)
         capture.assert_not_called()
 
+    def test_wrapped_value_errors_are_not_captured(self):
+        error_monitoring._enabled = True
+        with patch("sentry_sdk.capture_exception") as capture:
+            try:
+                raise ValueError("bad input")
+            except ValueError as exc:
+                wrapped = RuntimeError("wrapped")
+                wrapped.__cause__ = exc
+                captured = error_monitoring.capture_exception(wrapped)
+
+        self.assertFalse(captured)
+        capture.assert_not_called()
+
     def test_appwrite_4xx_errors_are_not_captured(self):
         error_monitoring._enabled = True
         exc = AppwriteException("missing scope", 401, "general_unauthorized_scope")
@@ -63,6 +76,19 @@ class ErrorMonitoringTests(unittest.TestCase):
                 action="list",
                 classification="read",
             )
+
+        self.assertFalse(captured)
+        capture.assert_not_called()
+
+    def test_wrapped_appwrite_4xx_errors_are_not_captured(self):
+        error_monitoring._enabled = True
+        exc = AppwriteException("not found", 404, "user_target_not_found")
+
+        with patch("sentry_sdk.capture_exception") as capture:
+            try:
+                raise RuntimeError("wrapped") from exc
+            except RuntimeError as wrapped:
+                captured = error_monitoring.capture_exception(wrapped)
 
         self.assertFalse(captured)
         capture.assert_not_called()
@@ -202,6 +228,17 @@ class ErrorMonitoringTests(unittest.TestCase):
         self.assertEqual(scrubbed["request"]["data"], "[Filtered]")
         self.assertEqual(scrubbed["extra"]["password"], "[Filtered]")
         self.assertEqual(scrubbed["extra"]["safe"], "ok")
+
+    def test_before_send_drops_expected_exception_chains(self):
+        appwrite_error = AppwriteException("not found", 404, "not_found")
+        wrapped = RuntimeError("wrapped")
+        wrapped.__cause__ = appwrite_error
+
+        self.assertIsNone(
+            error_monitoring._before_send(
+                {"event_id": "1"}, {"exc_info": (RuntimeError, wrapped, None)}
+            )
+        )
 
 
 if __name__ == "__main__":

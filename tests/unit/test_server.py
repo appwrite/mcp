@@ -19,6 +19,7 @@ from mcp_server_appwrite.server import (
     _coerce_argument,
     _configure_uploads,
     _execute_public_tool_for_transport,
+    _format_appwrite_error,
     _format_tool_result,
     _prepare_arguments,
     _validate_service,
@@ -348,6 +349,15 @@ class ServerHelperTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertIsInstance(result[0], types.EmbeddedResource)
         self.assertEqual(result[0].resource.mimeType, "application/octet-stream")
+
+    def test_format_appwrite_error_truncates_large_html_body(self):
+        exc = AppwriteException("<!DOCTYPE html>" + ("x" * 1000), 404, None)
+
+        message = _format_appwrite_error(exc)
+
+        self.assertIn("code=404", message)
+        self.assertLess(len(message), 560)
+        self.assertTrue(message.endswith("..."))
 
     def test_register_services_returns_fresh_manager(self):
         manager_a = register_services(object())
