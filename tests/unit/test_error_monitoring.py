@@ -94,6 +94,7 @@ class ErrorMonitoringTests(unittest.TestCase):
             def __init__(self):
                 self.tags = {}
                 self.contexts = {}
+                self.transaction = None
 
             def __enter__(self):
                 return self
@@ -107,6 +108,9 @@ class ErrorMonitoringTests(unittest.TestCase):
             def set_context(self, key, value):
                 self.contexts[key] = value
 
+            def set_transaction_name(self, value):
+                self.transaction = value
+
         scope = FakeScope()
         exc = RuntimeError("boom")
         with (
@@ -117,6 +121,7 @@ class ErrorMonitoringTests(unittest.TestCase):
                 exc,
                 tags={"mcp.method": "tools/call"},
                 context={"arguments": {"api_key": "secret"}, "safe": "ok"},
+                transaction="mcp.tools/call:appwrite_call_tool",
             )
 
         self.assertTrue(captured)
@@ -124,6 +129,55 @@ class ErrorMonitoringTests(unittest.TestCase):
         self.assertEqual(scope.tags["mcp.method"], "tools/call")
         self.assertEqual(scope.contexts["appwrite_mcp"]["arguments"], "[Filtered]")
         self.assertEqual(scope.contexts["appwrite_mcp"]["safe"], "ok")
+        self.assertEqual(scope.transaction, "mcp.tools/call:appwrite_call_tool")
+
+    def test_appwrite_capture_sets_project_context(self):
+        error_monitoring._enabled = True
+
+        class FakeScope:
+            def __init__(self):
+                self.tags = {}
+                self.contexts = {}
+                self.transaction = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def set_tag(self, key, value):
+                self.tags[key] = value
+
+            def set_context(self, key, value):
+                self.contexts[key] = value
+
+            def set_transaction_name(self, value):
+                self.transaction = value
+
+        scope = FakeScope()
+        exc = AppwriteException("upstream failed", 503, "general_server_error")
+        with (
+            patch("sentry_sdk.new_scope", return_value=scope),
+            patch("sentry_sdk.capture_exception") as capture,
+        ):
+            captured = error_monitoring.capture_appwrite_exception(
+                exc,
+                service="users",
+                action="list",
+                classification="read",
+                project_id="project-1",
+                organization_id="org-1",
+            )
+
+        self.assertTrue(captured)
+        capture.assert_called_once_with(exc)
+        self.assertEqual(scope.tags["appwrite.project_id"], "project-1")
+        self.assertEqual(scope.tags["appwrite.organization_id"], "org-1")
+        self.assertEqual(
+            scope.contexts["appwrite_mcp"]["appwrite"]["project_id"], "project-1"
+        )
+        self.assertEqual(scope.transaction, "appwrite.users.list")
 
     def test_before_send_redacts_sensitive_fields(self):
         event = {

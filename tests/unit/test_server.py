@@ -590,6 +590,50 @@ class ServerHelperTests(unittest.TestCase):
         capture.assert_called_once()
         self.assertEqual(capture.call_args.kwargs["service"], "users")
         self.assertEqual(capture.call_args.kwargs["action"], "list")
+        self.assertIsNone(capture.call_args.kwargs["project_id"])
+
+    def test_execute_registered_tool_passes_target_context_to_appwrite_capture(self):
+        tool = types.Tool(
+            name="users_list",
+            description="List users.",
+            inputSchema={"type": "object", "properties": {}, "required": []},
+        )
+        manager = ToolManager()
+        manager.tools_registry = {
+            "users_list": {
+                "definition": tool,
+                "service_name": "users",
+                "method_name": "list",
+                "parameter_types": {},
+            }
+        }
+
+        class UsersService:
+            def __init__(self, client):
+                pass
+
+            def list(self):
+                raise AppwriteException("upstream failed", 503, "general_server_error")
+
+        with (
+            patch.dict(server_module.SERVICE_CLASSES, {"users": UsersService}),
+            patch.object(
+                server_module.error_monitoring, "capture_appwrite_exception"
+            ) as capture,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "code=503"):
+                execute_registered_tool(
+                    manager,
+                    "users_list",
+                    {},
+                    client=object(),
+                    target_project="project-1",
+                    organization_id="org-1",
+                )
+
+        capture.assert_called_once()
+        self.assertEqual(capture.call_args.kwargs["project_id"], "project-1")
+        self.assertEqual(capture.call_args.kwargs["organization_id"], "org-1")
 
     def test_execute_registered_tool_captures_internal_error(self):
         tool = types.Tool(
@@ -625,6 +669,7 @@ class ServerHelperTests(unittest.TestCase):
 
         capture.assert_called_once()
         self.assertEqual(capture.call_args.kwargs["tags"]["appwrite.service"], "users")
+        self.assertIn("context", capture.call_args.kwargs)
 
     def test_parse_args_rejects_removed_flags(self):
         with (

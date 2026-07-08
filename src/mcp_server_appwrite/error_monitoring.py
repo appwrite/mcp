@@ -83,6 +83,7 @@ def capture_exception(
     *,
     tags: Mapping[str, Any] | None = None,
     context: Mapping[str, Any] | None = None,
+    transaction: str | None = None,
 ) -> bool:
     """Capture an unexpected exception if monitoring is enabled.
 
@@ -100,6 +101,10 @@ def capture_exception(
             for key, value in (tags or {}).items():
                 if value is not None:
                     scope.set_tag(key, str(value))
+            if transaction:
+                setter = getattr(scope, "set_transaction_name", None)
+                if callable(setter):
+                    setter(transaction)
             if context:
                 scope.set_context("appwrite_mcp", _sanitize(context))
             sentry_sdk.capture_exception(exc)
@@ -115,21 +120,38 @@ def capture_appwrite_exception(
     service: str,
     action: str,
     classification: str,
+    project_id: str | None = None,
+    organization_id: str | None = None,
 ) -> bool:
     """Capture publishable Appwrite API failures.
 
     Appwrite 4xx responses are expected user/API outcomes and remain metrics-only.
     Unknown or 5xx responses are sent to Sentry with low-cardinality tags.
     """
+    tags = {
+        "appwrite.service": service or "unknown",
+        "appwrite.action": action or "unknown",
+        "appwrite.classification": classification or "unknown",
+        "appwrite.error_code": getattr(exc, "code", None),
+        "appwrite.error_type": getattr(exc, "type", None),
+        "appwrite.project_id": project_id,
+        "appwrite.organization_id": organization_id,
+    }
     return capture_exception(
         exc,
-        tags={
-            "appwrite.service": service or "unknown",
-            "appwrite.action": action or "unknown",
-            "appwrite.classification": classification or "unknown",
-            "appwrite.error_code": getattr(exc, "code", None),
-            "appwrite.error_type": getattr(exc, "type", None),
+        tags=tags,
+        context={
+            "appwrite": {
+                "service": service or "unknown",
+                "action": action or "unknown",
+                "classification": classification or "unknown",
+                "error_code": getattr(exc, "code", None),
+                "error_type": getattr(exc, "type", None),
+                "project_id": project_id,
+                "organization_id": organization_id,
+            },
         },
+        transaction=f"appwrite.{service or 'unknown'}.{action or 'unknown'}",
     )
 
 
