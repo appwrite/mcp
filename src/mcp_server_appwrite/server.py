@@ -1283,10 +1283,11 @@ async def _execute_public_tool_for_transport(
 
 
 def _emit_initialize(server: Server) -> None:
-    """Bind the current session's client/user identity to the request context and
-    emit an ``mcp.connection`` + ``mcp.handshake`` event (deduped per session in the
-    telemetry layer). Best-effort: any failure to read the request context is
-    swallowed."""
+    """Refine the request identity from the MCP session's negotiated client params
+    when they are available. On the hosted stateless transport they usually are
+    not — each POST is its own session, and connections/handshakes are counted by
+    ``MCPIdentityMiddleware`` in the HTTP layer instead. Best-effort: any failure
+    to read the request context is swallowed."""
     try:
         session = server.request_context.session
         params = session.client_params
@@ -1305,12 +1306,10 @@ def _emit_initialize(server: Server) -> None:
     except Exception:
         pass
 
-    telemetry.record_connection(
-        session_id=id(session),
+    telemetry.set_request_identity(
         client_name=getattr(client_info, "name", None),
-        client_version=getattr(client_info, "version", None),
-        protocol_version=getattr(params, "protocolVersion", None),
         subject=subject,
+        protocol_version=getattr(params, "protocolVersion", None),
     )
 
 

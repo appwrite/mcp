@@ -486,7 +486,9 @@ def set_request_identity(
     """Bind the current request's client/user identity to the calling context and
     refresh the rolling activity stores. Contextvars propagate into the worker
     threads that execute tools, so record helpers can label by client."""
-    client = client_name or "unknown"
+    # Never downgrade an identity already bound for this request (e.g. by the
+    # HTTP-layer middleware) to "unknown".
+    client = client_name or _request_client.get()
     _request_client.set(client)
     _request_subject.set(subject)
     if not _enabled:

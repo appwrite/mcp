@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import itertools
 import json
 import logging
+import re
 import sys
 import time
 from importlib.resources import files
@@ -36,7 +38,7 @@ from starlette.responses import (
     Response,
 )
 from starlette.routing import Route
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from . import error_monitoring, telemetry
 from .auth import (
@@ -182,6 +184,114 @@ def _has_authorization_header(scope: Scope) -> bool:
     return False
 
 
+_MAX_SNIFF_BYTES = 2 * 1024 * 1024
+_UA_PRODUCT = re.compile(r"^[A-Za-z0-9._-]{1,32}")
+_connection_counter = itertools.count(1)
+
+
+def _client_from_user_agent(user_agent: str | None) -> str | None:
+    """First product token of the User-Agent, e.g. ``claude-code/2.0`` ->
+    ``claude-code``. Only authenticated MCP clients reach this path, so the
+    value set stays small."""
+    if not user_agent:
+        return None
+    match = _UA_PRODUCT.match(user_agent.split("/", 1)[0].strip())
+    return match.group(0).lower() if match else None
+
+
+def _header(scope: Scope, name: bytes) -> str | None:
+    for key, value in scope.get("headers", []):
+        if key == name:
+            return value.decode("latin-1")
+    return None
+
+
+def _subject_from_scope(scope: Scope) -> str | None:
+    user = scope.get("user")
+    token = getattr(user, "access_token", None)
+    claims = getattr(token, "claims", None) or {}
+    return getattr(token, "subject", None) or claims.get("sub")
+
+
+def _find_initialize_params(body: bytes) -> dict | None:
+    try:
+        payload = json.loads(body)
+    except Exception:
+        return None
+    messages = payload if isinstance(payload, list) else [payload]
+    for message in messages:
+        if isinstance(message, dict) and message.get("method") == "initialize":
+            params = message.get("params")
+            return params if isinstance(params, dict) else {}
+    return None
+
+
+class MCPIdentityMiddleware:
+    """Bind client/user identity for every authenticated ``/mcp`` request.
+
+    The hosted transport is stateless: each POST is its own MCP session, so
+    ``session.client_params`` is only populated on the request that carries the
+    ``initialize`` message — which the SDK answers internally, before any of our
+    handlers run. This middleware peeks at the JSON-RPC body instead: an
+    ``initialize`` request is counted as a connection/handshake (with clientInfo),
+    and every other request binds identity from the ``mcp-protocol-version``
+    header and User-Agent so tool metrics carry a real ``client_id``."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope.get("method") != "POST":
+            await self.app(scope, receive, send)
+            return
+
+        chunks: list[Message] = []
+        body = b""
+        while True:
+            message = await receive()
+            chunks.append(message)
+            if message["type"] != "http.request":  # pragma: no cover - disconnect
+                break
+            body += message.get("body", b"")
+            if len(body) > _MAX_SNIFF_BYTES or not message.get("more_body", False):
+                break
+
+        try:
+            self._bind_identity(scope, body)
+        except Exception:  # pragma: no cover - telemetry must never break requests
+            pass
+
+        replayed = iter(chunks)
+
+        async def replay() -> Message:
+            try:
+                return next(replayed)
+            except StopIteration:
+                return await receive()
+
+        await self.app(scope, replay, send)
+
+    def _bind_identity(self, scope: Scope, body: bytes) -> None:
+        subject = _subject_from_scope(scope)
+        params = _find_initialize_params(body) if body else None
+        if params is not None:
+            client_info = params.get("clientInfo") or {}
+            telemetry.record_connection(
+                session_id=next(_connection_counter),
+                client_name=client_info.get("name")
+                or _client_from_user_agent(_header(scope, b"user-agent")),
+                client_version=client_info.get("version"),
+                protocol_version=params.get("protocolVersion"),
+                subject=subject,
+            )
+            return
+        telemetry.set_request_identity(
+            client_name=_client_from_user_agent(_header(scope, b"user-agent")),
+            subject=subject,
+            protocol_version=_header(scope, b"mcp-protocol-version"),
+        )
+
+
 _KNOWN_HANDLERS = {
     "/mcp",
     "/healthz",
@@ -265,7 +375,7 @@ def build_app() -> Starlette:
     async def handle_mcp(scope: Scope, receive: Receive, send: Send) -> None:
         await session_manager.handle_request(scope, receive, send)
 
-    mcp_endpoint = RequireBearer(handle_mcp)
+    mcp_endpoint = RequireBearer(MCPIdentityMiddleware(handle_mcp))
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):
