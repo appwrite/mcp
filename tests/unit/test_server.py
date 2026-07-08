@@ -22,7 +22,9 @@ from mcp_server_appwrite.server import (
     _prepare_arguments,
     _validate_service,
     build_client,
+    build_client_for_request,
     build_instructions,
+    build_introspection_client,
     build_operator,
     parse_args,
     register_services,
@@ -177,6 +179,39 @@ class ServerHelperTests(unittest.TestCase):
         self.assertEqual(client._endpoint, "https://example.test/v1")
         self.assertEqual(client.get_config("project"), "test-project")
         self.assertEqual(client._global_headers["x-appwrite-key"], "test-key")
+        self.assert_mcp_client_headers(client)
+
+    def assert_mcp_client_headers(self, client):
+        user_agent = client._global_headers["user-agent"]
+
+        self.assertEqual(client._global_headers["x-sdk-name"], "mcp")
+        self.assertTrue(
+            user_agent.startswith(f"AppwriteMCP/{server_module.SERVER_VERSION}"),
+            user_agent,
+        )
+        self.assertNotIn("AppwritePythonSDK", user_agent)
+
+    def test_build_introspection_client_sets_mcp_headers(self):
+        client = build_introspection_client()
+
+        self.assert_mcp_client_headers(client)
+
+    def test_build_client_for_request_sets_mcp_headers_and_auth_context(self):
+        client = build_client_for_request(
+            "console",
+            "test-token",
+            endpoint="https://example.test/v1",
+            target_project="target-project",
+            organization_id="org-id",
+        )
+
+        self.assertEqual(client._endpoint, "https://example.test/v1")
+        self.assertEqual(client.get_config("project"), "target-project")
+        self.assertEqual(client._global_headers["authorization"], "Bearer test-token")
+        self.assertEqual(client._global_headers["x-appwrite-project"], "target-project")
+        self.assertEqual(client._global_headers["x-appwrite-mode"], "admin")
+        self.assertEqual(client._global_headers["x-appwrite-organization"], "org-id")
+        self.assert_mcp_client_headers(client)
 
     def test_coerce_enum_returns_raw_value_string(self):
         self.assertEqual(_coerce_argument("code", "ch", Browser), "ch")

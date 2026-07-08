@@ -169,14 +169,23 @@ def load_appwrite_config() -> AppwriteConfig:
     return AppwriteConfig(project_id=project_id, api_key=api_key, endpoint=endpoint)
 
 
+def _configure_mcp_client_headers(client: Client) -> Client:
+    current_user_agent = client._global_headers.get("user-agent", "")
+    suffix_start = current_user_agent.find(" ")
+    suffix = current_user_agent[suffix_start:] if suffix_start != -1 else ""
+
+    client.add_header("x-sdk-name", "mcp")
+    client.add_header("user-agent", f"AppwriteMCP/{SERVER_VERSION}{suffix}")
+    return client
+
+
 def build_client(config: AppwriteConfig | None = None) -> Client:
     config = config or load_appwrite_config()
     client = Client()
     client.set_endpoint(config.endpoint)
     client.set_project(config.project_id)
     client.set_key(config.api_key)
-    client.add_header("x-sdk-name", "mcp")
-    return client
+    return _configure_mcp_client_headers(client)
 
 
 def build_introspection_client() -> Client:
@@ -184,8 +193,7 @@ def build_introspection_client() -> Client:
     generation. It never makes API calls, so no project/key is required."""
     client = Client()
     client.set_endpoint(os.getenv("APPWRITE_ENDPOINT", DEFAULT_ENDPOINT))
-    client.add_header("x-sdk-name", "mcp")
-    return client
+    return _configure_mcp_client_headers(client)
 
 
 def build_client_for_request(
@@ -215,7 +223,7 @@ def build_client_for_request(
     client.set_endpoint(endpoint or os.getenv("APPWRITE_ENDPOINT", DEFAULT_ENDPOINT))
     client.set_project(target_project or project_id)
     client.add_header("Authorization", f"Bearer {bearer_token}")
-    client.add_header("x-sdk-name", "mcp")
+    _configure_mcp_client_headers(client)
     if target_project:
         client.add_header("x-appwrite-project", target_project)
         # Admin mode lets the console-issued token be recognized on another project
