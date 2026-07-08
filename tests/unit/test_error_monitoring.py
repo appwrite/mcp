@@ -240,6 +240,42 @@ class ErrorMonitoringTests(unittest.TestCase):
             )
         )
 
+    def test_before_send_normalizes_mcp_tool_call_transaction(self):
+        event = {
+            "transaction": "http://10.140.28.8:8000/mcp",
+            "tags": {
+                "mcp.method": "tools/call",
+                "tool.name": "appwrite_call_tool",
+            },
+        }
+
+        scrubbed = error_monitoring._before_send(event, {})
+
+        self.assertEqual(scrubbed["transaction"], "mcp.tools/call:appwrite_call_tool")
+
+    def test_before_send_normalizes_mcp_resource_transaction_from_list_tags(self):
+        event = {
+            "transaction": "http://10.140.28.8:8000/mcp",
+            "tags": [
+                ["mcp.method", "resources/read"],
+                ["resource.type", "result"],
+            ],
+        }
+
+        scrubbed = error_monitoring._before_send(event, {})
+
+        self.assertEqual(scrubbed["transaction"], "mcp.resources/read:result")
+
+    def test_before_send_keeps_explicit_semantic_transaction(self):
+        event = {
+            "transaction": "appwrite.users.list",
+            "tags": {"mcp.method": "tools/call", "tool.name": "appwrite_call_tool"},
+        }
+
+        scrubbed = error_monitoring._before_send(event, {})
+
+        self.assertEqual(scrubbed["transaction"], "appwrite.users.list")
+
 
 if __name__ == "__main__":
     unittest.main()

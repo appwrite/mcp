@@ -21,6 +21,7 @@ from mcp_server_appwrite.server import (
     _execute_public_tool_for_transport,
     _format_appwrite_error,
     _format_tool_result,
+    _mcp_request_context,
     _prepare_arguments,
     _validate_service,
     build_client,
@@ -358,6 +359,51 @@ class ServerHelperTests(unittest.TestCase):
         self.assertIn("code=404", message)
         self.assertLess(len(message), 560)
         self.assertTrue(message.endswith("..."))
+
+    def test_mcp_request_context_extracts_client_metadata(self):
+        server = Mock()
+        server.request_context.session.client_params = type(
+            "Params",
+            (),
+            {
+                "clientInfo": type(
+                    "ClientInfo",
+                    (),
+                    {"name": "codex", "version": "1.2.3"},
+                )(),
+                "protocolVersion": "2025-06-18",
+            },
+        )()
+
+        context = _mcp_request_context(server)
+
+        self.assertEqual(
+            context.tags,
+            {
+                "mcp.client.name": "codex",
+                "mcp.client.version": "1.2.3",
+                "mcp.protocol_version": "2025-06-18",
+            },
+        )
+        self.assertEqual(
+            context.context,
+            {
+                "client": {
+                    "name": "codex",
+                    "version": "1.2.3",
+                    "protocol_version": "2025-06-18",
+                }
+            },
+        )
+
+    def test_mcp_request_context_tolerates_missing_client_metadata(self):
+        server = Mock()
+        server.request_context.session.client_params = None
+
+        context = _mcp_request_context(server)
+
+        self.assertEqual(context.tags, {})
+        self.assertEqual(context.context, {})
 
     def test_register_services_returns_fresh_manager(self):
         manager_a = register_services(object())
