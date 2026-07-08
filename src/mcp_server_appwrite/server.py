@@ -380,21 +380,18 @@ def validate_services(tools_manager: ToolManager) -> None:
     try:
         _validate_service(service)
     except AppwriteException as exc:
-        telemetry.record_startup_validation(service.service_name, "error")
         raise RuntimeError(
             "Appwrite startup validation failed during the minimal startup probe. "
             "Check your endpoint, project ID, API key, and required scopes.\n"
             f"- {service.service_name}: {_format_appwrite_error(exc)}"
         ) from exc
     except Exception as exc:
-        telemetry.record_startup_validation(service.service_name, "error")
         raise RuntimeError(
             "Appwrite startup validation failed during the minimal startup probe. "
             "Check your endpoint, project ID, API key, and required scopes.\n"
             f"- {service.service_name}: {exc}"
         ) from exc
 
-    telemetry.record_startup_validation(service.service_name, "success")
     _log_startup(f"Validated startup access via {service.service_name}")
 
 
