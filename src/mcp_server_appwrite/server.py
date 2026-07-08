@@ -223,7 +223,7 @@ def build_client_for_request(
     client.set_endpoint(endpoint or os.getenv("APPWRITE_ENDPOINT", DEFAULT_ENDPOINT))
     client.set_project(target_project or project_id)
     client.add_header("Authorization", f"Bearer {bearer_token}")
-    _configure_mcp_client_headers(client)
+    client = _configure_mcp_client_headers(client)
     if target_project:
         client.add_header("x-appwrite-project", target_project)
         # Admin mode lets the console-issued token be recognized on another project
