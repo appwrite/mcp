@@ -136,7 +136,7 @@ def _build_instruments(meter: Any, transport: str, version: str) -> None:
     _instruments["requests"] = meter.create_counter(
         "mcp.requests",
         unit="{request}",
-        description="MCP JSON-RPC requests handled.",
+        description="Instrumented MCP JSON-RPC handler calls.",
     )
     _instruments["request_duration"] = meter.create_histogram(
         "mcp.request.duration",
@@ -208,11 +208,6 @@ def _build_instruments(meter: Any, transport: str, version: str) -> None:
         unit="s",
         description="Bearer-token verification duration.",
     )
-    _instruments["results_stored"] = meter.create_counter(
-        "mcp.results.stored",
-        unit="{result}",
-        description="Large tool results spilled to MCP resources.",
-    )
     _instruments["resources_reads"] = meter.create_counter(
         "mcp.resources.reads",
         unit="{read}",
@@ -233,12 +228,6 @@ def _build_instruments(meter: Any, transport: str, version: str) -> None:
         unit="{error}",
         description="File upload failures.",
     )
-    _instruments["startup_validation"] = meter.create_counter(
-        "mcp.startup.validation",
-        unit="{probe}",
-        description="Startup service-validation probe outcomes.",
-    )
-
     # Observable gauges: distinct active users/clients over a rolling window, and a
     # build-info gauge (always 1, carries version/transport labels).
     meter.create_observable_gauge(
@@ -480,10 +469,6 @@ def record_auth(
         _safe_record("auth_duration", duration_s, {"outcome": outcome})
 
 
-def record_result_stored(tool_name: str) -> None:
-    _safe_add("results_stored", 1, {"tool.name": tool_name})
-
-
 def record_resource_read(resource_type: str) -> None:
     _safe_add("resources_reads", 1, {"resource.type": resource_type})
 
@@ -496,7 +481,3 @@ def record_upload(*, source: str, outcome: str, size_bytes: int | None = None) -
 
 def record_upload_error(reason: str) -> None:
     _safe_add("upload_errors", 1, {"reason": reason})
-
-
-def record_startup_validation(service: str, outcome: str) -> None:
-    _safe_add("startup_validation", 1, {"service": service, "outcome": outcome})

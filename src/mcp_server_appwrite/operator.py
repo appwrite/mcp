@@ -504,7 +504,6 @@ class Operator:
             stored_result = self._result_store.save(
                 tool_name, content, _serialize_content(content)
             )
-            telemetry.record_result_stored(tool_name)
             preview = full_text[: self._preview_threshold]
             return [
                 types.TextContent(
@@ -519,7 +518,6 @@ class Operator:
         stored_result = self._result_store.save(
             tool_name, content, _serialize_content(content)
         )
-        telemetry.record_result_stored(tool_name)
         summary = ", ".join(_summarize_content_item(item) for item in content)
         return [
             types.TextContent(
