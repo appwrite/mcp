@@ -158,7 +158,7 @@ def capture_appwrite_exception(
 def _should_capture(exc: BaseException) -> bool:
     if _already_captured(exc):
         return False
-    if _find_exception(exc, ValueError) is not None:
+    if isinstance(exc, ValueError):
         return False
     appwrite_error = _find_appwrite_exception(exc)
     if appwrite_error is not None and _is_appwrite_client_error(appwrite_error):

@@ -52,18 +52,28 @@ class ErrorMonitoringTests(unittest.TestCase):
         self.assertFalse(captured)
         capture.assert_not_called()
 
-    def test_wrapped_value_errors_are_not_captured(self):
+    def test_wrapped_value_errors_are_captured(self):
         error_monitoring._enabled = True
-        with patch("sentry_sdk.capture_exception") as capture:
-            try:
-                raise ValueError("bad input")
-            except ValueError as exc:
-                wrapped = RuntimeError("wrapped")
-                wrapped.__cause__ = exc
-                captured = error_monitoring.capture_exception(wrapped)
 
-        self.assertFalse(captured)
-        capture.assert_not_called()
+        class FakeScope:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        scope = FakeScope()
+        with patch("sentry_sdk.capture_exception") as capture:
+            with patch("sentry_sdk.new_scope", return_value=scope):
+                try:
+                    raise ValueError("bad input")
+                except ValueError as exc:
+                    wrapped = RuntimeError("wrapped")
+                    wrapped.__cause__ = exc
+                    captured = error_monitoring.capture_exception(wrapped)
+
+        self.assertTrue(captured)
+        capture.assert_called_once_with(wrapped)
 
     def test_appwrite_4xx_errors_are_not_captured(self):
         error_monitoring._enabled = True
