@@ -811,6 +811,8 @@ def execute_registered_tool(
             error_code=getattr(exc, "code", None),
             error_type=getattr(exc, "type", None),
         )
+        if getattr(exc, "code", None) == 429:
+            telemetry.record_rate_limit(name)
         error_monitoring.capture_appwrite_exception(
             exc,
             service=parsed["service_name"],
@@ -1012,7 +1014,13 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
         try:
             result = operator.get_public_tools()
         except Exception as exc:
-            telemetry.record_request("tools/list", "error", time.monotonic() - start)
+            telemetry.record_message(
+                "tools/list",
+                "error",
+                time.monotonic() - start,
+                error_code=_jsonrpc_error_code(exc),
+                error_message=type(exc).__name__,
+            )
             error_monitoring.capture_exception(
                 exc,
                 tags={"mcp.method": "tools/list", "transport": transport},
@@ -1020,7 +1028,7 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
                 transaction="mcp.tools/list",
             )
             raise
-        telemetry.record_request("tools/list", "success", time.monotonic() - start)
+        telemetry.record_message("tools/list", "success", time.monotonic() - start)
         return result
 
     @server.call_tool()
@@ -1031,12 +1039,19 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
         start = time.monotonic()
         try:
             if not operator.has_public_tool(name):
+                telemetry.record_hallucination(name)
                 raise ValueError(f"Tool {name} not found")
             result = await _execute_public_tool_for_transport(
                 operator, name, arguments, transport
             )
         except Exception as exc:
-            telemetry.record_request("tools/call", "error", time.monotonic() - start)
+            telemetry.record_message(
+                "tools/call",
+                "error",
+                time.monotonic() - start,
+                error_code=_jsonrpc_error_code(exc),
+                error_message=type(exc).__name__,
+            )
             error_monitoring.capture_exception(
                 exc,
                 tags={
@@ -1056,17 +1071,22 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
                 transaction=f"mcp.tools/call:{name}",
             )
             raise
-        telemetry.record_request("tools/call", "success", time.monotonic() - start)
+        telemetry.record_message("tools/call", "success", time.monotonic() - start)
         return result
 
     @server.list_resources()
     async def handle_list_resources() -> list[types.Resource]:
+        _emit_initialize(server)
         start = time.monotonic()
         try:
             result = operator.list_resources()
         except Exception as exc:
-            telemetry.record_request(
-                "resources/list", "error", time.monotonic() - start
+            telemetry.record_message(
+                "resources/list",
+                "error",
+                time.monotonic() - start,
+                error_code=_jsonrpc_error_code(exc),
+                error_message=type(exc).__name__,
             )
             error_monitoring.capture_exception(
                 exc,
@@ -1075,7 +1095,7 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
                 transaction="mcp.resources/list",
             )
             raise
-        telemetry.record_request("resources/list", "success", time.monotonic() - start)
+        telemetry.record_message("resources/list", "success", time.monotonic() - start)
         return result
 
     @server.list_resource_templates()
@@ -1084,15 +1104,26 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
 
     @server.read_resource()
     async def handle_read_resource(uri) -> list[ReadResourceContents]:
+        _emit_initialize(server)
         start = time.monotonic()
         uri_str = str(uri)
         resource_type = "catalog" if uri_str == CATALOG_URI else "result"
-        telemetry.record_resource_read(resource_type)
         try:
             result = operator.read_resource(uri_str)
         except Exception as exc:
-            telemetry.record_request(
-                "resources/read", "error", time.monotonic() - start
+            telemetry.record_resource_access(
+                resource_type,
+                outcome="error",
+                anomaly=(
+                    "unknown_resource" if isinstance(exc, ValueError) else "read_error"
+                ),
+            )
+            telemetry.record_message(
+                "resources/read",
+                "error",
+                time.monotonic() - start,
+                error_code=_jsonrpc_error_code(exc),
+                error_message=type(exc).__name__,
             )
             error_monitoring.capture_exception(
                 exc,
@@ -1111,10 +1142,24 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
                 transaction=f"mcp.resources/read:{resource_type}",
             )
             raise
-        telemetry.record_request("resources/read", "success", time.monotonic() - start)
+        size_bytes = sum(
+            (
+                len(item.content)
+                if isinstance(item.content, bytes)
+                else len(str(item.content).encode("utf-8"))
+            )
+            for item in result
+        )
+        telemetry.record_resource_access(resource_type, size_bytes=size_bytes)
+        telemetry.record_message_size("sent", size_bytes)
+        telemetry.record_message("resources/read", "success", time.monotonic() - start)
         return result
 
     return server
+
+
+def _jsonrpc_error_code(exc: Exception) -> int:
+    return -32602 if isinstance(exc, ValueError) else -32603
 
 
 def _target_context(arguments: dict | None) -> dict[str, Any]:
@@ -1163,9 +1208,10 @@ async def _execute_public_tool_for_transport(
 
 
 def _emit_initialize(server: Server) -> None:
-    """Emit an ``mcp.initializations`` event and refresh active-user/client tracking
-    for the current session. Deduped per session in the telemetry layer. Best-effort:
-    any failure to read the request context is swallowed."""
+    """Bind the current session's client/user identity to the request context and
+    emit an ``mcp.connection`` + ``mcp.handshake`` event (deduped per session in the
+    telemetry layer). Best-effort: any failure to read the request context is
+    swallowed."""
     try:
         session = server.request_context.session
         params = session.client_params
@@ -1175,23 +1221,20 @@ def _emit_initialize(server: Server) -> None:
         return
 
     client_info = getattr(params, "clientInfo", None)
-    oauth_client_id = None
     subject = None
     try:
         access_token = get_access_token()
         if access_token is not None:
             claims = access_token.claims or {}
-            oauth_client_id = claims.get("client_id") or claims.get("azp")
             subject = access_token.subject or claims.get("sub")
     except Exception:
         pass
 
-    telemetry.record_initialize(
+    telemetry.record_connection(
         session_id=id(session),
         client_name=getattr(client_info, "name", None),
         client_version=getattr(client_info, "version", None),
         protocol_version=getattr(params, "protocolVersion", None),
-        oauth_client_id=oauth_client_id,
         subject=subject,
     )
 
