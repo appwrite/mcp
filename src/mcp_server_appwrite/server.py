@@ -40,7 +40,7 @@ from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.models import InitializationOptions
 from pydantic import AnyUrl
 
-from . import telemetry
+from . import error_monitoring, telemetry
 from .constants import (
     CACHE_TTL_SECONDS,
     CATALOG_URI,
@@ -814,8 +814,14 @@ def execute_registered_tool(
             error_code=getattr(exc, "code", None),
             error_type=getattr(exc, "type", None),
         )
+        error_monitoring.capture_appwrite_exception(
+            exc,
+            service=parsed["service_name"],
+            action=parsed["action_verb"],
+            classification=parsed["classification"],
+        )
         raise RuntimeError(_format_appwrite_error(exc)) from exc
-    except Exception:
+    except Exception as exc:
         telemetry.record_appwrite_call(
             service=parsed["service_name"],
             action=parsed["action_verb"],
@@ -823,6 +829,14 @@ def execute_registered_tool(
             outcome="error",
             duration_s=time.monotonic() - start,
             error_type="internal",
+        )
+        error_monitoring.capture_exception(
+            exc,
+            tags={
+                "appwrite.service": parsed["service_name"],
+                "appwrite.action": parsed["action_verb"],
+                "appwrite.classification": parsed["classification"],
+            },
         )
         raise
 
@@ -986,8 +1000,11 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
         start = time.monotonic()
         try:
             result = operator.get_public_tools()
-        except Exception:
+        except Exception as exc:
             telemetry.record_request("tools/list", "error", time.monotonic() - start)
+            error_monitoring.capture_exception(
+                exc, tags={"mcp.method": "tools/list", "transport": transport}
+            )
             raise
         telemetry.record_request("tools/list", "success", time.monotonic() - start)
         return result
@@ -1004,8 +1021,16 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
             result = await _execute_public_tool_for_transport(
                 operator, name, arguments, transport
             )
-        except Exception:
+        except Exception as exc:
             telemetry.record_request("tools/call", "error", time.monotonic() - start)
+            error_monitoring.capture_exception(
+                exc,
+                tags={
+                    "mcp.method": "tools/call",
+                    "tool.name": name,
+                    "transport": transport,
+                },
+            )
             raise
         telemetry.record_request("tools/call", "success", time.monotonic() - start)
         return result
@@ -1015,9 +1040,12 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
         start = time.monotonic()
         try:
             result = operator.list_resources()
-        except Exception:
+        except Exception as exc:
             telemetry.record_request(
                 "resources/list", "error", time.monotonic() - start
+            )
+            error_monitoring.capture_exception(
+                exc, tags={"mcp.method": "resources/list", "transport": transport}
             )
             raise
         telemetry.record_request("resources/list", "success", time.monotonic() - start)
@@ -1035,9 +1063,17 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
         telemetry.record_resource_read(resource_type)
         try:
             result = operator.read_resource(uri_str)
-        except Exception:
+        except Exception as exc:
             telemetry.record_request(
                 "resources/read", "error", time.monotonic() - start
+            )
+            error_monitoring.capture_exception(
+                exc,
+                tags={
+                    "mcp.method": "resources/read",
+                    "resource.type": resource_type,
+                    "transport": transport,
+                },
             )
             raise
         telemetry.record_request("resources/read", "success", time.monotonic() - start)

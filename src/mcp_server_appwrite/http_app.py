@@ -37,7 +37,7 @@ from starlette.responses import (
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from . import telemetry
+from . import error_monitoring, telemetry
 from .auth import (
     AppwriteTokenVerifier,
     protected_resource_metadata,
@@ -198,6 +198,7 @@ async def favicon_ico_endpoint(request: Request) -> RedirectResponse:
 
 
 def build_app() -> Starlette:
+    error_monitoring.init_error_monitoring("http", SERVER_VERSION)
     telemetry.init_telemetry("http", SERVER_VERSION)
     tools_manager = build_catalog_tools_manager()
     operator = build_operator(tools_manager, store_results=False)

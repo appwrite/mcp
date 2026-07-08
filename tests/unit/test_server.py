@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 import mcp.types as types
 from appwrite.enums.browser import Browser
+from appwrite.exception import AppwriteException
 from appwrite.input_file import InputFile
 
 from mcp_server_appwrite import server as server_module
@@ -26,6 +27,7 @@ from mcp_server_appwrite.server import (
     build_instructions,
     build_introspection_client,
     build_operator,
+    execute_registered_tool,
     parse_args,
     register_services,
     resolve_region_endpoint,
@@ -552,6 +554,77 @@ class ServerHelperTests(unittest.TestCase):
         self.assertEqual(captured["code"], "ch")
         self.assertEqual(captured["width"], 1)
         self.assertEqual(captured["height"], 1)
+
+    def test_execute_registered_tool_captures_publishable_appwrite_error(self):
+        tool = types.Tool(
+            name="users_list",
+            description="List users.",
+            inputSchema={"type": "object", "properties": {}, "required": []},
+        )
+        manager = ToolManager()
+        manager.tools_registry = {
+            "users_list": {
+                "definition": tool,
+                "service_name": "users",
+                "method_name": "list",
+                "parameter_types": {},
+            }
+        }
+
+        class UsersService:
+            def __init__(self, client):
+                pass
+
+            def list(self):
+                raise AppwriteException("upstream failed", 503, "general_server_error")
+
+        with (
+            patch.dict(server_module.SERVICE_CLASSES, {"users": UsersService}),
+            patch.object(
+                server_module.error_monitoring, "capture_appwrite_exception"
+            ) as capture,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "code=503"):
+                execute_registered_tool(manager, "users_list", {}, client=object())
+
+        capture.assert_called_once()
+        self.assertEqual(capture.call_args.kwargs["service"], "users")
+        self.assertEqual(capture.call_args.kwargs["action"], "list")
+
+    def test_execute_registered_tool_captures_internal_error(self):
+        tool = types.Tool(
+            name="users_list",
+            description="List users.",
+            inputSchema={"type": "object", "properties": {}, "required": []},
+        )
+        manager = ToolManager()
+        manager.tools_registry = {
+            "users_list": {
+                "definition": tool,
+                "service_name": "users",
+                "method_name": "list",
+                "parameter_types": {},
+            }
+        }
+
+        class UsersService:
+            def __init__(self, client):
+                pass
+
+            def list(self):
+                raise RuntimeError("boom")
+
+        with (
+            patch.dict(server_module.SERVICE_CLASSES, {"users": UsersService}),
+            patch.object(
+                server_module.error_monitoring, "capture_exception"
+            ) as capture,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "boom"):
+                execute_registered_tool(manager, "users_list", {}, client=object())
+
+        capture.assert_called_once()
+        self.assertEqual(capture.call_args.kwargs["tags"]["appwrite.service"], "users")
 
     def test_parse_args_rejects_removed_flags(self):
         with (
