@@ -167,11 +167,18 @@ def _should_capture(exc: BaseException) -> bool:
 
 
 def _find_appwrite_exception(exc: BaseException) -> AppwriteException | None:
+    found = _find_exception(exc, AppwriteException)
+    return found if isinstance(found, AppwriteException) else None
+
+
+def _find_exception(
+    exc: BaseException, exc_type: type[BaseException]
+) -> BaseException | None:
     current: BaseException | None = exc
     seen: set[int] = set()
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        if isinstance(current, AppwriteException):
+        if isinstance(current, exc_type):
             return current
         current = current.__cause__ or current.__context__
     return None
@@ -204,7 +211,57 @@ def _mark_captured(exc: BaseException) -> None:
 
 
 def _before_send(event: Any, hint: Any) -> Any:
-    return _sanitize(event)
+    exc_info = hint.get("exc_info") if isinstance(hint, Mapping) else None
+    if isinstance(exc_info, tuple) and len(exc_info) >= 2:
+        exc = exc_info[1]
+        if isinstance(exc, BaseException) and not _should_capture(exc):
+            return None
+    return _normalize_transaction(_sanitize(event))
+
+
+def _normalize_transaction(event: Any) -> Any:
+    if not isinstance(event, dict):
+        return event
+
+    transaction = event.get("transaction")
+    if isinstance(transaction, str) and transaction.startswith(("mcp.", "appwrite.")):
+        return event
+
+    tags = _event_tags(event)
+    method = tags.get("mcp.method")
+    if not method:
+        return event
+
+    if method == "tools/call":
+        tool_name = tags.get("tool.name")
+        event["transaction"] = (
+            f"mcp.tools/call:{tool_name}" if tool_name else "mcp.tools/call"
+        )
+    elif method in {"tools/list", "resources/list"}:
+        event["transaction"] = f"mcp.{method}"
+    elif method == "resources/read":
+        resource_type = tags.get("resource.type")
+        event["transaction"] = (
+            f"mcp.resources/read:{resource_type}"
+            if resource_type
+            else "mcp.resources/read"
+        )
+
+    return event
+
+
+def _event_tags(event: dict[str, Any]) -> dict[str, str]:
+    raw_tags = event.get("tags", {})
+    if isinstance(raw_tags, dict):
+        return {str(key): str(value) for key, value in raw_tags.items()}
+    if isinstance(raw_tags, list):
+        return {
+            str(key): str(value)
+            for item in raw_tags
+            if isinstance(item, (list, tuple)) and len(item) == 2
+            for key, value in [item]
+        }
+    return {}
 
 
 def _sanitize(value: Any) -> Any:

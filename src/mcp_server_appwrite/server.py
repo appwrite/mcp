@@ -959,7 +959,10 @@ def _format_appwrite_error(exc: AppwriteException) -> str:
     if getattr(exc, "type", None):
         details.append(f"type={exc.type}")
     detail_text = f" ({', '.join(details)})" if details else ""
-    return f"Appwrite request failed{detail_text}: {exc}"
+    message = str(exc).replace("\n", " ").strip()
+    if len(message) > 500:
+        message = f"{message[:500]}..."
+    return f"Appwrite request failed{detail_text}: {message}"
 
 
 def build_instructions(transport: str = "http") -> str:
@@ -1021,10 +1024,21 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
                 error_code=_jsonrpc_error_code(exc),
                 error_message=type(exc).__name__,
             )
+            mcp_context = _mcp_request_context(server)
             error_monitoring.capture_exception(
                 exc,
-                tags={"mcp.method": "tools/list", "transport": transport},
-                context={"mcp": {"method": "tools/list", "transport": transport}},
+                tags={
+                    "mcp.method": "tools/list",
+                    "transport": transport,
+                    **mcp_context.tags,
+                },
+                context={
+                    "mcp": {
+                        "method": "tools/list",
+                        "transport": transport,
+                        **mcp_context.context,
+                    }
+                },
                 transaction="mcp.tools/list",
             )
             raise
@@ -1052,12 +1066,14 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
                 error_code=_jsonrpc_error_code(exc),
                 error_message=type(exc).__name__,
             )
+            mcp_context = _mcp_request_context(server)
             error_monitoring.capture_exception(
                 exc,
                 tags={
                     "mcp.method": "tools/call",
                     "tool.name": name,
                     "transport": transport,
+                    **mcp_context.tags,
                     **_target_context_tags(arguments),
                 },
                 context={
@@ -1065,6 +1081,7 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
                         "method": "tools/call",
                         "tool_name": name,
                         "transport": transport,
+                        **mcp_context.context,
                     },
                     "appwrite": _target_context(arguments),
                 },
@@ -1088,10 +1105,21 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
                 error_code=_jsonrpc_error_code(exc),
                 error_message=type(exc).__name__,
             )
+            mcp_context = _mcp_request_context(server)
             error_monitoring.capture_exception(
                 exc,
-                tags={"mcp.method": "resources/list", "transport": transport},
-                context={"mcp": {"method": "resources/list", "transport": transport}},
+                tags={
+                    "mcp.method": "resources/list",
+                    "transport": transport,
+                    **mcp_context.tags,
+                },
+                context={
+                    "mcp": {
+                        "method": "resources/list",
+                        "transport": transport,
+                        **mcp_context.context,
+                    }
+                },
                 transaction="mcp.resources/list",
             )
             raise
@@ -1125,18 +1153,21 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
                 error_code=_jsonrpc_error_code(exc),
                 error_message=type(exc).__name__,
             )
+            mcp_context = _mcp_request_context(server)
             error_monitoring.capture_exception(
                 exc,
                 tags={
                     "mcp.method": "resources/read",
                     "resource.type": resource_type,
                     "transport": transport,
+                    **mcp_context.tags,
                 },
                 context={
                     "mcp": {
                         "method": "resources/read",
                         "resource_type": resource_type,
                         "transport": transport,
+                        **mcp_context.context,
                     },
                 },
                 transaction=f"mcp.resources/read:{resource_type}",
@@ -1160,6 +1191,50 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
 
 def _jsonrpc_error_code(exc: Exception) -> int:
     return -32602 if isinstance(exc, ValueError) else -32603
+
+
+@dataclass(frozen=True)
+class McpRequestContext:
+    tags: dict[str, Any]
+    context: dict[str, Any]
+
+
+def _mcp_request_context(server: Server) -> McpRequestContext:
+    try:
+        params = server.request_context.session.client_params
+    except Exception:
+        return McpRequestContext(tags={}, context={})
+    if params is None:
+        return McpRequestContext(tags={}, context={})
+
+    client_info = getattr(params, "clientInfo", None)
+    client_name = getattr(client_info, "name", None)
+    client_version = getattr(client_info, "version", None)
+    protocol_version = getattr(params, "protocolVersion", None)
+
+    tags = {
+        key: value
+        for key, value in {
+            "mcp.client.name": client_name,
+            "mcp.client.version": client_version,
+            "mcp.protocol_version": protocol_version,
+        }.items()
+        if value is not None
+    }
+    context = {
+        "client": {
+            key: value
+            for key, value in {
+                "name": client_name,
+                "version": client_version,
+                "protocol_version": protocol_version,
+            }.items()
+            if value is not None
+        }
+    }
+    if not context["client"]:
+        context = {}
+    return McpRequestContext(tags=tags, context=context)
 
 
 def _target_context(arguments: dict | None) -> dict[str, Any]:

@@ -52,6 +52,29 @@ class ErrorMonitoringTests(unittest.TestCase):
         self.assertFalse(captured)
         capture.assert_not_called()
 
+    def test_wrapped_value_errors_are_captured(self):
+        error_monitoring._enabled = True
+
+        class FakeScope:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        scope = FakeScope()
+        with patch("sentry_sdk.capture_exception") as capture:
+            with patch("sentry_sdk.new_scope", return_value=scope):
+                try:
+                    raise ValueError("bad input")
+                except ValueError as exc:
+                    wrapped = RuntimeError("wrapped")
+                    wrapped.__cause__ = exc
+                    captured = error_monitoring.capture_exception(wrapped)
+
+        self.assertTrue(captured)
+        capture.assert_called_once_with(wrapped)
+
     def test_appwrite_4xx_errors_are_not_captured(self):
         error_monitoring._enabled = True
         exc = AppwriteException("missing scope", 401, "general_unauthorized_scope")
@@ -63,6 +86,19 @@ class ErrorMonitoringTests(unittest.TestCase):
                 action="list",
                 classification="read",
             )
+
+        self.assertFalse(captured)
+        capture.assert_not_called()
+
+    def test_wrapped_appwrite_4xx_errors_are_not_captured(self):
+        error_monitoring._enabled = True
+        exc = AppwriteException("not found", 404, "user_target_not_found")
+
+        with patch("sentry_sdk.capture_exception") as capture:
+            try:
+                raise RuntimeError("wrapped") from exc
+            except RuntimeError as wrapped:
+                captured = error_monitoring.capture_exception(wrapped)
 
         self.assertFalse(captured)
         capture.assert_not_called()
@@ -202,6 +238,53 @@ class ErrorMonitoringTests(unittest.TestCase):
         self.assertEqual(scrubbed["request"]["data"], "[Filtered]")
         self.assertEqual(scrubbed["extra"]["password"], "[Filtered]")
         self.assertEqual(scrubbed["extra"]["safe"], "ok")
+
+    def test_before_send_drops_expected_exception_chains(self):
+        appwrite_error = AppwriteException("not found", 404, "not_found")
+        wrapped = RuntimeError("wrapped")
+        wrapped.__cause__ = appwrite_error
+
+        self.assertIsNone(
+            error_monitoring._before_send(
+                {"event_id": "1"}, {"exc_info": (RuntimeError, wrapped, None)}
+            )
+        )
+
+    def test_before_send_normalizes_mcp_tool_call_transaction(self):
+        event = {
+            "transaction": "http://10.140.28.8:8000/mcp",
+            "tags": {
+                "mcp.method": "tools/call",
+                "tool.name": "appwrite_call_tool",
+            },
+        }
+
+        scrubbed = error_monitoring._before_send(event, {})
+
+        self.assertEqual(scrubbed["transaction"], "mcp.tools/call:appwrite_call_tool")
+
+    def test_before_send_normalizes_mcp_resource_transaction_from_list_tags(self):
+        event = {
+            "transaction": "http://10.140.28.8:8000/mcp",
+            "tags": [
+                ["mcp.method", "resources/read"],
+                ["resource.type", "result"],
+            ],
+        }
+
+        scrubbed = error_monitoring._before_send(event, {})
+
+        self.assertEqual(scrubbed["transaction"], "mcp.resources/read:result")
+
+    def test_before_send_keeps_explicit_semantic_transaction(self):
+        event = {
+            "transaction": "appwrite.users.list",
+            "tags": {"mcp.method": "tools/call", "tool.name": "appwrite_call_tool"},
+        }
+
+        scrubbed = error_monitoring._before_send(event, {})
+
+        self.assertEqual(scrubbed["transaction"], "appwrite.users.list")
 
 
 if __name__ == "__main__":
