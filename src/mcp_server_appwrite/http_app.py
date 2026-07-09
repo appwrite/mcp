@@ -21,7 +21,6 @@ import json
 import logging
 import re
 import sys
-import time
 from importlib.resources import files
 
 from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
@@ -155,16 +154,11 @@ class RequireBearer:
 
         user = scope.get("user")
         if not isinstance(user, AuthenticatedUser):
-            # A presented-but-invalid token was already counted (with its specific
-            # reason) by the token verifier. Only count the no-token case here so we
-            # don't double-count rejections.
-            if not _has_authorization_header(scope):
-                telemetry.record_auth(outcome="rejected", reason="missing")
-            else:
-                # A token was presented and rejected — this session never
-                # completes its MCP handshake. Unauthenticated discovery probes
-                # (no token at all) are part of the normal OAuth flow and are
-                # not counted as handshake failures.
+            # A token was presented and rejected — this session never completes
+            # its MCP handshake. Unauthenticated discovery probes (no token at
+            # all) are part of the normal OAuth flow and are not counted as
+            # handshake failures.
+            if _has_authorization_header(scope):
                 telemetry.record_handshake_failure(reason="invalid_token")
             await _send_401(send)
             return
@@ -280,7 +274,6 @@ class MCPIdentityMiddleware:
                 session_id=next(_connection_counter),
                 client_name=client_info.get("name")
                 or _client_from_user_agent(_header(scope, b"user-agent")),
-                client_version=client_info.get("version"),
                 protocol_version=params.get("protocolVersion"),
                 subject=subject,
             )
@@ -290,49 +283,6 @@ class MCPIdentityMiddleware:
             subject=subject,
             protocol_version=_header(scope, b"mcp-protocol-version"),
         )
-
-
-_KNOWN_HANDLERS = {
-    "/mcp",
-    "/healthz",
-    "/favicon.svg",
-    "/favicon.ico",
-    "/.well-known/oauth-protected-resource/mcp",
-}
-
-
-class HTTPMetricsMiddleware:
-    """Outermost ASGI wrapper emitting ``http.requests`` / ``http.request.duration``.
-
-    The handler label is the raw path for the fixed route table above and
-    ``other`` for everything else, so unmatched scanner paths cannot explode
-    label cardinality."""
-
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":  # pragma: no cover
-            await self.app(scope, receive, send)
-            return
-
-        path = scope.get("path", "")
-        handler = path if path in _KNOWN_HANDLERS else "other"
-        method = scope.get("method", "GET")
-        start = time.monotonic()
-        status_holder = {"status": 500}
-
-        async def send_wrapper(message) -> None:
-            if message["type"] == "http.response.start":
-                status_holder["status"] = message["status"]
-            await send(message)
-
-        try:
-            await self.app(scope, receive, send_wrapper)
-        finally:
-            telemetry.record_http_request(
-                handler, method, status_holder["status"], time.monotonic() - start
-            )
 
 
 async def protected_resource_metadata_endpoint(request: Request) -> JSONResponse:
@@ -400,7 +350,6 @@ def build_app() -> Starlette:
     ]
 
     middleware = [
-        Middleware(HTTPMetricsMiddleware),
         Middleware(
             AuthenticationMiddleware, backend=BearerAuthBackend(AppwriteTokenVerifier())
         ),

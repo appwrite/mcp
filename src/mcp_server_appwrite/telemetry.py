@@ -9,8 +9,10 @@ The metric names follow the "MCP Server Observability" reference dashboard
 (grafana.com/grafana/dashboards/25252): after the standard OTLP-to-Prometheus
 translation (dots become underscores, unit and ``_total`` suffixes appended)
 the instruments below land as ``mcp_tool_calls_total``,
-``mcp_tool_duration_seconds_bucket``, ``mcp_active_sessions``,
-``http_requests_total``, and so on.
+``mcp_tool_duration_seconds_bucket``, ``mcp_active_sessions``, and so on.
+Only metrics queried by the hosted ``MCP`` Grafana dashboard
+(appwrite-labs/dashboards ``mcp.json``) are emitted — when a panel is removed
+there, drop its instrument here too.
 
 Design notes:
 
@@ -22,9 +24,11 @@ Design notes:
   telemetry must never break a request.
 * **Cardinality-disciplined.** No user id (``sub``), token, raw query text, file
   name, result id, or IP is ever used as a metric attribute. ``client_id`` is the
-  MCP client *name* (``claude-code``, ``cursor``, ...), a small bounded set.
-  Distinct-user and per-client session counts are derived in-process from rolling
-  TTL sets and exposed only as aggregate gauges.
+  MCP client *name* (``claude-code``, ``cursor``, ...) checked against a fixed
+  allowlist of known clients — anything else is labeled ``other``, so a client
+  cannot mint arbitrary label values. Distinct-user and per-client session counts
+  are derived in-process from rolling TTL sets and exposed only as aggregate
+  gauges.
 * **Stateless sessions.** The hosted transport is stateless — every HTTP request
   is its own short-lived MCP session. "Session" metrics therefore describe user
   activity windows: a session starts when a (client, user) pair is first seen and
@@ -51,11 +55,10 @@ import time
 from contextvars import ContextVar
 from typing import Any, Iterable
 
-from .constants import ACTIVE_WINDOW_SECONDS
+from .constants import ACTIVE_WINDOW_SECONDS, KNOWN_MCP_CLIENTS
 
 _enabled = False
 _lock = threading.Lock()
-_transport = "http"
 
 # Metric instruments, populated by init_telemetry when enabled.
 _instruments: dict[str, Any] = {}
@@ -68,8 +71,6 @@ _active_users: dict[str, float] = {}  # subject -> expiry
 _active_sessions: dict[tuple[str, str], list[float]] = {}
 # (protocol version, client, subject) -> expiry
 _active_versions: dict[tuple[str, str, str], float] = {}
-# subject -> expiry; users that recently hit an Appwrite rate limit (429)
-_rate_limited: dict[str, float] = {}
 _active_lock = threading.Lock()
 
 # Dedupe connection events: one per MCP session object.
@@ -78,9 +79,6 @@ _seen_sessions: set[int] = set()
 # Identity of the request currently being served, set once per request by the
 # MCP handlers and read by every record helper that labels by client.
 _request_client: ContextVar[str] = ContextVar("appwrite_mcp_client", default="unknown")
-_request_subject: ContextVar[str | None] = ContextVar(
-    "appwrite_mcp_subject", default=None
-)
 
 # CPU gauge state: previous (wall clock, process cpu time) sample.
 _cpu_sample: list[float] = []
@@ -198,15 +196,7 @@ def _histogram(
 
 
 def _build_instruments(meter: Any, transport: str, version: str) -> None:
-    global _transport
-    _transport = "streamable-http" if transport == "http" else transport
-
     # --- Transport & sessions ------------------------------------------------
-    _instruments["connection"] = meter.create_counter(
-        "mcp.connection",
-        unit="{connection}",
-        description="New MCP sessions (initialize handshakes) by transport.",
-    )
     _instruments["handshake"] = meter.create_counter(
         "mcp.handshake",
         unit="{handshake}",
@@ -303,128 +293,6 @@ def _build_instruments(meter: Any, transport: str, version: str) -> None:
         boundaries=_TOKEN_BUCKETS,
     )
 
-    # --- Rate limiting ---------------------------------------------------------
-    _instruments["rate_limit"] = meter.create_counter(
-        "mcp.rate.limit",
-        unit="{event}",
-        description="Appwrite API rate-limit (HTTP 429) responses surfaced to tools.",
-    )
-
-    # --- Resource access --------------------------------------------------------
-    _instruments["resource_accessed"] = meter.create_counter(
-        "mcp.resource.accessed",
-        unit="{read}",
-        description="resources/read calls by resource type.",
-    )
-    _instruments["resource_errors"] = meter.create_counter(
-        "mcp.resource.errors",
-        unit="{error}",
-        description="Failed resources/read calls by resource type.",
-    )
-    _instruments["resource_size"] = _histogram(
-        meter,
-        "mcp.resource.size",
-        unit="By",
-        description="Resource payload size served by resources/read.",
-        boundaries=_BYTE_BUCKETS,
-    )
-    _instruments["resource_anomaly"] = meter.create_counter(
-        "mcp.resource.access.anomaly",
-        unit="{event}",
-        description="Suspicious resource reads (unknown or expired URIs).",
-    )
-
-    # --- HTTP layer ----------------------------------------------------------------
-    _instruments["http_requests"] = meter.create_counter(
-        "http.requests",
-        unit="{request}",
-        description="HTTP requests served by the hosted transport, by handler.",
-    )
-    _instruments["http_request_duration"] = _histogram(
-        meter,
-        "http.request.duration",
-        unit="s",
-        description="HTTP request duration by handler.",
-    )
-
-    # --- Appwrite-specific operator metrics (not on the reference dashboard) -----
-    _instruments["appwrite_calls"] = meter.create_counter(
-        "mcp.appwrite.calls",
-        unit="{call}",
-        description="Hidden Appwrite catalog tool executions.",
-    )
-    _instruments["appwrite_call_duration"] = _histogram(
-        meter,
-        "mcp.appwrite.call.duration",
-        unit="s",
-        description="Underlying Appwrite REST call duration.",
-    )
-    _instruments["appwrite_errors"] = meter.create_counter(
-        "mcp.appwrite.errors",
-        unit="{error}",
-        description="Failed Appwrite catalog tool executions.",
-    )
-    _instruments["write_confirmations"] = meter.create_counter(
-        "mcp.write.confirmations",
-        unit="{confirmation}",
-        description="Write/delete confirmation outcomes (confirmed vs blocked).",
-    )
-    _instruments["search_tools_queries"] = meter.create_counter(
-        "mcp.search_tools.queries",
-        unit="{query}",
-        description="appwrite_search_tools catalog searches.",
-    )
-    _instruments["search_tools_results"] = _histogram(
-        meter,
-        "mcp.search_tools.results",
-        unit="{match}",
-        description="Match count returned by appwrite_search_tools.",
-    )
-    _instruments["search_docs_queries"] = meter.create_counter(
-        "mcp.search_docs.queries",
-        unit="{query}",
-        description="appwrite_search_docs documentation searches.",
-    )
-    _instruments["search_docs_embedding_duration"] = _histogram(
-        meter,
-        "mcp.search_docs.embedding.duration",
-        unit="s",
-        description="Query embedding duration for docs search.",
-    )
-    _instruments["context_requests"] = meter.create_counter(
-        "mcp.context.requests",
-        unit="{request}",
-        description="appwrite_get_context invocations.",
-    )
-    _instruments["auth_validations"] = meter.create_counter(
-        "mcp.auth.validations",
-        unit="{validation}",
-        description="Bearer-token validation outcomes.",
-    )
-    _instruments["auth_duration"] = _histogram(
-        meter,
-        "mcp.auth.duration",
-        unit="s",
-        description="Bearer-token verification duration.",
-    )
-    _instruments["uploads"] = meter.create_counter(
-        "mcp.uploads",
-        unit="{upload}",
-        description="File upload attempts.",
-    )
-    _instruments["upload_bytes"] = _histogram(
-        meter,
-        "mcp.upload.bytes",
-        unit="By",
-        description="Uploaded file size.",
-        boundaries=_BYTE_BUCKETS,
-    )
-    _instruments["upload_errors"] = meter.create_counter(
-        "mcp.upload.errors",
-        unit="{error}",
-        description="File upload failures.",
-    )
-
     # --- Observable gauges ------------------------------------------------------
     meter.create_observable_gauge(
         "mcp.active_sessions",
@@ -443,12 +311,6 @@ def _build_instruments(meter: Any, transport: str, version: str) -> None:
         callbacks=[_observe_protocol_versions],
         unit="{session}",
         description="Active sessions by negotiated MCP protocol version and client.",
-    )
-    meter.create_observable_gauge(
-        "mcp.rate.limit.active",
-        callbacks=[_observe_rate_limited],
-        unit="{user}",
-        description="Distinct users rate-limited by Appwrite in the last 5 minutes.",
     )
     meter.create_observable_gauge(
         "mcp.cpu.usage.percent",
@@ -478,16 +340,25 @@ def _build_instruments(meter: Any, transport: str, version: str) -> None:
 
 _CLIENT_NAME_WHITESPACE = re.compile(r"\s+")
 
+_KNOWN_CLIENTS_BY_LENGTH = sorted(KNOWN_MCP_CLIENTS, key=len, reverse=True)
+
 
 def _normalize_client_name(name: str | None) -> str | None:
-    """Canonicalize a client-reported name so one client maps to one
-    ``client_id`` label value. ``clientInfo.name`` arrives raw from the
-    initialize request while User-Agent-derived names are lowercased product
-    tokens, so the same client would otherwise split (``Trae`` vs ``trae``)."""
+    """Canonicalize a client-reported name to a bounded ``client_id`` label
+    value: lowercased with whitespace collapsed (``clientInfo.name`` arrives raw
+    from the initialize request while User-Agent-derived names are lowercased
+    product tokens, so the same client would otherwise split — ``Trae`` vs
+    ``trae``), then matched against the known-client allowlist. Unrecognized
+    names collapse to ``other``."""
     if not name:
         return None
     text = _CLIENT_NAME_WHITESPACE.sub("-", str(name).strip().lower())[:64]
-    return text or None
+    if not text:
+        return None
+    for known in _KNOWN_CLIENTS_BY_LENGTH:
+        if text == known or text.startswith(known + "-"):
+            return known
+    return "other"
 
 
 def set_request_identity(
@@ -503,7 +374,6 @@ def set_request_identity(
     # HTTP-layer middleware) to "unknown".
     client = _normalize_client_name(client_name) or _request_client.get()
     _request_client.set(client)
-    _request_subject.set(subject)
     if not _enabled:
         # The rolling stores are only pruned by the gauge callbacks, which never
         # run while disabled — do not let them grow.
@@ -585,16 +455,6 @@ def _observe_protocol_versions(_options: Any) -> Iterable[Any]:
         Observation(n, {"version": version, "client_id": client})
         for (version, client), n in counts.items()
     ]
-
-
-def _observe_rate_limited(_options: Any) -> Iterable[Any]:
-    from opentelemetry.metrics import Observation
-
-    now = time.monotonic()
-    with _active_lock:
-        _prune(_rate_limited, now)
-        count = len(_rate_limited)
-    return [Observation(count)]
 
 
 def _observe_cpu(_options: Any) -> Iterable[Any]:
@@ -683,12 +543,11 @@ def record_connection(
     *,
     session_id: int,
     client_name: str | None,
-    client_version: str | None,
     protocol_version: str | None,
     subject: str | None,
 ) -> None:
-    """Count a new MCP session (connection + successful handshake), deduped per
-    session object, and refresh the request-identity stores."""
+    """Count a successful MCP handshake, deduped per session object, and refresh
+    the request-identity stores."""
     set_request_identity(
         client_name=client_name,
         subject=subject,
@@ -705,15 +564,6 @@ def record_connection(
             _seen_sessions.clear()
             _seen_sessions.add(session_id)
     client = _normalize_client_name(client_name) or "unknown"
-    _safe_add(
-        "connection",
-        1,
-        {
-            "transport": _transport,
-            "client_id": client,
-            "client_version": client_version,
-        },
-    )
     _safe_add("handshake", 1, {"status": "success", "client_id": client})
 
 
@@ -824,152 +674,3 @@ def record_hallucination(attempted_tool: Any) -> None:
             "client_id": current_client_id(),
         },
     )
-
-
-def record_rate_limit(tool_name: str) -> None:
-    _safe_add(
-        "rate_limit",
-        1,
-        {"tool_name": tool_name, "client_id": current_client_id()},
-    )
-    subject = _request_subject.get()
-    if not _enabled or not subject:
-        return
-    with _active_lock:
-        _rate_limited[subject] = time.monotonic() + ACTIVE_WINDOW_SECONDS
-
-
-# --- Resource access -----------------------------------------------------------------
-
-
-def record_resource_access(
-    resource: str,
-    *,
-    outcome: str = "success",
-    size_bytes: int | None = None,
-    anomaly: str | None = None,
-) -> None:
-    _safe_add(
-        "resource_accessed",
-        1,
-        {"resource": resource, "client_id": current_client_id()},
-    )
-    if outcome == "error":
-        _safe_add("resource_errors", 1, {"resource": resource})
-    if size_bytes is not None:
-        _safe_record("resource_size", size_bytes, {"resource": resource})
-    if anomaly:
-        _safe_add("resource_anomaly", 1, {"anomaly_type": anomaly})
-
-
-# --- HTTP layer -------------------------------------------------------------------------
-
-
-def record_http_request(
-    handler: str, method: str, status_code: int, duration_s: float
-) -> None:
-    _safe_add(
-        "http_requests",
-        1,
-        {"handler": handler, "method": method, "code": str(status_code)},
-    )
-    _safe_record("http_request_duration", duration_s, {"handler": handler})
-
-
-# --- Appwrite-specific helpers (unchanged surface) -----------------------------------
-
-
-def record_appwrite_call(
-    *,
-    service: str,
-    action: str,
-    classification: str,
-    outcome: str,
-    duration_s: float,
-    error_code: Any = None,
-    error_type: str | None = None,
-) -> None:
-    attrs = {
-        "appwrite.service": service or "unknown",
-        "appwrite.action": action or "unknown",
-        "appwrite.classification": classification or "unknown",
-        "outcome": outcome,
-    }
-    _safe_add("appwrite_calls", 1, attrs)
-    _safe_record(
-        "appwrite_call_duration",
-        duration_s,
-        {
-            "appwrite.service": service or "unknown",
-            "appwrite.action": action or "unknown",
-        },
-    )
-    if outcome == "error":
-        _safe_add(
-            "appwrite_errors",
-            1,
-            {
-                "appwrite.service": service or "unknown",
-                "appwrite.action": action or "unknown",
-                "error.code": str(error_code) if error_code is not None else "unknown",
-                "error.type": error_type or "unknown",
-            },
-        )
-
-
-def record_write_confirmation(classification: str, outcome: str) -> None:
-    _safe_add(
-        "write_confirmations",
-        1,
-        {"appwrite.classification": classification, "outcome": outcome},
-    )
-
-
-def record_search_tools(*, include_mutating: bool, match_count: int) -> None:
-    _safe_add(
-        "search_tools_queries",
-        1,
-        {"include_mutating": include_mutating, "matched": match_count > 0},
-    )
-    _safe_record("search_tools_results", match_count, {})
-
-
-def record_search_docs(
-    *, outcome: str, match_count: int, embedding_duration_s: float | None = None
-) -> None:
-    _safe_add(
-        "search_docs_queries", 1, {"outcome": outcome, "matched": match_count > 0}
-    )
-    if embedding_duration_s is not None:
-        _safe_record(
-            "search_docs_embedding_duration", embedding_duration_s, {"outcome": outcome}
-        )
-
-
-def record_context_request(*, mode: str, include_services: bool) -> None:
-    _safe_add(
-        "context_requests", 1, {"mode": mode, "include_services": include_services}
-    )
-
-
-def record_auth(
-    *,
-    outcome: str,
-    reason: str | None = None,
-    duration_s: float | None = None,
-    count: bool = True,
-) -> None:
-    if count:
-        _safe_add("auth_validations", 1, {"outcome": outcome, "reason": reason})
-    if duration_s is not None:
-        _safe_record("auth_duration", duration_s, {"outcome": outcome})
-
-
-def record_upload(*, source: str, outcome: str, size_bytes: int | None = None) -> None:
-    _safe_add("uploads", 1, {"source": source, "outcome": outcome})
-    if outcome == "success" and size_bytes is not None:
-        _safe_record("upload_bytes", size_bytes, {"source": source})
-
-
-def record_upload_error(reason: str) -> None:
-    _safe_add("upload_errors", 1, {"reason": reason})

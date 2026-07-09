@@ -47,7 +47,6 @@ class TelemetryHarness(unittest.TestCase):
             telemetry._active_users.clear()
             telemetry._active_sessions.clear()
             telemetry._active_versions.clear()
-            telemetry._rate_limited.clear()
             telemetry._seen_sessions.clear()
 
     def points(self, metric_name: str) -> list:
@@ -68,56 +67,9 @@ class TelemetryHarness(unittest.TestCase):
         telemetry.record_connection(
             session_id=session_id,
             client_name=client,
-            client_version="1.0",
             protocol_version="2025-06-18",
             subject=subject,
         )
-
-
-class RecordHelperTests(TelemetryHarness):
-    def test_appwrite_call_success_labels(self):
-        telemetry.record_appwrite_call(
-            service="storage",
-            action="create",
-            classification="write",
-            outcome="success",
-            duration_s=0.05,
-        )
-        points = self.points("mcp.appwrite.calls")
-        self.assertEqual(len(points), 1)
-        self.assertEqual(points[0].value, 1)
-        self.assertAttr(points[0], "appwrite.service", "storage")
-        self.assertAttr(points[0], "appwrite.action", "create")
-        self.assertAttr(points[0], "appwrite.classification", "write")
-        self.assertAttr(points[0], "outcome", "success")
-        # No error counter on success.
-        self.assertEqual(self.points("mcp.appwrite.errors"), [])
-
-    def test_appwrite_call_error_emits_error_counter(self):
-        telemetry.record_appwrite_call(
-            service="users",
-            action="get",
-            classification="read",
-            outcome="error",
-            duration_s=0.01,
-            error_code=404,
-            error_type="user_not_found",
-        )
-        errors = self.points("mcp.appwrite.errors")
-        self.assertEqual(len(errors), 1)
-        self.assertAttr(errors[0], "appwrite.service", "users")
-        self.assertAttr(errors[0], "error.code", "404")
-        self.assertAttr(errors[0], "error.type", "user_not_found")
-
-    def test_auth_rejected_then_duration_without_double_count(self):
-        # _verify_sync-style: counter with reason, no duration.
-        telemetry.record_auth(outcome="rejected", reason="signature")
-        # verify_token-style: duration only, no counter.
-        telemetry.record_auth(outcome="rejected", duration_s=0.02, count=False)
-        validations = self.points("mcp.auth.validations")
-        self.assertEqual(len(validations), 1)
-        self.assertEqual(validations[0].value, 1)
-        self.assertAttr(validations[0], "reason", "signature")
 
 
 class SessionTests(TelemetryHarness):
@@ -126,13 +78,10 @@ class SessionTests(TelemetryHarness):
         self.connect(session_id=2, subject="user-b")
         sessions = self.points("mcp.active_sessions")
         self.assertEqual(sessions[0].value, 2)
-        connections = self.points("mcp.connection")
-        self.assertEqual(sum(p.value for p in connections), 2)
-        self.assertAttr(connections[0], "client_id", "claude-code")
-        self.assertAttr(connections[0], "transport", "streamable-http")
         handshakes = self.points("mcp.handshake")
         self.assertEqual(sum(p.value for p in handshakes), 2)
         self.assertAttr(handshakes[0], "status", "success")
+        self.assertAttr(handshakes[0], "client_id", "claude-code")
 
     def test_active_sessions_by_client_and_protocol_version(self):
         self.connect(session_id=1, client="claude-code", subject="user-a")
@@ -144,11 +93,11 @@ class SessionTests(TelemetryHarness):
         self.assertEqual(sum(p.value for p in versions), 2)
         self.assertAttr(versions[0], "version", "2025-06-18")
 
-    def test_connection_deduped_per_session(self):
+    def test_handshake_deduped_per_session(self):
         for _ in range(3):
             self.connect(session_id=42, client="cursor", subject="user-c")
-        connections = self.points("mcp.connection")
-        self.assertEqual(sum(p.value for p in connections), 1)
+        handshakes = self.points("mcp.handshake")
+        self.assertEqual(sum(p.value for p in handshakes), 1)
 
     def test_expired_session_records_duration_and_idle_disconnect(self):
         self.connect(session_id=1, client="cursor", subject="user-a")
@@ -181,8 +130,8 @@ class SessionTests(TelemetryHarness):
         by_client = self.points("mcp.active_sessions.by_client")
         counts = {p.attributes["client_id"]: p.value for p in by_client}
         self.assertEqual(counts, {"trae": 1})
-        connections = self.points("mcp.connection")
-        self.assertAttr(connections[0], "client_id", "trae")
+        handshakes = self.points("mcp.handshake")
+        self.assertAttr(handshakes[0], "client_id", "trae")
 
     def test_client_name_normalization_shapes(self):
         cases = {
@@ -192,12 +141,34 @@ class SessionTests(TelemetryHarness):
             "": None,
             None: None,
             "   ": None,
-            "X" * 100: "x" * 64,
         }
         for raw, expected in cases.items():
             self.assertEqual(
                 telemetry._normalize_client_name(raw), expected, msg=repr(raw)
             )
+
+    def test_unknown_client_names_collapse_to_other(self):
+        # client_id comes from client-controlled input; anything outside the
+        # known-client allowlist must not mint a new label value.
+        cases = {
+            "X" * 100: "other",
+            "my-evil-client-123": "other",
+            "definitely not a real client": "other",
+            # Prefixed variants map to the known client, longest match first.
+            "claude-code-nightly": "claude-code",
+            "Cursor Nightly": "cursor",
+            "claude": "claude",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(
+                telemetry._normalize_client_name(raw), expected, msg=repr(raw)
+            )
+
+    def test_unknown_client_sessions_are_labeled_other(self):
+        self.connect(session_id=1, client="totally-made-up-agent", subject="user-a")
+        by_client = self.points("mcp.active_sessions.by_client")
+        counts = {p.attributes["client_id"]: p.value for p in by_client}
+        self.assertEqual(counts, {"other": 1})
 
 
 class MessageTests(TelemetryHarness):
@@ -283,45 +254,8 @@ class ToolExecutionTests(TelemetryHarness):
         self.assertNotIn(" ", attempted)
         self.assertNotIn("!", attempted)
 
-    def test_rate_limit_marks_active_subject(self):
-        self.connect(subject="user-a")
-        telemetry.record_rate_limit("tables_db_create")
-        events = self.points("mcp.rate.limit")
-        self.assertAttr(events[0], "tool_name", "tables_db_create")
-        active = self.points("mcp.rate.limit.active")
-        self.assertEqual(active[0].value, 1)
 
-
-class ResourceTests(TelemetryHarness):
-    def test_resource_access_success_records_size(self):
-        self.connect()
-        telemetry.record_resource_access("result", size_bytes=2048)
-        accessed = self.points("mcp.resource.accessed")
-        self.assertAttr(accessed[0], "resource", "result")
-        sizes = self.points("mcp.resource.size")
-        self.assertEqual(sizes[0].sum, 2048)
-        self.assertEqual(self.points("mcp.resource.errors"), [])
-
-    def test_resource_access_error_records_anomaly(self):
-        telemetry.record_resource_access(
-            "result", outcome="error", anomaly="unknown_resource"
-        )
-        errors = self.points("mcp.resource.errors")
-        self.assertEqual(len(errors), 1)
-        anomalies = self.points("mcp.resource.access.anomaly")
-        self.assertAttr(anomalies[0], "anomaly_type", "unknown_resource")
-
-
-class HttpTests(TelemetryHarness):
-    def test_http_request(self):
-        telemetry.record_http_request("/mcp", "POST", 200, 0.02)
-        requests = self.points("http.requests")
-        self.assertAttr(requests[0], "handler", "/mcp")
-        self.assertAttr(requests[0], "method", "POST")
-        self.assertAttr(requests[0], "code", "200")
-        durations = self.points("http.request.duration")
-        self.assertEqual(durations[0].count, 1)
-
+class SystemGaugeTests(TelemetryHarness):
     def test_system_gauges_registered(self):
         # CPU needs two observations for a delta; memory should report on the first.
         self.reader.get_metrics_data()
@@ -352,36 +286,16 @@ class OperatorTelemetryTests(TelemetryHarness):
         }
         return Operator(manager, executor)
 
-    def test_write_confirmation_blocked(self):
+    def test_blocked_write_counts_tool_error(self):
         runtime = self.make_runtime(lambda name, arguments, *_: [])
         with self.assertRaises(RuntimeError):
             runtime.execute_public_tool(
                 "appwrite_call_tool",
                 {"tool_name": "tables_db_create", "arguments": {"database_id": "db"}},
             )
-        confirmations = self.points("mcp.write.confirmations")
-        self.assertEqual(len(confirmations), 1)
-        self.assertAttr(confirmations[0], "outcome", "blocked")
-        self.assertAttr(confirmations[0], "appwrite.classification", "write")
-
-    def test_write_confirmation_confirmed(self):
-        runtime = self.make_runtime(
-            lambda name, arguments, *_: [types.TextContent(type="text", text="ok")]
-        )
-        runtime.execute_public_tool(
-            "appwrite_call_tool",
-            {
-                "tool_name": "tables_db_create",
-                "confirm_write": True,
-                "database_id": "db",
-            },
-        )
-        confirmed = [
-            p
-            for p in self.points("mcp.write.confirmations")
-            if p.attributes.get("outcome") == "confirmed"
-        ]
-        self.assertEqual(len(confirmed), 1)
+        errors = self.points("mcp.tool.errors")
+        self.assertEqual(len(errors), 1)
+        self.assertAttr(errors[0], "error_type", "RuntimeError")
 
     def test_tool_call_counter(self):
         runtime = self.make_runtime(
@@ -421,14 +335,8 @@ class NoOpTests(unittest.TestCase):
         telemetry._enabled = False
         try:
             telemetry.record_message("tools/call", "success", 0.01)
-            telemetry.record_appwrite_call(
-                service="storage",
-                action="create",
-                classification="write",
-                outcome="success",
-                duration_s=0.01,
-            )
-            telemetry.record_auth(outcome="rejected", reason="malformed")
+            telemetry.record_tool_call("appwrite_call_tool", "success", 0.01)
+            telemetry.record_handshake_failure(reason="invalid_token")
 
             recorded = {
                 metric.name
@@ -438,8 +346,8 @@ class NoOpTests(unittest.TestCase):
                 if metric.data.data_points
             }
             self.assertNotIn("mcp.messages.received", recorded)
-            self.assertNotIn("mcp.appwrite.calls", recorded)
-            self.assertNotIn("mcp.auth.validations", recorded)
+            self.assertNotIn("mcp.tool.calls", recorded)
+            self.assertNotIn("mcp.handshake", recorded)
         finally:
             telemetry._instruments.clear()
 
@@ -457,7 +365,6 @@ class NoOpTests(unittest.TestCase):
         telemetry.record_connection(
             session_id=7,
             client_name="claude",
-            client_version="1.0",
             protocol_version="2025-06-18",
             subject="user-x",
         )
