@@ -172,6 +172,33 @@ class SessionTests(TelemetryHarness):
         self.assertEqual(len(handshakes), 1)
         self.assertAttr(handshakes[0], "status", "failure")
 
+    def test_client_names_are_case_normalized(self):
+        # clientInfo.name arrives raw from the initialize request while
+        # User-Agent-derived names are lowercased, so the same client must not
+        # split into two client_id values ("Trae" vs "trae").
+        self.connect(session_id=1, client="Trae", subject="user-a")
+        telemetry.set_request_identity(client_name="trae", subject="user-a")
+        by_client = self.points("mcp.active_sessions.by_client")
+        counts = {p.attributes["client_id"]: p.value for p in by_client}
+        self.assertEqual(counts, {"trae": 1})
+        connections = self.points("mcp.connection")
+        self.assertAttr(connections[0], "client_id", "trae")
+
+    def test_client_name_normalization_shapes(self):
+        cases = {
+            "Trae": "trae",
+            "  Claude Code  ": "claude-code",
+            "cursor": "cursor",
+            "": None,
+            None: None,
+            "   ": None,
+            "X" * 100: "x" * 64,
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(
+                telemetry._normalize_client_name(raw), expected, msg=repr(raw)
+            )
+
 
 class MessageTests(TelemetryHarness):
     def test_message_success(self):

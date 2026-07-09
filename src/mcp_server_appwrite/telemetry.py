@@ -476,6 +476,19 @@ def _build_instruments(meter: Any, transport: str, version: str) -> None:
 
 # --- Request identity ---------------------------------------------------------
 
+_CLIENT_NAME_WHITESPACE = re.compile(r"\s+")
+
+
+def _normalize_client_name(name: str | None) -> str | None:
+    """Canonicalize a client-reported name so one client maps to one
+    ``client_id`` label value. ``clientInfo.name`` arrives raw from the
+    initialize request while User-Agent-derived names are lowercased product
+    tokens, so the same client would otherwise split (``Trae`` vs ``trae``)."""
+    if not name:
+        return None
+    text = _CLIENT_NAME_WHITESPACE.sub("-", str(name).strip().lower())[:64]
+    return text or None
+
 
 def set_request_identity(
     *,
@@ -488,7 +501,7 @@ def set_request_identity(
     threads that execute tools, so record helpers can label by client."""
     # Never downgrade an identity already bound for this request (e.g. by the
     # HTTP-layer middleware) to "unknown".
-    client = client_name or _request_client.get()
+    client = _normalize_client_name(client_name) or _request_client.get()
     _request_client.set(client)
     _request_subject.set(subject)
     if not _enabled:
@@ -691,7 +704,7 @@ def record_connection(
         if len(_seen_sessions) > 100_000:
             _seen_sessions.clear()
             _seen_sessions.add(session_id)
-    client = client_name or "unknown"
+    client = _normalize_client_name(client_name) or "unknown"
     _safe_add(
         "connection",
         1,
