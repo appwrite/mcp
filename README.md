@@ -24,27 +24,37 @@ Pick your client below. Each adds the hosted Appwrite Cloud server.
 claude mcp add --transport http appwrite https://mcp.appwrite.io/mcp
 ```
 
+Then, inside a Claude Code session, run `/mcp`, select **appwrite**, and follow
+the browser prompt to authenticate.
+
 </details>
 
 <details>
 <summary><b>Claude Desktop</b></summary>
 
 Go to **Settings → Connectors → Add custom connector** and paste
-`https://mcp.appwrite.io/mcp`.
+`https://mcp.appwrite.io/mcp`. Available on Pro and Max plans; on Team and
+Enterprise plans only an organization Owner can add custom connectors.
 
-On the free plan, bridge the remote server through stdio instead (requires
-Node.js) by editing your config via **Settings → Developer → Edit Config**:
+If you don't see that option (free plan, or a Team/Enterprise member), bridge
+the remote server through stdio instead (requires Node.js). Go to **Settings → Developer → Local MCP servers**, click
+**Edit Config**, and add:
 
 ```json
 {
   "mcpServers": {
     "appwrite": {
       "command": "npx",
-      "args": ["mcp-remote", "https://mcp.appwrite.io/mcp"]
+      "args": ["-y", "mcp-remote", "https://mcp.appwrite.io/mcp"]
     }
   }
 }
 ```
+
+Restart Claude Desktop; the server appears under **Local MCP servers** and a
+browser window opens to authenticate.
+
+![Appwrite server running under Local MCP servers in Claude Desktop](docs/images/claude-desktop-local-mcp-servers.png)
 
 </details>
 
@@ -62,6 +72,11 @@ Edit `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project).
   }
 }
 ```
+
+Cursor prompts you to log in through the browser; the server then shows up
+under **Settings → MCP** with its tools enabled.
+
+![Appwrite server connected in Cursor's MCP settings](docs/images/cursor-mcp.png)
 
 </details>
 
@@ -93,6 +108,18 @@ Edit `~/.codex/config.toml`.
 [mcp_servers.appwrite]
 url = "https://mcp.appwrite.io/mcp"
 ```
+
+Then authenticate from the terminal:
+
+```bash
+codex mcp login appwrite
+```
+
+In the Codex GUI, you can instead add the server from the MCP settings —
+set the URL to `https://mcp.appwrite.io/mcp` and leave the token and header
+fields empty (authentication happens through the browser):
+
+![Appwrite MCP server settings in the Codex GUI](docs/images/codex-mcp.png)
 
 </details>
 
@@ -130,6 +157,136 @@ Edit `~/.codeium/windsurf/mcp_config.json`.
   }
 }
 ```
+
+</details>
+
+<details>
+<summary><b>Gemini CLI</b></summary>
+
+```bash
+gemini mcp add --transport http appwrite https://mcp.appwrite.io/mcp
+```
+
+Or edit `~/.gemini/settings.json` (note the key is `httpUrl`, not `url`):
+
+```json
+{
+  "mcpServers": {
+    "appwrite": {
+      "httpUrl": "https://mcp.appwrite.io/mcp"
+    }
+  }
+}
+```
+
+Gemini CLI opens the browser OAuth flow automatically on first connect. To
+re-authenticate, run `/mcp auth appwrite` inside a session.
+
+</details>
+
+<details>
+<summary><b>GitHub Copilot CLI</b></summary>
+
+```bash
+copilot mcp add --transport http appwrite https://mcp.appwrite.io/mcp
+```
+
+Or run `/mcp add` inside a session, or edit `~/.copilot/mcp-config.json`:
+
+```json
+{
+  "mcpServers": {
+    "appwrite": {
+      "type": "http",
+      "url": "https://mcp.appwrite.io/mcp"
+    }
+  }
+}
+```
+
+A browser window opens to authenticate on first connect. Check status with
+`/mcp`.
+
+</details>
+
+<details>
+<summary><b>Zed</b></summary>
+
+Go to **Settings → AI → MCP Servers → Add Server → Add Remote Server**, or add
+to your `settings.json` (`zed: open settings`):
+
+```json
+{
+  "context_servers": {
+    "appwrite": {
+      "url": "https://mcp.appwrite.io/mcp"
+    }
+  }
+}
+```
+
+Zed prompts you to authenticate through the browser on first connect.
+
+</details>
+
+<details>
+<summary><b>Warp</b></summary>
+
+Go to **Settings → Agents → MCP servers → + Add** and paste:
+
+```json
+{
+  "appwrite": {
+    "url": "https://mcp.appwrite.io/mcp"
+  }
+}
+```
+
+Warp opens a browser window to authenticate on first connect.
+
+</details>
+
+<details>
+<summary><b>JetBrains AI Assistant / Junie</b></summary>
+
+JetBrains IDEs don't yet support OAuth for remote MCP servers, so bridge
+through stdio (requires Node.js). Go to **Settings → Tools → AI Assistant →
+Model Context Protocol (MCP) → Add**, switch to the JSON view, and paste:
+
+```json
+{
+  "mcpServers": {
+    "appwrite": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://mcp.appwrite.io/mcp"]
+    }
+  }
+}
+```
+
+A browser window opens to authenticate on first connect.
+
+</details>
+
+<details>
+<summary><b>Cline</b></summary>
+
+Cline doesn't yet support OAuth for remote MCP servers, so bridge through
+stdio (requires Node.js). In the Cline panel, open the **MCP Servers** icon →
+**Configure** tab → **Configure MCP Servers**, and add:
+
+```json
+{
+  "mcpServers": {
+    "appwrite": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://mcp.appwrite.io/mcp"]
+    }
+  }
+}
+```
+
+A browser window opens to authenticate on first connect.
 
 </details>
 
