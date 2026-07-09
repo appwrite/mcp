@@ -185,6 +185,27 @@ re-authenticate, run `/mcp auth appwrite` inside a session.
 </details>
 
 <details>
+<summary><b>Antigravity (CLI & 2.0)</b></summary>
+
+Edit `~/.gemini/config/mcp_config.json` (global) or `.agents/mcp_config.json` (project workspace).
+
+```json
+{
+  "mcpServers": {
+    "appwrite": {
+      "serverUrl": "https://mcp.appwrite.io/mcp"
+    }
+  }
+}
+```
+
+> ⚠️ **Note:** Antigravity strictly requires the `serverUrl` key for remote transport. Using legacy fields like `url` or `httpUrl` will cause tool registration to fail silently.
+
+Antigravity opens the browser OAuth flow automatically on first connect. If you manually edit the JSON file, navigate to **Settings → Customizations → Installed MCP Servers** and click **Refresh** to reload the tool definitions.
+
+</details>
+
+<details>
 <summary><b>GitHub Copilot CLI</b></summary>
 
 ```bash
