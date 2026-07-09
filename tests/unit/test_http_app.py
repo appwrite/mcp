@@ -262,7 +262,7 @@ class MCPIdentityMiddlewareTests(unittest.TestCase):
                         return list(metric.data.data_points)
         return []
 
-    def test_initialize_records_connection_and_replays_body(self):
+    def test_initialize_records_handshake_and_replays_body(self):
         body = json.dumps(
             {
                 "jsonrpc": "2.0",
@@ -276,10 +276,9 @@ class MCPIdentityMiddlewareTests(unittest.TestCase):
         ).encode()
         replayed = self._run(body, [(b"user-agent", b"claude-code/2.0")])
         self.assertEqual(replayed, [body])
-        connections = self._points("mcp.connection")
-        self.assertEqual(len(connections), 1)
-        self.assertEqual(connections[0].attributes.get("client_id"), "claude-code")
         handshakes = self._points("mcp.handshake")
+        self.assertEqual(len(handshakes), 1)
+        self.assertEqual(handshakes[0].attributes.get("client_id"), "claude-code")
         self.assertEqual(handshakes[0].attributes.get("status"), "success")
 
     def test_tool_call_binds_identity_from_headers(self):
@@ -292,8 +291,8 @@ class MCPIdentityMiddlewareTests(unittest.TestCase):
             ],
         )
         self.assertEqual(self.seen_client, ["cursor"])
-        # No connection counted for non-initialize requests.
-        self.assertEqual(self._points("mcp.connection"), [])
+        # No handshake counted for non-initialize requests.
+        self.assertEqual(self._points("mcp.handshake"), [])
 
 
 if __name__ == "__main__":

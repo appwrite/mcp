@@ -21,7 +21,6 @@ from typing import Any, Callable
 
 import mcp.types as types
 
-from . import telemetry
 from .constants import (
     DATA_DIR,
     DOCS_DEFAULT_LIMIT,
@@ -162,18 +161,12 @@ class DocsSearch:
 
         limit = _clamp_limit(arguments.get("limit"), self._default_limit)
         try:
-            results, embedding_duration_s = self._rank(query, limit)
+            results, _embedding_duration_s = self._rank(query, limit)
         except Exception as exc:
-            telemetry.record_search_docs(outcome="error", match_count=0)
             raise RuntimeError(
                 "Documentation search embedding request failed. "
                 "Check OPENAI_API_KEY and outbound connectivity to OpenAI."
             ) from exc
-        telemetry.record_search_docs(
-            outcome="success",
-            match_count=len(results),
-            embedding_duration_s=embedding_duration_s,
-        )
 
         if not results:
             return [
