@@ -15,6 +15,9 @@ from mcp_server_appwrite.http_app import (
     _client_from_user_agent,
     _find_initialize_params,
     _send_401,
+    authorization_server_metadata_endpoint,
+    build_app,
+    protected_resource_metadata_endpoint,
 )
 
 
@@ -168,6 +171,62 @@ class Send401Tests(unittest.TestCase):
         self.assertIn('error="invalid_token"', challenge)
         self.assertIn('resource_metadata="', challenge)
         self.assertNotIn("scope=", challenge)
+
+
+class WellKnownMetadataEndpointTests(unittest.TestCase):
+    """Discovery endpoints, including the legacy shims for clients on the
+    2025-03-26 MCP authorization spec (e.g. Raycast) that fetch
+    ``/.well-known/oauth-authorization-server`` from the MCP origin instead of
+    following ``resource_metadata`` from the 401 challenge."""
+
+    ENV = {
+        "APPWRITE_ENDPOINT": "https://cloud.appwrite.io/v1",
+        "MCP_PUBLIC_URL": "https://mcp.appwrite.io",
+        "APPWRITE_PROJECT_ID": "console",
+    }
+    DISCOVERY = {
+        "issuer": "https://cloud.appwrite.io/v1/oauth2/console",
+        "authorization_endpoint": "https://cloud.appwrite.io/v1/oauth2/console/authorize",
+        "token_endpoint": "https://cloud.appwrite.io/v1/oauth2/console/token",
+        "registration_endpoint": "https://cloud.appwrite.io/v1/oauth2/console/register",
+        "jwks_uri": "https://cloud.appwrite.io/v1/oauth2/console/.well-known/jwks.json",
+        "scopes_supported": ["openid", "all"],
+    }
+
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ, self.ENV, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        auth._store_discovery("console", dict(self.DISCOVERY))
+        self.addCleanup(lambda: auth._discovery_cache.pop("console", None))
+
+    def _body(self, response) -> dict:
+        return json.loads(response.body)
+
+    def test_authorization_server_metadata_mirrors_discovery(self):
+        response = asyncio.run(authorization_server_metadata_endpoint(mock.Mock()))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self._body(response), self.DISCOVERY)
+        self.assertIn("access-control-allow-origin", response.headers)
+
+    def test_protected_resource_metadata_names_canonical_resource(self):
+        response = asyncio.run(protected_resource_metadata_endpoint(mock.Mock()))
+        self.assertEqual(response.status_code, 200)
+        body = self._body(response)
+        self.assertEqual(body["resource"], "https://mcp.appwrite.io/mcp")
+        self.assertEqual(body["authorization_servers"], [self.DISCOVERY["issuer"]])
+
+    def test_app_routes_include_legacy_discovery_paths(self):
+        # build_mcp_server flips the module-global upload transport to "http";
+        # restore it so stdio-transport tests elsewhere keep seeing the default.
+        from mcp_server_appwrite import server as server_module
+
+        original_transport = server_module._UPLOAD_TRANSPORT
+        self.addCleanup(setattr, server_module, "_UPLOAD_TRANSPORT", original_transport)
+        paths = {getattr(route, "path", None) for route in build_app().routes}
+        self.assertIn("/.well-known/oauth-protected-resource/mcp", paths)
+        self.assertIn("/.well-known/oauth-protected-resource", paths)
+        self.assertIn("/.well-known/oauth-authorization-server", paths)
 
 
 class ClientFromUserAgentTests(unittest.TestCase):

@@ -5,7 +5,14 @@ Builds a single-tenant Starlette ASGI app for the served Appwrite project:
 * ``/mcp`` — the MCP Streamable-HTTP endpoint, gated by a bearer-token check that
   returns an RFC 9728 ``WWW-Authenticate`` challenge when unauthenticated.
 * ``/.well-known/oauth-protected-resource/mcp`` — RFC 9728 protected resource
-  metadata pointing at the project's Appwrite OAuth authorization server.
+  metadata pointing at the project's Appwrite OAuth authorization server. Also
+  served at the root form (no ``/mcp`` suffix) for clients that don't apply
+  path insertion.
+* ``/.well-known/oauth-authorization-server`` — backwards-compatibility shim for
+  clients on the 2025-03-26 MCP authorization spec (e.g. Raycast), which expect
+  authorization-server metadata at the MCP server's own origin instead of
+  following ``resource_metadata`` from the 401 challenge. Mirrors the Appwrite
+  authorization server's discovery document verbatim.
 * ``/healthz`` — liveness probe.
 
 Auth uses the SDK primitives (``BearerAuthBackend`` + ``AuthContextMiddleware``) so the
@@ -42,6 +49,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from . import error_monitoring, telemetry
 from .auth import (
     AppwriteTokenVerifier,
+    authorization_server_metadata,
     protected_resource_metadata,
     public_base_url,
     resource_metadata_url,
@@ -291,6 +299,19 @@ async def protected_resource_metadata_endpoint(request: Request) -> JSONResponse
     return JSONResponse(metadata, headers=headers)
 
 
+async def authorization_server_metadata_endpoint(request: Request) -> JSONResponse:
+    """Legacy discovery shim (MCP authorization spec 2025-03-26).
+
+    Older clients fetch authorization-server metadata from the MCP server's own
+    origin rather than the ``authorization_servers`` entry in the protected
+    resource metadata. Serve the Appwrite authorization server's discovery
+    document verbatim so those clients find the real authorize/token/register
+    endpoints (the ``issuer`` inside points at the Appwrite endpoint, not here).
+    """
+    metadata = await authorization_server_metadata()
+    return JSONResponse(metadata, headers=dict(CORS_HEADERS))
+
+
 async def health_endpoint(request: Request) -> PlainTextResponse:
     return PlainTextResponse(f"appwrite-mcp {SERVER_VERSION} ok")
 
@@ -337,6 +358,19 @@ def build_app() -> Starlette:
         Route(
             "/.well-known/oauth-protected-resource/mcp",
             endpoint=protected_resource_metadata_endpoint,
+            methods=["GET", "OPTIONS"],
+        ),
+        # Root form, for clients that don't apply RFC 9728 path insertion.
+        Route(
+            "/.well-known/oauth-protected-resource",
+            endpoint=protected_resource_metadata_endpoint,
+            methods=["GET", "OPTIONS"],
+        ),
+        # Legacy 2025-03-26 MCP clients (e.g. Raycast) discover the
+        # authorization server at the MCP origin itself.
+        Route(
+            "/.well-known/oauth-authorization-server",
+            endpoint=authorization_server_metadata_endpoint,
             methods=["GET", "OPTIONS"],
         ),
         Route("/favicon.svg", endpoint=favicon_svg_endpoint, methods=["GET"]),
