@@ -232,15 +232,8 @@ Zed prompts you to authenticate through the browser on first connect.
 <details>
 <summary><b>Warp</b></summary>
 
-Go to **Settings → Agents → MCP servers → + Add** and paste:
-
-```json
-{
-  "appwrite": {
-    "url": "https://mcp.appwrite.io/mcp"
-  }
-}
-```
+Go to **Settings → Agents → MCP servers → + Add**, choose the URL-based
+server type, and enter `https://mcp.appwrite.io/mcp`.
 
 Warp opens a browser window to authenticate on first connect.
 
