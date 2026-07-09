@@ -24,9 +24,11 @@ Design notes:
   telemetry must never break a request.
 * **Cardinality-disciplined.** No user id (``sub``), token, raw query text, file
   name, result id, or IP is ever used as a metric attribute. ``client_id`` is the
-  MCP client *name* (``claude-code``, ``cursor``, ...), a small bounded set.
-  Distinct-user and per-client session counts are derived in-process from rolling
-  TTL sets and exposed only as aggregate gauges.
+  MCP client *name* (``claude-code``, ``cursor``, ...) checked against a fixed
+  allowlist of known clients — anything else is labeled ``other``, so a client
+  cannot mint arbitrary label values. Distinct-user and per-client session counts
+  are derived in-process from rolling TTL sets and exposed only as aggregate
+  gauges.
 * **Stateless sessions.** The hosted transport is stateless — every HTTP request
   is its own short-lived MCP session. "Session" metrics therefore describe user
   activity windows: a session starts when a (client, user) pair is first seen and
@@ -53,7 +55,7 @@ import time
 from contextvars import ContextVar
 from typing import Any, Iterable
 
-from .constants import ACTIVE_WINDOW_SECONDS
+from .constants import ACTIVE_WINDOW_SECONDS, KNOWN_MCP_CLIENTS
 
 _enabled = False
 _lock = threading.Lock()
@@ -338,16 +340,25 @@ def _build_instruments(meter: Any, transport: str, version: str) -> None:
 
 _CLIENT_NAME_WHITESPACE = re.compile(r"\s+")
 
+_KNOWN_CLIENTS_BY_LENGTH = sorted(KNOWN_MCP_CLIENTS, key=len, reverse=True)
+
 
 def _normalize_client_name(name: str | None) -> str | None:
-    """Canonicalize a client-reported name so one client maps to one
-    ``client_id`` label value. ``clientInfo.name`` arrives raw from the
-    initialize request while User-Agent-derived names are lowercased product
-    tokens, so the same client would otherwise split (``Trae`` vs ``trae``)."""
+    """Canonicalize a client-reported name to a bounded ``client_id`` label
+    value: lowercased with whitespace collapsed (``clientInfo.name`` arrives raw
+    from the initialize request while User-Agent-derived names are lowercased
+    product tokens, so the same client would otherwise split — ``Trae`` vs
+    ``trae``), then matched against the known-client allowlist. Unrecognized
+    names collapse to ``other``."""
     if not name:
         return None
     text = _CLIENT_NAME_WHITESPACE.sub("-", str(name).strip().lower())[:64]
-    return text or None
+    if not text:
+        return None
+    for known in _KNOWN_CLIENTS_BY_LENGTH:
+        if text == known or text.startswith(known + "-"):
+            return known
+    return "other"
 
 
 def set_request_identity(

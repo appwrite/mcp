@@ -141,12 +141,34 @@ class SessionTests(TelemetryHarness):
             "": None,
             None: None,
             "   ": None,
-            "X" * 100: "x" * 64,
         }
         for raw, expected in cases.items():
             self.assertEqual(
                 telemetry._normalize_client_name(raw), expected, msg=repr(raw)
             )
+
+    def test_unknown_client_names_collapse_to_other(self):
+        # client_id comes from client-controlled input; anything outside the
+        # known-client allowlist must not mint a new label value.
+        cases = {
+            "X" * 100: "other",
+            "my-evil-client-123": "other",
+            "definitely not a real client": "other",
+            # Prefixed variants map to the known client, longest match first.
+            "claude-code-nightly": "claude-code",
+            "Cursor Nightly": "cursor",
+            "claude": "claude",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(
+                telemetry._normalize_client_name(raw), expected, msg=repr(raw)
+            )
+
+    def test_unknown_client_sessions_are_labeled_other(self):
+        self.connect(session_id=1, client="totally-made-up-agent", subject="user-a")
+        by_client = self.points("mcp.active_sessions.by_client")
+        counts = {p.attributes["client_id"]: p.value for p in by_client}
+        self.assertEqual(counts, {"other": 1})
 
 
 class MessageTests(TelemetryHarness):
