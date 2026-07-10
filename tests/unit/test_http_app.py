@@ -12,11 +12,13 @@ from mcp_server_appwrite import auth, telemetry
 from mcp_server_appwrite.http_app import (
     HealthzAccessLogFilter,
     MCPIdentityMiddleware,
+    RequireBearer,
     _client_from_user_agent,
     _find_initialize_params,
     _send_401,
     authorization_server_metadata_endpoint,
     build_app,
+    mcp_path_protected_resource_metadata_endpoint,
     protected_resource_metadata_endpoint,
 )
 
@@ -67,14 +69,23 @@ class Send401Tests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         auth._deprecated_scope_cache.clear()
         self.addCleanup(auth._deprecated_scope_cache.clear)
+        auth._store_discovery(
+            "console",
+            {
+                "issuer": "https://cloud.appwrite.io/v1/oauth2/console",
+                "jwks_uri": "https://cloud.appwrite.io/v1/oauth2/console/jwks",
+                "scopes_supported": [],
+            },
+        )
+        self.addCleanup(lambda: auth._discovery_cache.pop("console", None))
 
-    def _challenge(self) -> str:
+    def _challenge(self, resource: str | None = None) -> str:
         messages = []
 
         async def send(message):
             messages.append(message)
 
-        asyncio.run(_send_401(send))
+        asyncio.run(_send_401(send, resource))
         start = messages[0]
         self.assertEqual(start["status"], 401)
         headers = dict(start["headers"])
@@ -105,6 +116,22 @@ class Send401Tests(unittest.TestCase):
             auth._discovery_cache.pop(pid, None)
         self.assertIn('resource_metadata="', challenge)
         self.assertIn('scope="openid all project:users.read"', challenge)
+
+    def test_401_uses_metadata_for_requested_resource(self):
+        with self._empty_deprecated_scope_catalog():
+            root_challenge = self._challenge(auth.canonical_resource())
+            mcp_path_challenge = self._challenge(auth.mcp_path_resource())
+
+        self.assertIn(
+            'resource_metadata="https://mcp.appwrite.io/'
+            '.well-known/oauth-protected-resource"',
+            root_challenge,
+        )
+        self.assertIn(
+            'resource_metadata="https://mcp.appwrite.io/'
+            '.well-known/oauth-protected-resource/mcp"',
+            mcp_path_challenge,
+        )
 
     def test_401_scope_hint_drops_tokens_outside_rfc6749_grammar(self):
         # The hint lands inside a quoted-string header value; a malicious or
@@ -173,6 +200,52 @@ class Send401Tests(unittest.TestCase):
         self.assertNotIn("scope=", challenge)
 
 
+class RequireBearerTests(unittest.TestCase):
+    def _challenge_for_path(self, path: str) -> str:
+        messages = []
+
+        async def app(scope, receive, send):  # pragma: no cover - must stay gated
+            self.fail("unauthenticated request reached the MCP handler")
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):
+            messages.append(message)
+
+        async def metadata(*, resource=None):
+            return {"resource": resource, "scopes_supported": []}
+
+        scope = {"type": "http", "method": "GET", "path": path, "headers": []}
+        with (
+            mock.patch.dict(
+                os.environ, {"MCP_PUBLIC_URL": "http://localhost:8000"}, clear=False
+            ),
+            mock.patch(
+                "mcp_server_appwrite.http_app.protected_resource_metadata", metadata
+            ),
+        ):
+            asyncio.run(RequireBearer(app)(scope, receive, send))
+
+        self.assertEqual(messages[0]["status"], 401)
+        return dict(messages[0]["headers"])[b"www-authenticate"].decode()
+
+    def test_challenge_matches_requested_endpoint(self):
+        root_challenge = self._challenge_for_path("/")
+        mcp_path_challenge = self._challenge_for_path("/mcp")
+
+        self.assertIn(
+            'resource_metadata="http://localhost:8000/'
+            '.well-known/oauth-protected-resource"',
+            root_challenge,
+        )
+        self.assertIn(
+            'resource_metadata="http://localhost:8000/'
+            '.well-known/oauth-protected-resource/mcp"',
+            mcp_path_challenge,
+        )
+
+
 class WellKnownMetadataEndpointTests(unittest.TestCase):
     """Discovery endpoints, including the legacy shims for clients on the
     2025-03-26 MCP authorization spec (e.g. Raycast) that fetch
@@ -213,6 +286,15 @@ class WellKnownMetadataEndpointTests(unittest.TestCase):
         response = asyncio.run(protected_resource_metadata_endpoint(mock.Mock()))
         self.assertEqual(response.status_code, 200)
         body = self._body(response)
+        self.assertEqual(body["resource"], "https://mcp.appwrite.io/")
+        self.assertEqual(body["authorization_servers"], [self.DISCOVERY["issuer"]])
+
+    def test_mcp_path_metadata_names_matching_resource(self):
+        response = asyncio.run(
+            mcp_path_protected_resource_metadata_endpoint(mock.Mock())
+        )
+        self.assertEqual(response.status_code, 200)
+        body = self._body(response)
         self.assertEqual(body["resource"], "https://mcp.appwrite.io/mcp")
         self.assertEqual(body["authorization_servers"], [self.DISCOVERY["issuer"]])
 
@@ -224,6 +306,8 @@ class WellKnownMetadataEndpointTests(unittest.TestCase):
         original_transport = server_module._UPLOAD_TRANSPORT
         self.addCleanup(setattr, server_module, "_UPLOAD_TRANSPORT", original_transport)
         paths = {getattr(route, "path", None) for route in build_app().routes}
+        self.assertIn("/", paths)
+        self.assertIn("/mcp", paths)
         self.assertIn("/.well-known/oauth-protected-resource/mcp", paths)
         self.assertIn("/.well-known/oauth-protected-resource", paths)
         self.assertIn("/.well-known/oauth-authorization-server", paths)

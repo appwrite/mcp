@@ -14,20 +14,20 @@ MCP-aware clients run this automatically:
 ```mermaid
 sequenceDiagram
     participant C as MCP Client
-    participant S as MCP Server (/mcp)
+    participant S as MCP Server (/)
     participant A as Appwrite OAuth Server
     participant API as Appwrite REST API
 
-    C->>S: GET /mcp (no token)
+    C->>S: GET / (no token)
     S-->>C: 401 + WWW-Authenticate → metadata URL
-    C->>S: GET /.well-known/oauth-protected-resource/mcp
+    C->>S: GET /.well-known/oauth-protected-resource
     S-->>C: auth server + scopes (RFC 9728)
     C->>A: Discover (RFC 8414 / OIDC)
     C->>A: Self-register as public PKCE client (RFC 7591)
     A-->>C: client_id (no secret to pre-provision)
     C->>A: OAuth 2.1 + PKCE auth-code flow (RFC 8707 resource)
     A-->>C: access token (audience bound to this server)
-    C->>S: GET /mcp + Authorization: Bearer <token>
+    C->>S: GET / + Authorization: Bearer <token>
     S->>API: Forward bearer token
     API-->>S: Response
     S-->>C: Response
@@ -37,3 +37,7 @@ The key detail is that clients **self-register** — the auth server exposes an 
 `registration_endpoint` (RFC 7591), so there's no client ID or secret to
 pre-provision. Everything else is standard OAuth 2.1 + PKCE, with the RFC 8707
 resource indicator binding each token's audience to this server.
+
+The conventional `/mcp` endpoint is a direct alias. It publishes matching
+protected-resource metadata at `/.well-known/oauth-protected-resource/mcp`, and
+tokens audience-bound to either URL are accepted by the shared service.

@@ -10,7 +10,7 @@
   "remotes": [
     {
       "type": "streamable-http",
-      "url": "https://mcp.appwrite.io/mcp"
+      "url": "https://mcp.appwrite.io/"
     }
   ],
   "packages": [

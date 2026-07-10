@@ -2,12 +2,11 @@
 
 Builds a single-tenant Starlette ASGI app for the served Appwrite project:
 
-* ``/mcp`` — the MCP Streamable-HTTP endpoint, gated by a bearer-token check that
-  returns an RFC 9728 ``WWW-Authenticate`` challenge when unauthenticated.
-* ``/.well-known/oauth-protected-resource/mcp`` — RFC 9728 protected resource
-  metadata pointing at the project's Appwrite OAuth authorization server. Also
-  served at the root form (no ``/mcp`` suffix) for clients that don't apply
-  path insertion.
+* ``/`` — the primary MCP Streamable-HTTP endpoint, gated by a bearer-token check
+  that returns an RFC 9728 ``WWW-Authenticate`` challenge when unauthenticated.
+* ``/mcp`` — a conventional direct alias for the same MCP endpoint.
+* ``/.well-known/oauth-protected-resource`` and its ``/mcp`` path-insertion
+  variant — RFC 9728 protected resource metadata for their matching endpoints.
 * ``/.well-known/oauth-authorization-server`` — backwards-compatibility shim for
   clients on the 2025-03-26 MCP authorization spec (e.g. Raycast), which expect
   authorization-server metadata at the MCP server's own origin instead of
@@ -50,6 +49,8 @@ from . import error_monitoring, telemetry
 from .auth import (
     AppwriteTokenVerifier,
     authorization_server_metadata,
+    canonical_resource,
+    mcp_path_resource,
     protected_resource_metadata,
     public_base_url,
     resource_metadata_url,
@@ -100,9 +101,10 @@ def _icon_svg() -> bytes:
     return files("mcp_server_appwrite.assets").joinpath("favicon.svg").read_bytes()
 
 
-async def _send_401(send: Send) -> None:
+async def _send_401(send: Send, resource: str | None = None) -> None:
     """RFC 9728 §5.1 — 401 with a WWW-Authenticate pointing to resource metadata."""
-    metadata_url = resource_metadata_url()
+    resource = resource or canonical_resource()
+    metadata_url = resource_metadata_url(resource)
     parts = [
         'error="invalid_token"',
         'error_description="Authentication required"',
@@ -116,7 +118,9 @@ async def _send_401(send: Send) -> None:
     # grammar (quotes, backslashes, control characters such as CRLF) is dropped
     # rather than injected into the response head.
     try:
-        scopes = (await protected_resource_metadata()).get("scopes_supported") or []
+        scopes = (await protected_resource_metadata(resource=resource)).get(
+            "scopes_supported"
+        ) or []
         scopes = [
             scope
             for scope in scopes
@@ -142,7 +146,7 @@ async def _send_401(send: Send) -> None:
 
 
 class RequireBearer:
-    """ASGI gate: require an authenticated user for ``/mcp`` requests.
+    """ASGI gate: require an authenticated user for MCP endpoint requests.
 
     Scope enforcement is delegated to the Appwrite REST API (per-route scope checks
     against the token's granted scopes), so the gate only requires a valid token.
@@ -168,7 +172,12 @@ class RequireBearer:
             # handshake failures.
             if _has_authorization_header(scope):
                 telemetry.record_handshake_failure(reason="invalid_token")
-            await _send_401(send)
+            resource = (
+                mcp_path_resource()
+                if scope.get("path") == "/mcp"
+                else canonical_resource()
+            )
+            await _send_401(send, resource)
             return
 
         await self.app(scope, receive, send)
@@ -229,7 +238,7 @@ def _find_initialize_params(body: bytes) -> dict | None:
 
 
 class MCPIdentityMiddleware:
-    """Bind client/user identity for every authenticated ``/mcp`` request.
+    """Bind client/user identity for every authenticated MCP request.
 
     The hosted transport is stateless: each POST is its own MCP session, so
     ``session.client_params`` is only populated on the request that carries the
@@ -294,7 +303,15 @@ class MCPIdentityMiddleware:
 
 
 async def protected_resource_metadata_endpoint(request: Request) -> JSONResponse:
-    metadata = await protected_resource_metadata()
+    metadata = await protected_resource_metadata(resource=canonical_resource())
+    headers = {**CORS_HEADERS, "Link": _icon_link_header()}
+    return JSONResponse(metadata, headers=headers)
+
+
+async def mcp_path_protected_resource_metadata_endpoint(
+    request: Request,
+) -> JSONResponse:
+    metadata = await protected_resource_metadata(resource=mcp_path_resource())
     headers = {**CORS_HEADERS, "Link": _icon_link_header()}
     return JSONResponse(metadata, headers=headers)
 
@@ -357,10 +374,9 @@ def build_app() -> Starlette:
     routes = [
         Route(
             "/.well-known/oauth-protected-resource/mcp",
-            endpoint=protected_resource_metadata_endpoint,
+            endpoint=mcp_path_protected_resource_metadata_endpoint,
             methods=["GET", "OPTIONS"],
         ),
-        # Root form, for clients that don't apply RFC 9728 path insertion.
         Route(
             "/.well-known/oauth-protected-resource",
             endpoint=protected_resource_metadata_endpoint,
@@ -376,6 +392,11 @@ def build_app() -> Starlette:
         Route("/favicon.svg", endpoint=favicon_svg_endpoint, methods=["GET"]),
         Route("/favicon.ico", endpoint=favicon_ico_endpoint, methods=["GET"]),
         Route("/healthz", endpoint=health_endpoint, methods=["GET"]),
+        Route(
+            "/",
+            endpoint=mcp_endpoint,
+            methods=["GET", "POST", "DELETE", "OPTIONS"],
+        ),
         Route(
             "/mcp",
             endpoint=mcp_endpoint,
@@ -404,5 +425,5 @@ def run_http(*, host: str = "0.0.0.0", port: int = 8000) -> None:
     }
     log_config["handlers"]["access"]["filters"] = ["hide_healthz"]
 
-    _log(f"Serving on http://{host}:{port}  (resource path: /mcp)")
+    _log(f"Serving on http://{host}:{port}/  (also available at /mcp)")
     uvicorn.run(app, host=host, port=port, log_config=log_config)

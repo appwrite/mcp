@@ -72,7 +72,7 @@
 
   <!-- client <-> server arrows -->
   <text x="453" y="240" font-size="10" letter-spacing="2" font-weight="600" fill="#FD366E" text-anchor="middle">DISCOVERY</text>
-  <text x="453" y="272" font-size="13" font-weight="600" fill="#EDEDF0" text-anchor="middle">POST /mcp — no token</text>
+  <text x="453" y="272" font-size="13" font-weight="600" fill="#EDEDF0" text-anchor="middle">POST / — no token</text>
   <line x1="290" y1="296" x2="614" y2="296" stroke="#55555B" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arrGray)"/>
   <circle cx="453" cy="296" r="10" fill="#19191C" stroke="#55555B" stroke-width="1.5"/>
   <text x="453" y="300" font-size="10.5" font-weight="600" fill="#A5A5AA" text-anchor="middle">1</text>
@@ -96,11 +96,11 @@
   <!-- MCP server card -->
   <rect x="620" y="180" width="420" height="404" rx="16" fill="#1D1D21" stroke="#2D2D31"/>
   <text x="644" y="216" font-size="17" font-weight="600" fill="#EDEDF0">Appwrite MCP server</text>
-  <text x="644" y="236" font-size="10" fill="#A5A5AA" font-family="'SF Mono', ui-monospace, Menlo, monospace">mcp.appwrite.io/mcp</text>
+  <text x="644" y="236" font-size="10" fill="#A5A5AA" font-family="'SF Mono', ui-monospace, Menlo, monospace">mcp.appwrite.io/ · also at /mcp</text>
 
   <rect x="644" y="256" width="372" height="72" rx="12" fill="#232327" stroke="#313135"/>
   <text x="664" y="282" font-size="14" font-weight="600" fill="#EDEDF0">Verify token</text>
-  <text x="664" y="306" font-size="12" fill="#A5A5AA">issuer · RS256 via JWKS · aud = /mcp</text>
+  <text x="664" y="306" font-size="12" fill="#A5A5AA">issuer · RS256 via JWKS · aud = / or /mcp</text>
 
   <rect x="644" y="344" width="372" height="216" rx="12" fill="#232327" stroke="#313135"/>
   <text x="664" y="370" font-size="14" font-weight="600" fill="#EDEDF0">4 public tools</text>
