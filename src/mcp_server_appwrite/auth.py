@@ -6,10 +6,11 @@ authorization server and then lets the request proceed. The same token is later
 forwarded to the Appwrite REST API, which natively accepts it.
 
 This deployment is single-tenant: it serves one Appwrite project — the Cloud
-console project by default, overridable via ``APPWRITE_PROJECT_ID`` — so the MCP
-endpoint is simply ``/mcp`` with no project in the path. Tokens must be issued by
-that project's authorization server (``<endpoint>/oauth2/<project_id>``); a token
-whose issuer names any other project is rejected.
+console project by default, overridable via ``APPWRITE_PROJECT_ID`` — at the root
+endpoint, with ``/mcp`` also available as a conventional alias. Tokens must be
+issued by that project's authorization server
+(``<endpoint>/oauth2/<project_id>``); a token whose issuer names any other project
+is rejected.
 """
 
 from __future__ import annotations
@@ -61,13 +62,30 @@ def issuer_url() -> str:
 
 def canonical_resource() -> str:
     """RFC 8707 canonical resource URI for this MCP server."""
+    return f"{public_base_url()}/"
+
+
+def mcp_path_resource() -> str:
+    """Resource URI for clients that use the conventional ``/mcp`` path."""
     return f"{public_base_url()}/mcp"
 
 
-def resource_metadata_url() -> str:
+def accepted_resources() -> tuple[str, str]:
+    """Resource audiences accepted by the two shared MCP endpoints."""
+    return canonical_resource(), mcp_path_resource()
+
+
+def resource_metadata_url(resource: str | None = None) -> str:
     """RFC 9728 protected-resource metadata URL (well-known path + resource path)."""
+    resource = resource or canonical_resource()
+    if resource == canonical_resource():
+        path = "/.well-known/oauth-protected-resource"
+    elif resource == mcp_path_resource():
+        path = "/.well-known/oauth-protected-resource/mcp"
+    else:
+        raise ValueError(f"Unsupported MCP resource: {resource}")
+
     parts = urlsplit(public_base_url())
-    path = "/.well-known/oauth-protected-resource/mcp"
     return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
 
 
@@ -297,22 +315,26 @@ async def _filter_deprecated_scopes(scopes: list[str]) -> list[str]:
     return filtered
 
 
-def build_resource_metadata(scopes: list[str], authorization_servers=None) -> dict:
+def build_resource_metadata(
+    scopes: list[str], authorization_servers=None, *, resource: str | None = None
+) -> dict:
     """RFC 9728 Protected Resource Metadata document."""
     return {
-        "resource": canonical_resource(),
+        "resource": resource or canonical_resource(),
         "authorization_servers": authorization_servers or [issuer_url()],
         "scopes_supported": scopes,
         "bearer_methods_supported": ["header"],
     }
 
 
-async def protected_resource_metadata() -> dict:
+async def protected_resource_metadata(*, resource: str | None = None) -> dict:
     """RFC 9728 Protected Resource Metadata, with scopes validated against AS
     discovery."""
     metadata = await authorization_server_metadata()
     scopes = await _filter_deprecated_scopes(_advertised_scopes(metadata))
-    return build_resource_metadata(scopes, [metadata["issuer"]])
+    return build_resource_metadata(
+        scopes, [metadata["issuer"]], resource=resource or canonical_resource()
+    )
 
 
 def project_id_from_issuer(iss: str | None) -> str | None:
@@ -402,8 +424,8 @@ class AppwriteTokenVerifier(TokenVerifier):
             _log(f"Rejecting token: verification failed ({exc}).")
             return None
 
-        expected_resource = canonical_resource()
-        if not self._audience_ok(claims.get("aud"), expected_resource):
+        matched_resource = self._accepted_resource(claims.get("aud"))
+        if matched_resource is None:
             return None
 
         scope_claim = claims.get("scope") or claims.get("scp") or ""
@@ -418,24 +440,26 @@ class AppwriteTokenVerifier(TokenVerifier):
             ),
             scopes=scopes,
             expires_at=int(claims["exp"]) if "exp" in claims else None,
-            resource=expected_resource,
+            resource=matched_resource,
             subject=claims.get("sub"),
             claims={**claims, "project_id": project_id},
         )
 
-    def _audience_ok(self, aud, expected_resource: str) -> bool:
+    def _accepted_resource(self, aud) -> str | None:
         # Tokens must be audience-bound to this MCP server (RFC 8707). The Appwrite
         # OAuth server always issues Resource Indicators, so a missing or mismatched
         # audience is a hard rejection.
         audiences = (
             [aud] if isinstance(aud, str) else list(aud) if aud is not None else []
         )
-        if expected_resource in audiences:
-            return True
+        for resource in accepted_resources():
+            if resource in audiences:
+                return resource
         _log(
-            f"Rejecting token: audience {audiences!r} not bound to {expected_resource!r}."
+            f"Rejecting token: audience {audiences!r} not bound to any accepted "
+            f"resource {list(accepted_resources())!r}."
         )
-        return False
+        return None
 
     async def verify_token(self, token: str) -> AccessToken | None:
         access_token = await to_thread.run_sync(self._verify_sync, token)

@@ -6,10 +6,11 @@ A [Model Context Protocol](https://modelcontextprotocol.io) server for Appwrite.
 It exposes Appwrite's API — databases, users, functions, teams, storage, and more
 — as tools your MCP client can call.
 
-Connect to the hosted server at **`https://mcp.appwrite.io/mcp`** and authenticate
+Connect to the hosted server at **`https://mcp.appwrite.io/`** and authenticate
 through your browser. The first time you connect, your client opens an Appwrite
 consent screen; approve the scopes and you're connected. There are no keys to
-copy.
+copy. The conventional `https://mcp.appwrite.io/mcp` URL is also supported and
+connects to the same server.
 
 ![How the Appwrite MCP server handles OAuth and scopes](docs/appwrite-mcp-flow.png)
 
@@ -21,7 +22,7 @@ Pick your client below. Each adds the hosted Appwrite Cloud server.
 <summary><b>Claude Code</b></summary>
 
 ```bash
-claude mcp add --transport http appwrite https://mcp.appwrite.io/mcp
+claude mcp add --transport http appwrite https://mcp.appwrite.io/
 ```
 
 Then, inside a Claude Code session, run `/mcp`, select **appwrite**, and follow
@@ -33,7 +34,7 @@ the browser prompt to authenticate.
 <summary><b>Claude Desktop</b></summary>
 
 Go to **Settings → Connectors → Add custom connector** and paste
-`https://mcp.appwrite.io/mcp`. Available on Pro and Max plans; on Team and
+`https://mcp.appwrite.io/`. Available on Pro and Max plans; on Team and
 Enterprise plans only an organization Owner can add custom connectors.
 
 If you don't see that option (free plan, or a Team/Enterprise member), bridge
@@ -45,7 +46,7 @@ the remote server through stdio instead (requires Node.js). Go to **Settings →
   "mcpServers": {
     "appwrite": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "https://mcp.appwrite.io/mcp"]
+      "args": ["-y", "mcp-remote", "https://mcp.appwrite.io/"]
     }
   }
 }
@@ -67,7 +68,7 @@ Edit `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project).
 {
   "mcpServers": {
     "appwrite": {
-      "url": "https://mcp.appwrite.io/mcp"
+      "url": "https://mcp.appwrite.io/"
     }
   }
 }
@@ -91,7 +92,7 @@ Palette → **MCP: Open User Configuration**.
   "servers": {
     "appwrite": {
       "type": "http",
-      "url": "https://mcp.appwrite.io/mcp"
+      "url": "https://mcp.appwrite.io/"
     }
   }
 }
@@ -106,7 +107,7 @@ Edit `~/.codex/config.toml`.
 
 ```toml
 [mcp_servers.appwrite]
-url = "https://mcp.appwrite.io/mcp"
+url = "https://mcp.appwrite.io/"
 ```
 
 Then authenticate from the terminal:
@@ -116,7 +117,7 @@ codex mcp login appwrite
 ```
 
 In the Codex GUI, you can instead add the server from the MCP settings —
-set the URL to `https://mcp.appwrite.io/mcp` and leave the token and header
+set the URL to `https://mcp.appwrite.io/` and leave the token and header
 fields empty (authentication happens through the browser):
 
 ![Appwrite MCP server settings in the Codex GUI](docs/images/codex-mcp.png)
@@ -134,7 +135,7 @@ Edit `opencode.json` (project) or `~/.config/opencode/opencode.json` (global).
   "mcp": {
     "appwrite": {
       "type": "remote",
-      "url": "https://mcp.appwrite.io/mcp",
+      "url": "https://mcp.appwrite.io/",
       "enabled": true
     }
   }
@@ -152,7 +153,7 @@ Edit `~/.codeium/windsurf/mcp_config.json`.
 {
   "mcpServers": {
     "appwrite": {
-      "serverUrl": "https://mcp.appwrite.io/mcp"
+      "serverUrl": "https://mcp.appwrite.io/"
     }
   }
 }
@@ -164,7 +165,7 @@ Edit `~/.codeium/windsurf/mcp_config.json`.
 <summary><b>Gemini CLI</b></summary>
 
 ```bash
-gemini mcp add --transport http appwrite https://mcp.appwrite.io/mcp
+gemini mcp add --transport http appwrite https://mcp.appwrite.io/
 ```
 
 Or edit `~/.gemini/settings.json` (note the key is `httpUrl`, not `url`):
@@ -173,7 +174,7 @@ Or edit `~/.gemini/settings.json` (note the key is `httpUrl`, not `url`):
 {
   "mcpServers": {
     "appwrite": {
-      "httpUrl": "https://mcp.appwrite.io/mcp"
+      "httpUrl": "https://mcp.appwrite.io/"
     }
   }
 }
@@ -193,7 +194,7 @@ Edit `~/.gemini/config/mcp_config.json` (global) or `.agents/mcp_config.json` (p
 {
   "mcpServers": {
     "appwrite": {
-      "serverUrl": "https://mcp.appwrite.io/mcp"
+      "serverUrl": "https://mcp.appwrite.io/"
     }
   }
 }
@@ -209,7 +210,7 @@ Antigravity opens the browser OAuth flow automatically on first connect. If you 
 <summary><b>GitHub Copilot CLI</b></summary>
 
 ```bash
-copilot mcp add --transport http appwrite https://mcp.appwrite.io/mcp
+copilot mcp add --transport http appwrite https://mcp.appwrite.io/
 ```
 
 Or run `/mcp add` inside a session, or edit `~/.copilot/mcp-config.json`:
@@ -219,7 +220,7 @@ Or run `/mcp add` inside a session, or edit `~/.copilot/mcp-config.json`:
   "mcpServers": {
     "appwrite": {
       "type": "http",
-      "url": "https://mcp.appwrite.io/mcp"
+      "url": "https://mcp.appwrite.io/"
     }
   }
 }
@@ -240,7 +241,7 @@ to your `settings.json` (`zed: open settings`):
 {
   "context_servers": {
     "appwrite": {
-      "url": "https://mcp.appwrite.io/mcp"
+      "url": "https://mcp.appwrite.io/"
     }
   }
 }
@@ -254,7 +255,7 @@ Zed prompts you to authenticate through the browser on first connect.
 <summary><b>Warp</b></summary>
 
 Go to **Settings → Agents → MCP servers → + Add**, choose the URL-based
-server type, and enter `https://mcp.appwrite.io/mcp`.
+server type, and enter `https://mcp.appwrite.io/`.
 
 Warp opens a browser window to authenticate on first connect.
 
@@ -272,7 +273,7 @@ Model Context Protocol (MCP) → Add**, switch to the JSON view, and paste:
   "mcpServers": {
     "appwrite": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "https://mcp.appwrite.io/mcp"]
+      "args": ["-y", "mcp-remote", "https://mcp.appwrite.io/"]
     }
   }
 }
@@ -294,7 +295,7 @@ stdio (requires Node.js). In the Cline panel, open the **MCP Servers** icon →
   "mcpServers": {
     "appwrite": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "https://mcp.appwrite.io/mcp"]
+      "args": ["-y", "mcp-remote", "https://mcp.appwrite.io/"]
     }
   }
 }

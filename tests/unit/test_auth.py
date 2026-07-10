@@ -40,15 +40,20 @@ class AuthHelperTests(unittest.TestCase):
         self.assertEqual(
             auth.issuer_url(), "https://cloud.appwrite.io/v1/oauth2/console"
         )
-        self.assertEqual(auth.canonical_resource(), "https://mcp.appwrite.io/mcp")
+        self.assertEqual(auth.canonical_resource(), "https://mcp.appwrite.io/")
+        self.assertEqual(auth.mcp_path_resource(), "https://mcp.appwrite.io/mcp")
         self.assertEqual(
             auth.resource_metadata_url(),
+            "https://mcp.appwrite.io/.well-known/oauth-protected-resource",
+        )
+        self.assertEqual(
+            auth.resource_metadata_url(auth.mcp_path_resource()),
             "https://mcp.appwrite.io/.well-known/oauth-protected-resource/mcp",
         )
 
     def test_build_resource_metadata_shape(self):
         meta = auth.build_resource_metadata(["users.read", "teams.read"])
-        self.assertEqual(meta["resource"], "https://mcp.appwrite.io/mcp")
+        self.assertEqual(meta["resource"], "https://mcp.appwrite.io/")
         self.assertEqual(
             meta["authorization_servers"],
             ["https://cloud.appwrite.io/v1/oauth2/console"],
@@ -417,21 +422,29 @@ class AudienceTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.verifier = auth.AppwriteTokenVerifier()
-        self.resource = "https://mcp.appwrite.io/mcp"
+        self.resource = "https://mcp.appwrite.io/"
+        self.mcp_path_resource = "https://mcp.appwrite.io/mcp"
 
     def test_audience_match_string(self):
-        self.assertTrue(self.verifier._audience_ok(self.resource, self.resource))
+        self.assertEqual(self.verifier._accepted_resource(self.resource), self.resource)
+
+    def test_mcp_path_audience_match_string(self):
+        self.assertEqual(
+            self.verifier._accepted_resource(self.mcp_path_resource),
+            self.mcp_path_resource,
+        )
 
     def test_audience_match_list(self):
-        self.assertTrue(
-            self.verifier._audience_ok(["other", self.resource], self.resource)
+        self.assertEqual(
+            self.verifier._accepted_resource(["other", self.resource]),
+            self.resource,
         )
 
     def test_audience_mismatch_rejected(self):
-        self.assertFalse(self.verifier._audience_ok("nope", self.resource))
+        self.assertIsNone(self.verifier._accepted_resource("nope"))
 
     def test_missing_audience_rejected(self):
-        self.assertFalse(self.verifier._audience_ok(None, self.resource))
+        self.assertIsNone(self.verifier._accepted_resource(None))
 
     def test_verify_rejects_token_for_other_project(self):
         # A token issued by a different project's authorization server must be
