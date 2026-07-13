@@ -53,7 +53,9 @@ from .constants import (
     HOSTED_PATH_GUIDANCE,
     MAX_FETCH_BYTES,
     MAX_INLINE_BYTES,
+    SERVER_ICON_URL,
     SERVER_VERSION,
+    SERVER_WEBSITE_URL,
     TRANSPORTS,
     VALIDATION_SERVICE_ORDER,
 )
@@ -966,7 +968,13 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
     _configure_uploads(transport)
     instructions = build_instructions(transport)
 
-    server = Server("Appwrite MCP Server", instructions=instructions)
+    server = Server(
+        "Appwrite MCP Server",
+        version=SERVER_VERSION,
+        instructions=instructions,
+        website_url=SERVER_WEBSITE_URL,
+        icons=[types.Icon(src=SERVER_ICON_URL, mimeType="image/svg+xml")],
+    )
 
     @server.list_tools()
     async def handle_list_tools() -> list[types.Tool]:

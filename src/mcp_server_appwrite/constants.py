@@ -24,6 +24,8 @@ def _resolve_server_version() -> str:
 
 
 SERVER_VERSION = _resolve_server_version()
+SERVER_WEBSITE_URL = "https://github.com/appwrite/mcp"
+SERVER_ICON_URL = "https://mcp.appwrite.io/favicon.svg"
 
 DEFAULT_ENDPOINT = "https://cloud.appwrite.io/v1"
 # Region reported by single-region deployments; carries no region subdomain.

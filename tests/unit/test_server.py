@@ -28,6 +28,7 @@ from mcp_server_appwrite.server import (
     build_client_for_request,
     build_instructions,
     build_introspection_client,
+    build_mcp_server,
     build_operator,
     execute_registered_tool,
     parse_args,
@@ -115,6 +116,25 @@ class ServerHelperTests(unittest.TestCase):
         self.assertIn("project_id", http)
         self.assertIn("Large results are stored as resources", stdio)
         self.assertIn("returns tool results inline", http)
+
+    def test_build_mcp_server_reports_appwrite_metadata(self):
+        server = build_mcp_server(Mock(), transport="stdio")
+        options = server.create_initialization_options()
+
+        self.assertEqual(server.version, server_module.SERVER_VERSION)
+        self.assertEqual(options.website_url, server_module.SERVER_WEBSITE_URL)
+        self.assertEqual(
+            [
+                icon.model_dump(by_alias=True, exclude_none=True)
+                for icon in options.icons
+            ],
+            [
+                {
+                    "src": server_module.SERVER_ICON_URL,
+                    "mimeType": "image/svg+xml",
+                }
+            ],
+        )
 
     def test_http_tool_execution_does_not_block_event_loop(self):
         class BlockingOperator:
