@@ -2,6 +2,8 @@
 
 [![MCP Registry Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fregistry.modelcontextprotocol.io%2Fv0.1%2Fservers%2Fio.github.appwrite%252Fmcp%2Fversions%2Flatest&query=%24.server.version&label=MCP%20Registry&logo=modelcontextprotocol)](https://registry.modelcontextprotocol.io/?q=io.github.appwrite%2Fmcp)
 
+<!-- mcp-name: io.github.appwrite/mcp -->
+
 A [Model Context Protocol](https://modelcontextprotocol.io) server for Appwrite.
 It exposes Appwrite's API — databases, users, functions, teams, storage, and more
 — as tools your MCP client can call.
