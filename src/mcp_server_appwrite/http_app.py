@@ -28,7 +28,9 @@ import logging
 import re
 import sys
 from importlib.resources import files
+from urllib.parse import urlsplit
 
+import httpx
 from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser, BearerAuthBackend
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
@@ -50,8 +52,10 @@ from .auth import (
     AppwriteTokenVerifier,
     authorization_server_metadata,
     canonical_resource,
+    console_url,
     mcp_path_resource,
     protected_resource_metadata,
+    proxied_authorization_server_metadata,
     public_base_url,
     resource_metadata_url,
 )
@@ -324,9 +328,56 @@ async def authorization_server_metadata_endpoint(request: Request) -> JSONRespon
     resource metadata. Serve the Appwrite authorization server's discovery
     document verbatim so those clients find the real authorize/token/register
     endpoints (the ``issuer`` inside points at the Appwrite endpoint, not here).
+
+    With a console override active (``MCP_CONSOLE_URL``), this document is also
+    the primary discovery path: the protected resource metadata names this MCP
+    server as the authorization server, and the mirrored document points the
+    authorize step at the local proxy so login/consent happens on the override
+    console.
     """
     metadata = await authorization_server_metadata()
+    if console_url():
+        metadata = proxied_authorization_server_metadata(metadata)
     return JSONResponse(metadata, headers=dict(CORS_HEADERS))
+
+
+_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+
+
+async def oauth_authorize_proxy_endpoint(request: Request) -> Response:
+    """Authorize proxy for the console override (``MCP_CONSOLE_URL``).
+
+    Forwards the OAuth authorize request to the real Appwrite authorization
+    server (which performs client/redirect-URI validation) and rewrites its
+    consent-page redirect to the override console, which serves the same
+    login/consent flow at ``/oauth2/consent``. Error redirects back to the
+    client's ``redirect_uri`` and non-redirect responses pass through verbatim.
+    """
+    if not console_url():
+        return PlainTextResponse("Not Found", status_code=404)
+
+    metadata = await authorization_server_metadata()
+    upstream = metadata["authorization_endpoint"]
+    if request.url.query:
+        upstream = f"{upstream}?{request.url.query}"
+
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
+        resp = await client.get(upstream)
+
+    location = resp.headers.get("location")
+    if resp.status_code in _REDIRECT_STATUSES and location:
+        parts = urlsplit(location)
+        if parts.path.rstrip("/").endswith("/oauth2/consent"):
+            location = f"{console_url()}/oauth2/consent"
+            if parts.query:
+                location = f"{location}?{parts.query}"
+        return RedirectResponse(location, status_code=303)
+
+    return Response(
+        resp.content,
+        status_code=resp.status_code,
+        media_type=resp.headers.get("content-type"),
+    )
 
 
 async def health_endpoint(request: Request) -> PlainTextResponse:
@@ -388,6 +439,21 @@ def build_app() -> Starlette:
             "/.well-known/oauth-authorization-server",
             endpoint=authorization_server_metadata_endpoint,
             methods=["GET", "OPTIONS"],
+        ),
+        # OIDC-style discovery for clients that resolve the advertised
+        # authorization server (this origin, when MCP_CONSOLE_URL is set) via
+        # openid-configuration instead of oauth-authorization-server.
+        Route(
+            "/.well-known/openid-configuration",
+            endpoint=authorization_server_metadata_endpoint,
+            methods=["GET", "OPTIONS"],
+        ),
+        # Authorize proxy for the console override; 404 unless MCP_CONSOLE_URL
+        # is set.
+        Route(
+            "/oauth2/authorize",
+            endpoint=oauth_authorize_proxy_endpoint,
+            methods=["GET"],
         ),
         Route("/favicon.svg", endpoint=favicon_svg_endpoint, methods=["GET"]),
         Route("/favicon.ico", endpoint=favicon_ico_endpoint, methods=["GET"]),
