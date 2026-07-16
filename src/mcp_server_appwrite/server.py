@@ -40,7 +40,7 @@ from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.models import InitializationOptions
 from pydantic import AnyUrl
 
-from . import error_monitoring, telemetry
+from . import error_monitoring, flags, telemetry
 from .constants import (
     CACHE_TTL_SECONDS,
     CATALOG_URI,
@@ -137,6 +137,7 @@ def parse_args(argv: list[str] | None = None):
         default=int(os.getenv("PORT", "8000")),
         help="Bind port for the HTTP server (default $PORT or 8000).",
     )
+    flags.register_cli_args(parser)
     args = parser.parse_args(argv)
     try:
         args.transport = _transport_arg(args.transport)
@@ -1397,6 +1398,10 @@ def main():
     if args.transport == "stdio":
         asyncio.run(run_stdio())
         return 0
+
+    # Testing flags are read from the environment at request time; fold any
+    # CLI-provided values back in (see flags.py and docs/flags.md).
+    flags.apply_cli_args(args)
 
     from .http_app import run_http
 

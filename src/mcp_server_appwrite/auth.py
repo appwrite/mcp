@@ -26,6 +26,7 @@ from anyio import to_thread
 from jwt import PyJWKClient
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 
+from . import flags
 from .constants import (
     CACHE_TTL_SECONDS,
     DEFAULT_ENDPOINT,
@@ -58,6 +59,34 @@ def public_base_url() -> str:
 def issuer_url() -> str:
     """The Appwrite OAuth authorization server (issuer) for the served project."""
     return f"{appwrite_endpoint()}/oauth2/{configured_project_id()}"
+
+
+def console_url() -> str | None:
+    """Tester override: base URL of an alternative Appwrite Console (for example
+    ``https://new.appwrite.io``). When set, the MCP server proxies the OAuth
+    authorize step and sends users to this console's login/consent pages instead
+    of the console the authorization server redirects to by default. Token,
+    registration, and JWKS endpoints stay on the real authorization server, so
+    token validation is unaffected. See ``docs/flags.md``."""
+    return flags.value(flags.CONSOLE_URL)
+
+
+def local_authorize_endpoint() -> str:
+    """The MCP-hosted authorize proxy used when a console override is active."""
+    return f"{public_base_url()}/oauth2/authorize"
+
+
+def proxied_authorization_server_metadata(metadata: dict) -> dict:
+    """Rewrite upstream authorization-server metadata for the console override.
+
+    The MCP server presents itself as the authorization server (so clients hit
+    the local authorize proxy, which forwards to the real authorize endpoint and
+    rewrites the consent redirect to the override console); every other endpoint
+    is served verbatim from the upstream document."""
+    rewritten = dict(metadata)
+    rewritten["issuer"] = public_base_url()
+    rewritten["authorization_endpoint"] = local_authorize_endpoint()
+    return rewritten
 
 
 def canonical_resource() -> str:
@@ -332,8 +361,12 @@ async def protected_resource_metadata(*, resource: str | None = None) -> dict:
     discovery."""
     metadata = await authorization_server_metadata()
     scopes = await _filter_deprecated_scopes(_advertised_scopes(metadata))
+    # With a console override active, the MCP server is the advertised
+    # authorization server: clients then discover the local authorize proxy from
+    # the metadata mirrored at this origin.
+    authorization_server = public_base_url() if console_url() else metadata["issuer"]
     return build_resource_metadata(
-        scopes, [metadata["issuer"]], resource=resource or canonical_resource()
+        scopes, [authorization_server], resource=resource or canonical_resource()
     )
 
 

@@ -19,6 +19,7 @@ from mcp_server_appwrite.http_app import (
     authorization_server_metadata_endpoint,
     build_app,
     mcp_path_protected_resource_metadata_endpoint,
+    oauth_authorize_proxy_endpoint,
     protected_resource_metadata_endpoint,
 )
 
@@ -256,6 +257,7 @@ class WellKnownMetadataEndpointTests(unittest.TestCase):
         "APPWRITE_ENDPOINT": "https://cloud.appwrite.io/v1",
         "MCP_PUBLIC_URL": "https://mcp.appwrite.io",
         "APPWRITE_PROJECT_ID": "console",
+        "MCP_CONSOLE_URL": "",
     }
     DISCOVERY = {
         "issuer": "https://cloud.appwrite.io/v1/oauth2/console",
@@ -311,6 +313,106 @@ class WellKnownMetadataEndpointTests(unittest.TestCase):
         self.assertIn("/.well-known/oauth-protected-resource/mcp", paths)
         self.assertIn("/.well-known/oauth-protected-resource", paths)
         self.assertIn("/.well-known/oauth-authorization-server", paths)
+
+
+class ConsoleOverrideTests(unittest.TestCase):
+    """The MCP_CONSOLE_URL tester flag: discovery rewrites plus the local
+    authorize proxy that sends login/consent to an alternative console."""
+
+    ENV = {
+        "APPWRITE_ENDPOINT": "https://cloud.appwrite.io/v1",
+        "MCP_PUBLIC_URL": "https://mcp.appwrite.io",
+        "APPWRITE_PROJECT_ID": "console",
+        "MCP_CONSOLE_URL": "https://new.appwrite.io",
+    }
+    DISCOVERY = dict(WellKnownMetadataEndpointTests.DISCOVERY)
+
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ, self.ENV, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        auth._store_discovery("console", dict(self.DISCOVERY))
+        self.addCleanup(lambda: auth._discovery_cache.pop("console", None))
+
+    def _body(self, response) -> dict:
+        return json.loads(response.body)
+
+    @staticmethod
+    def _fake_httpx_client(response):
+        client = mock.AsyncMock()
+        client.get.return_value = response
+        context = mock.AsyncMock()
+        context.__aenter__.return_value = client
+        return mock.Mock(return_value=context), client
+
+    @staticmethod
+    def _upstream_response(status_code, headers=None, content=b""):
+        response = mock.Mock()
+        response.status_code = status_code
+        response.headers = headers or {}
+        response.content = content
+        return response
+
+    def test_discovery_rewrites_authorize_step_only(self):
+        response = asyncio.run(authorization_server_metadata_endpoint(mock.Mock()))
+        body = self._body(response)
+        self.assertEqual(body["issuer"], "https://mcp.appwrite.io")
+        self.assertEqual(
+            body["authorization_endpoint"],
+            "https://mcp.appwrite.io/oauth2/authorize",
+        )
+        # Everything else mirrors the upstream document.
+        self.assertEqual(body["token_endpoint"], self.DISCOVERY["token_endpoint"])
+        self.assertEqual(body["jwks_uri"], self.DISCOVERY["jwks_uri"])
+
+        response = asyncio.run(protected_resource_metadata_endpoint(mock.Mock()))
+        self.assertEqual(
+            self._body(response)["authorization_servers"],
+            ["https://mcp.appwrite.io"],
+        )
+
+    def _request(self, query: str) -> mock.Mock:
+        request = mock.Mock()
+        request.url.query = query
+        return request
+
+    def test_authorize_proxy_rewrites_consent_redirect(self):
+        upstream = self._upstream_response(
+            303,
+            {
+                "location": "https://cloud.appwrite.io/console/oauth2/consent"
+                "?client_id=abc&state=xyz"
+            },
+        )
+        factory, client = self._fake_httpx_client(upstream)
+        with mock.patch("mcp_server_appwrite.http_app.httpx.AsyncClient", factory):
+            response = asyncio.run(
+                oauth_authorize_proxy_endpoint(self._request("client_id=abc"))
+            )
+        client.get.assert_awaited_once_with(
+            f"{self.DISCOVERY['authorization_endpoint']}?client_id=abc"
+        )
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(
+            response.headers["location"],
+            "https://new.appwrite.io/oauth2/consent?client_id=abc&state=xyz",
+        )
+
+    def test_authorize_proxy_passes_through_error_redirect(self):
+        upstream = self._upstream_response(
+            303,
+            {"location": "http://localhost:33418/callback?error=invalid_scope"},
+        )
+        factory, _client = self._fake_httpx_client(upstream)
+        with mock.patch("mcp_server_appwrite.http_app.httpx.AsyncClient", factory):
+            response = asyncio.run(
+                oauth_authorize_proxy_endpoint(self._request("client_id=abc"))
+            )
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(
+            response.headers["location"],
+            "http://localhost:33418/callback?error=invalid_scope",
+        )
 
 
 class ClientFromUserAgentTests(unittest.TestCase):
