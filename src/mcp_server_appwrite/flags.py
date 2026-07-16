@@ -54,19 +54,23 @@ def value(flag: Flag) -> str | None:
 
 
 def register_cli_args(parser: argparse.ArgumentParser) -> None:
-    """Add a ``--<name>`` argument per flag, defaulting to its environment
-    variable so both spellings behave identically."""
+    """Add a ``--<name>`` argument per flag. The default is ``None`` (not the
+    environment variable) so an explicit ``--<name> ""`` is distinguishable
+    from "not provided" and can clear a flag exported in the shell."""
     for flag in FLAGS:
         parser.add_argument(
             f"--{flag.name}",
-            default=os.getenv(flag.env, ""),
+            default=None,
             help=f"Testing flag: {flag.help} (default ${flag.env}).",
         )
 
 
 def apply_cli_args(args: argparse.Namespace) -> None:
-    """Write parsed CLI flag values back to their environment variables."""
+    """Write parsed CLI flag values back to their environment variables.
+
+    A flag not provided on the CLI leaves its environment variable untouched;
+    an explicit empty value (``--<name> ""``) clears it."""
     for flag in FLAGS:
-        raw = getattr(args, flag.name.replace("-", "_"), "")
-        if raw:
+        raw = getattr(args, flag.name.replace("-", "_"), None)
+        if raw is not None:
             os.environ[flag.env] = raw

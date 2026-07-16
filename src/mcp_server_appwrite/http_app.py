@@ -368,7 +368,9 @@ async def oauth_authorize_proxy_endpoint(request: Request) -> Response:
     if resp.status_code in _REDIRECT_STATUSES and location:
         parts = urlsplit(location)
         if parts.path.rstrip("/").endswith("/oauth2/consent"):
-            location = f"{console_url()}/oauth2/consent?{parts.query}"
+            location = f"{console_url()}/oauth2/consent"
+            if parts.query:
+                location = f"{location}?{parts.query}"
         return RedirectResponse(location, status_code=303)
 
     return Response(

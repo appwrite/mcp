@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import json
 import logging
@@ -398,6 +399,19 @@ class ConsoleOverrideTests(unittest.TestCase):
             "https://new.appwrite.io/oauth2/consent?client_id=abc&state=xyz",
         )
 
+    def test_authorize_proxy_rewrites_queryless_consent_redirect_without_bare_qmark(
+        self,
+    ):
+        upstream = self._upstream_response(
+            303, {"location": "https://cloud.appwrite.io/console/oauth2/consent"}
+        )
+        factory, _client = self._fake_httpx_client(upstream)
+        with mock.patch("mcp_server_appwrite.http_app.httpx.AsyncClient", factory):
+            response = asyncio.run(oauth_authorize_proxy_endpoint(self._request("")))
+        self.assertEqual(
+            response.headers["location"], "https://new.appwrite.io/oauth2/consent"
+        )
+
     def test_authorize_proxy_passes_through_error_redirect(self):
         upstream = self._upstream_response(
             303,
@@ -413,6 +427,23 @@ class ConsoleOverrideTests(unittest.TestCase):
             response.headers["location"],
             "http://localhost:33418/callback?error=invalid_scope",
         )
+
+    def test_authorize_proxy_404_when_flag_unset(self):
+        with mock.patch.dict(os.environ, {"MCP_CONSOLE_URL": ""}):
+            response = asyncio.run(oauth_authorize_proxy_endpoint(mock.Mock()))
+        self.assertEqual(response.status_code, 404)
+
+    def test_cli_empty_value_clears_env_flag(self):
+        from mcp_server_appwrite import flags
+
+        parser = argparse.ArgumentParser()
+        flags.register_cli_args(parser)
+
+        flags.apply_cli_args(parser.parse_args([]))
+        self.assertEqual(flags.value(flags.CONSOLE_URL), "https://new.appwrite.io")
+
+        flags.apply_cli_args(parser.parse_args(["--console-url", ""]))
+        self.assertIsNone(flags.value(flags.CONSOLE_URL))
 
 
 class ClientFromUserAgentTests(unittest.TestCase):
