@@ -20,6 +20,22 @@ command. The server validates the endpoint, project ID, API key, and at least on
 supported service at startup, and fails before accepting tool calls if anything is
 wrong.
 
+If your MCP client reports a reconnect failure such as Cursor `-32000`, the stdio
+process exited before the handshake — usually bad credentials, a wrong endpoint, or
+an API key missing every readable scope the startup probe tries (`tables_db`,
+`users`, `teams`, …). Run the same command in a terminal to see the real error:
+
+```bash
+APPWRITE_PROJECT_ID=<YOUR_PROJECT_ID> \
+APPWRITE_API_KEY=<YOUR_API_KEY> \
+APPWRITE_ENDPOINT=http://localhost:9501/v1 \
+uvx mcp-server-appwrite
+```
+
+For a local Docker Appwrite instance the endpoint is typically
+`http://localhost:9501/v1` (HTTP, not HTTPS). The value must be the API base
+(`…/v1`), not the Console URL.
+
 ## Connect your client
 
 <details open>

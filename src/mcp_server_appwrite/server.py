@@ -157,12 +157,26 @@ def load_environment() -> None:
         load_dotenv(dotenv_path=discovered_dotenv)
 
 
+def _normalize_endpoint(endpoint: str) -> str:
+    """Normalize Appwrite API base URLs used by the stdio transport.
+
+    Trailing slashes break some SDK path joins. A host with no ``/v1`` suffix is
+    a common self-hosted misconfig (Console URL pasted instead of the API base),
+    so append ``/v1`` when the URL has no path.
+    """
+    cleaned = endpoint.strip().rstrip("/")
+    split = urlsplit(cleaned)
+    if split.scheme and split.netloc and split.path in ("", "/"):
+        return f"{cleaned}/v1"
+    return cleaned
+
+
 def load_appwrite_config() -> AppwriteConfig:
     load_environment()
 
     project_id = os.getenv("APPWRITE_PROJECT_ID")
     api_key = os.getenv("APPWRITE_API_KEY")
-    endpoint = os.getenv("APPWRITE_ENDPOINT", DEFAULT_ENDPOINT)
+    endpoint = _normalize_endpoint(os.getenv("APPWRITE_ENDPOINT", DEFAULT_ENDPOINT))
 
     if not project_id or not api_key:
         raise ValueError(
@@ -361,41 +375,59 @@ def _validate_service(service: Service) -> None:
 
 
 def validate_services(tools_manager: ToolManager) -> None:
+    """Probe Appwrite until one configured service succeeds.
+
+    Tries ``VALIDATION_SERVICE_ORDER`` in order so an API key that lacks
+    ``tables_db``/databases scopes can still pass via ``users``, ``teams``,
+    etc. Failing the first probe alone used to kill the stdio process before
+    the MCP handshake, which MCP clients surface as opaque reconnect errors
+    (for example Cursor ``-32000``).
+    """
     if not tools_manager.services:
         return
 
     services_by_name = {
         service.service_name: service for service in tools_manager.services
     }
-    service = next(
-        (
-            services_by_name[service_name]
-            for service_name in VALIDATION_SERVICE_ORDER
-            if service_name in services_by_name
-        ),
-        None,
-    )
-    if service is None:
+    probe_errors: list[str] = []
+
+    for service_name in VALIDATION_SERVICE_ORDER:
+        service = services_by_name.get(service_name)
+        if service is None:
+            continue
+
+        _log_startup(f"Validating startup access via {service.service_name}")
+        try:
+            _validate_service(service)
+        except AppwriteException as exc:
+            probe_errors.append(
+                f"- {service.service_name}: {_format_appwrite_error(exc)}"
+            )
+            _log_startup(
+                f"Startup probe via {service.service_name} failed; trying next service"
+            )
+            continue
+        except Exception as exc:
+            probe_errors.append(f"- {service.service_name}: {exc}")
+            _log_startup(
+                f"Startup probe via {service.service_name} failed; trying next service"
+            )
+            continue
+
+        _log_startup(f"Validated startup access via {service.service_name}")
         return
 
-    _log_startup(f"Validating startup access via {service.service_name}")
+    if not probe_errors:
+        return
 
-    try:
-        _validate_service(service)
-    except AppwriteException as exc:
-        raise RuntimeError(
-            "Appwrite startup validation failed during the minimal startup probe. "
-            "Check your endpoint, project ID, API key, and required scopes.\n"
-            f"- {service.service_name}: {_format_appwrite_error(exc)}"
-        ) from exc
-    except Exception as exc:
-        raise RuntimeError(
-            "Appwrite startup validation failed during the minimal startup probe. "
-            "Check your endpoint, project ID, API key, and required scopes.\n"
-            f"- {service.service_name}: {exc}"
-        ) from exc
-
-    _log_startup(f"Validated startup access via {service.service_name}")
+    raise RuntimeError(
+        "Appwrite startup validation failed during the minimal startup probe. "
+        "Check your endpoint, project ID, API key, and required scopes. "
+        "The API key needs read access to at least one of: "
+        + ", ".join(VALIDATION_SERVICE_ORDER)
+        + ".\n"
+        + "\n".join(probe_errors)
+    )
 
 
 def _unwrap_optional_type(py_type: Any) -> Any:
@@ -1390,13 +1422,20 @@ async def run_stdio() -> None:
         )
 
 
-def main():
+def main() -> int:
     """Entry point: stdio by default, or Streamable HTTP when requested."""
     load_environment()
     args = parse_args()
 
     if args.transport == "stdio":
-        asyncio.run(run_stdio())
+        try:
+            asyncio.run(run_stdio())
+        except (ValueError, RuntimeError) as exc:
+            # Config/validation failures must stay on stderr as a short message.
+            # An uncaught traceback still exits non-zero, but MCP clients only
+            # report a generic reconnect error (e.g. Cursor -32000).
+            print(f"[appwrite-mcp] ERROR: {exc}", file=sys.stderr, flush=True)
+            return 1
         return 0
 
     # Testing flags are read from the environment at request time; fold any
@@ -1410,4 +1449,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

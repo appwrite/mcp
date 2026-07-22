@@ -22,6 +22,7 @@ from mcp_server_appwrite.server import (
     _format_appwrite_error,
     _format_tool_result,
     _mcp_request_context,
+    _normalize_endpoint,
     _prepare_arguments,
     _validate_service,
     build_client,
@@ -31,6 +32,7 @@ from mcp_server_appwrite.server import (
     build_mcp_server,
     build_operator,
     execute_registered_tool,
+    load_appwrite_config,
     parse_args,
     register_services,
     resolve_region_endpoint,
@@ -86,6 +88,49 @@ class ServerHelperTests(unittest.TestCase):
         self.assertEqual(args.transport, "stdio")
         self.assertEqual(args.host, "0.0.0.0")
         self.assertEqual(args.port, 8000)
+
+    def test_normalize_endpoint_strips_slash_and_appends_v1(self):
+        self.assertEqual(
+            _normalize_endpoint("http://localhost:9501/"),
+            "http://localhost:9501/v1",
+        )
+        self.assertEqual(
+            _normalize_endpoint("https://appwrite.example.com"),
+            "https://appwrite.example.com/v1",
+        )
+        self.assertEqual(
+            _normalize_endpoint("https://appwrite.example.com/v1/"),
+            "https://appwrite.example.com/v1",
+        )
+
+    def test_load_appwrite_config_normalizes_endpoint(self):
+        with patch.dict(
+            os.environ,
+            {
+                "APPWRITE_PROJECT_ID": "proj",
+                "APPWRITE_API_KEY": "key",
+                "APPWRITE_ENDPOINT": "http://localhost:9501",
+            },
+            clear=True,
+        ):
+            config = load_appwrite_config()
+
+        self.assertEqual(config.endpoint, "http://localhost:9501/v1")
+
+    def test_main_stdio_prints_clean_error_on_validation_failure(self):
+        async def boom():
+            raise RuntimeError("bad credentials")
+
+        args = parse_args(["--transport", "stdio"])
+        with (
+            patch("mcp_server_appwrite.server.parse_args", return_value=args),
+            patch("mcp_server_appwrite.server.run_stdio", side_effect=boom),
+            patch("sys.stderr", new_callable=io.StringIO) as stderr,
+        ):
+            code = server_module.main()
+
+        self.assertEqual(code, 1)
+        self.assertIn("[appwrite-mcp] ERROR: bad credentials", stderr.getvalue())
 
     def test_parse_args_accepts_env_transport(self):
         with patch.dict(os.environ, {"MCP_TRANSPORT": "http", "PORT": "9000"}):
@@ -457,7 +502,7 @@ class ServerHelperTests(unittest.TestCase):
             )()
         ]
 
-        with self.assertRaisesRegex(RuntimeError, "tables_db: boom"):
+        with self.assertRaisesRegex(RuntimeError, r"tables_db: boom"):
             validate_services(manager)
 
     def test_validate_services_accepts_successful_probe(self):
@@ -505,6 +550,58 @@ class ServerHelperTests(unittest.TestCase):
         ]
 
         validate_services(manager)
+
+    def test_validate_services_falls_through_to_next_service(self):
+        calls = []
+
+        class FailingService:
+            def list(self):
+                calls.append("tables_db")
+                raise Exception("missing databases scope")
+
+        class SuccessfulService:
+            def list(self):
+                calls.append("users")
+                return {"total": 0}
+
+        manager = ToolManager()
+        manager.services = [
+            type(
+                "StubService",
+                (),
+                {"service_name": "tables_db", "service": FailingService()},
+            )(),
+            type(
+                "StubService",
+                (),
+                {"service_name": "users", "service": SuccessfulService()},
+            )(),
+        ]
+
+        validate_services(manager)
+        self.assertEqual(calls, ["tables_db", "users"])
+
+    def test_validate_services_aggregates_failures_across_services(self):
+        class FailingService:
+            def list(self):
+                raise Exception("boom")
+
+        manager = ToolManager()
+        manager.services = [
+            type(
+                "StubService",
+                (),
+                {"service_name": "tables_db", "service": FailingService()},
+            )(),
+            type(
+                "StubService",
+                (),
+                {"service_name": "users", "service": FailingService()},
+            )(),
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, r"tables_db: boom[\s\S]*users: boom"):
+            validate_services(manager)
 
     def test_build_operator_uses_explicit_stdio_client(self):
         tool = types.Tool(
