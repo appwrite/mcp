@@ -21,7 +21,6 @@ from typing import Any, Callable
 
 import mcp.types as types
 
-from . import telemetry
 from .annotations import annotations_for_classification
 from .constants import (
     DATA_DIR,
