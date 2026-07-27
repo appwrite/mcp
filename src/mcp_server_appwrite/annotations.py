@@ -45,6 +45,26 @@ Why ``unknown`` defaults the way it does:
 - ``idempotentHint=false`` is the only honest choice for an unclassified verb.
 - ``openWorldHint=true`` is correct because the Appwrite SDK clearly touches
   the network (Cloud or self-hosted endpoint).
+
+A separate bucket — :func:`annotations_for_gateway` — exists for tools that
+*dispatch* to other tools (e.g. ``appwrite_call_tool``). A gateway cannot
+honestly advertise a static safety profile because the destructive capability
+of every call depends on which sub-tool is invoked at runtime, which the
+gateway decides from caller-supplied input. The right move per the MCP
+2025-06-18 spec is to leave ``destructiveHint`` unset (``None``): MCP's
+default for unset ``destructiveHint`` is ``true``, so clients that gate
+human approval on this hint will prompt the user — exactly matching the
+runtime ``confirm_write=true`` boundary enforced inside the gateway.
+
+Why ``destructiveHint=None`` is not equivalent to ``destructiveHint=False``:
+
+- ``destructiveHint=False`` is a *promise* ("I guarantee this tool is
+  non-destructive"). For a gateway that promise is false: dispatches can be
+  destructive.
+- ``destructiveHint=None`` (unset) tells clients "I cannot promise anything;
+  apply your host policy" — the only honest answer for a dynamic dispatcher.
+
+Flagged P1 by Greptile on appwrite/mcp#87 (operator.py:263) and fixed here.
 """
 
 from __future__ import annotations
@@ -55,8 +75,56 @@ from .constants import READ_VERBS, VERBS
 
 __all__ = [
     "annotations_for_classification",
+    "annotations_for_gateway",
     "classify_tool_name",
 ]
+
+
+def annotations_for_gateway() -> types.ToolAnnotations:
+    """Return the canonical ToolAnnotations for a gateway / dispatcher tool.
+
+    A gateway tool (e.g. ``appwrite_call_tool``) cannot honestly advertise a
+    static safety profile because the destructive capability depends on the
+    sub-tool chosen at runtime, which the gateway decides from caller-supplied
+    input. There is no single read/write/delete answer that covers every call.
+
+    The MCP 2025-06-18 spec treats an unset ``destructiveHint`` as ``True`` by
+    default; clients that use the hint to gate human approval will therefore
+    prompt the user for every gateway call — matching the runtime
+    ``confirm_write=true`` boundary enforced inside the gateway. Clients that
+    ignore the hint see no change in behaviour.
+
+    Why not reuse ``annotations_for_classification("unknown")``:
+
+    - ``unknown`` is for verb-bucket tools whose classification we genuinely
+      cannot derive (``health``, ``graphql``, custom helpers, etc.). Their
+      ``destructiveHint=False`` is a conservative "we have no evidence the verb
+      is destructive" claim.
+    - A gateway makes no such claim: dispatch outcomes are read, write *or*
+      delete. ``destructiveHint=None`` (unset) is the honest signal "the host
+      should apply its policy" rather than "we vouch for non-destructiveness".
+
+    Flagged P1 by Greptile on appwrite/mcp#87 — leaving the hint unset is the
+    correct resolution. Marked by Greptile as "destructiveHint is a
+    Promise; gate must default to true via spec default".
+    """
+    return types.ToolAnnotations(
+        title=None,
+        # A gateway can dispatch any read/write/delete sub-call, so it is by
+        # definition not read-only at the tool level.
+        readOnlyHint=False,
+        # UNSET on purpose: spec default is True, clients gate approval on it,
+        # and any explicit `True`/`False` would be a false promise either way.
+        # Using `None` here is the semantic equivalent of "I don't know; apply
+        # host policy" — see module docstring for the full rationale.
+        destructiveHint=None,
+        # Gateway calls are not idempotent in general: the dispatched sub-tool
+        # may mutate state, and re-dispatching is at least as observable as
+        # dispatching once.
+        idempotentHint=False,
+        # The gateway passes through to live Appwrite Cloud / self-hosted APIs.
+        openWorldHint=True,
+    )
 
 
 def classify_tool_name(tool_name: str) -> str:

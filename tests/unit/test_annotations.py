@@ -12,6 +12,10 @@ test suite asserts that:
    for their semantic role.
 4. The dynamic SDK tool generator (``service.Service.list_tools``) produces
    tools with annotations matching the action verb in their name.
+5. ``annotations_for_gateway`` advertises a *gateway* profile (destructiveHint
+   unset) so MCP clients default to destructive and prompt the human user —
+   matching the ``confirm_write=true`` runtime boundary inside the server
+   (see appwrite/mcp#87 Greptile P1 review).
 
 Why this suite exists:
 
@@ -22,6 +26,11 @@ Why this suite exists:
 - The operator's `_classify_verb` (private) and the annotations module's
   `classify_tool_name` (public) must stay in lock-step; we verify they agree on
   every classification the operator uses.
+- A gateway tool that exposes a static ``destructiveHint=False`` is a security
+  hole: clients use the hint to decide whether to prompt the human user, and
+  the spec default of ``true`` (when unset) is the only safe answer for a
+  dispatcher whose outcomes depend on caller-supplied input. Pinned by the
+  Greptile review on appwrite/mcp#87.
 """
 
 from __future__ import annotations
@@ -38,6 +47,7 @@ from mcp_server_appwrite import (
 )
 from mcp_server_appwrite.annotations import (
     annotations_for_classification,
+    annotations_for_gateway,
     classify_tool_name,
 )
 
@@ -254,6 +264,76 @@ class AnnotationsForClassificationTests(unittest.TestCase):
                 )
 
 
+class AnnotationsForGatewayTests(unittest.TestCase):
+    """``annotations_for_gateway`` advertises the dispatcher profile.
+
+    A gateway cannot honestly claim a static safety profile because the
+    destructive capability depends on the sub-tool the runtime picks from
+    caller-supplied input. The helper leaves ``destructiveHint`` unset so MCP
+    clients default to destructive (the spec default) and prompt the human
+    user — matching the runtime ``confirm_write=true`` gate inside
+    ``_call_hidden_tool``.
+
+    Pinned by Greptile P1 on appwrite/mcp#87: setting
+    ``destructiveHint=False`` here would be a security hole (clients use the
+    hint to gate approval, and the hint is a model-side promise, not the
+    runtime check that ``confirm_write`` provides).
+    """
+
+    def test_destructive_hint_is_unset(self):
+        # The single most important contract: ``destructiveHint`` MUST be
+        # ``None`` so MCP clients default to ``True`` per the 2025-06-18
+        # spec and apply their host policy (typically: prompt the user).
+        # Setting ``False`` would lie about the dispatcher's capabilities
+        # and silently bypass client-side approval gates.
+        ann = annotations_for_gateway()
+        self.assertIsNone(
+            ann.destructiveHint,
+            "annotations_for_gateway().destructiveHint must be None (unset) "
+            "so clients default to destructive and prompt the user.",
+        )
+
+    def test_other_hints_are_explicit(self):
+        # readOnly/idempotent/openWorld MUST be explicit (not None) — the
+        # helper sets them to clear, defensible values without leaving the
+        # spec default to do the talking.
+        ann = annotations_for_gateway()
+        self.assertIsNotNone(ann.readOnlyHint)
+        self.assertIsNotNone(ann.idempotentHint)
+        self.assertIsNotNone(ann.openWorldHint)
+        # And the values themselves:
+        self.assertFalse(ann.readOnlyHint)
+        self.assertFalse(ann.idempotentHint)
+        self.assertTrue(ann.openWorldHint)
+
+    def test_distinct_from_unknown_bucket(self):
+        # The gateway profile MUST differ from the ``unknown`` classification:
+        # - ``unknown`` says "we cannot tell whether this is destructive" (destructive=False).
+        # - ``gateway`` says "we cannot make a static claim at all" (destructive=None).
+        # Conflating them would let a future SDK method accidentally inherit
+        # the gateway's destructive-leak-resistant behaviour, or vice-versa.
+        gateway = annotations_for_gateway()
+        unknown = annotations_for_classification("unknown")
+        self.assertIsNone(gateway.destructiveHint)
+        self.assertIsNotNone(unknown.destructiveHint)
+        self.assertFalse(unknown.destructiveHint)
+
+    def test_returns_fresh_instance_each_call(self):
+        # Each call returns a new ``ToolAnnotations`` instance so callers can
+        # mutate one without affecting later invocations (defensive — MCP
+        # tool objects sometimes accumulate client-side state).
+        a = annotations_for_gateway()
+        b = annotations_for_gateway()
+        self.assertIsNot(a, b)
+
+    def test_title_is_none(self):
+        # Consistent with the classification helpers: ``title`` is left None
+        # because the operator attaches the human-readable name from the
+        # tool's own description rather than threading a separate title.
+        ann = annotations_for_gateway()
+        self.assertIsNone(ann.title)
+
+
 class OperatorClassificationParityTests(unittest.TestCase):
     """``classify_tool_name`` and the operator's ``_classify_verb`` must agree.
 
@@ -332,17 +412,32 @@ class PublicToolSurfaceTests(unittest.TestCase):
         self.assertTrue(ann.idempotentHint)
         self.assertTrue(ann.openWorldHint)
 
-    def test_appwrite_call_tool_is_unknown(self):
-        # The gateway tool can dispatch to write/delete tools, so it cannot
-        # honestly claim readOnlyHint=True. It must claim the conservative
-        # "unknown" bucket — readOnlyHint=False, destructiveHint=False
-        # (the runtime gate is confirm_write=true, not the hint).
+    def test_appwrite_call_tool_is_gateway(self):
+        # The gateway dispatches to Appwrite SDK methods whose read/write/
+        # delete profile depends on caller-supplied input. Per the MCP
+        # 2025-06-18 spec, ``destructiveHint`` is intentionally **unset**
+        # (``None``): the spec defaults an unset hint to ``True``, which is
+        # the only honest answer for a dynamic dispatcher. Clients that gate
+        # human approval on the hint (Claude Code, Gemini MCP) will therefore
+        # prompt the user for every gateway call — matching the runtime
+        # ``confirm_write=true`` boundary in ``_call_hidden_tool``.
+        #
+        # Regression guard: a previous version of this test asserted
+        # ``destructiveHint is False``, which Greptile flagged P1 as a
+        # security hole on appwrite/mcp#87 (clients trust the hint to gate
+        # approval; setting it false advertises the gateway as non-destructive
+        # while it can dispatch delete-classified SDK calls). Do not regress.
         op = self._build_operator()
         tool = next(t for t in op.get_public_tools() if t.name == "appwrite_call_tool")
         ann = tool.annotations
         assert ann is not None
         self.assertFalse(ann.readOnlyHint)
-        self.assertFalse(ann.destructiveHint)
+        self.assertIsNone(
+            ann.destructiveHint,
+            "appwrite_call_tool.gateway.destructiveHint must be unset (None) so "
+            "MCP clients default to destructive and prompt the user; setting "
+            "False would lie about dispatch capability.",
+        )
         self.assertFalse(ann.idempotentHint)
         self.assertTrue(ann.openWorldHint)
 
@@ -442,8 +537,10 @@ class AnnotationsModuleSurfaceTests(unittest.TestCase):
 
     def test_public_api(self):
         self.assertTrue(hasattr(annotations, "annotations_for_classification"))
+        self.assertTrue(hasattr(annotations, "annotations_for_gateway"))
         self.assertTrue(hasattr(annotations, "classify_tool_name"))
         self.assertIn("annotations_for_classification", annotations.__all__)
+        self.assertIn("annotations_for_gateway", annotations.__all__)
         self.assertIn("classify_tool_name", annotations.__all__)
 
 

@@ -14,7 +14,7 @@ import mcp.types as types
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 
 from . import telemetry
-from .annotations import annotations_for_classification
+from .annotations import annotations_for_classification, annotations_for_gateway
 from .constants import (
     CATALOG_URI,
     CREATE_HINTS,
@@ -134,7 +134,15 @@ class Operator:
         # (read / unknown), and `annotations_for_classification` is the single
         # source of truth for the resulting MCP ToolAnnotations.
         read_annotations = annotations_for_classification("read")
-        gateway_annotations = annotations_for_classification("unknown")
+        # `appwrite_call_tool` is a *gateway* — it dispatches to Appwrite SDK
+        # methods whose read/write/delete nature is determined at runtime from
+        # caller-supplied input. We cannot honestly advertise a static safety
+        # profile here; `annotations_for_gateway()` leaves `destructiveHint`
+        # unset so MCP clients default to destructive (their spec default) and
+        # prompt the human user — matching the runtime `confirm_write=true`
+        # gate inside `_call_hidden_tool`. See annotations.py for the full
+        # rationale and the Greptile review that motivated the split.
+        gateway_annotations = annotations_for_gateway()
 
         tools = [
             types.Tool(
@@ -267,11 +275,12 @@ input_schema={
                     "additionalProperties": True,
                 },
                 # Gateway: dispatches to Appwrite SDK methods which may include
-                # writes or deletes. The MCP-level destructiveHint is left false
-                # because the runtime gate (`confirm_write=true` on mutating
-                # calls, enforced in `_call_hidden_tool`) is the real safety
-                # boundary, not the hint. Clients should treat destructiveHint
-                # as advisory for this tool.
+                # writes or deletes. `destructiveHint` is intentionally **unset**
+                # (None) — the MCP 2025-06-18 spec treats unset as `true`, so
+                # clients that gate approval on the hint will prompt the human
+                # user for every gateway call. The runtime `confirm_write=true`
+                # check in `_call_hidden_tool` provides the secondary boundary
+                # inside the server.
                 annotations=gateway_annotations,
             ),
         ]
