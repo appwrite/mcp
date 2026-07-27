@@ -138,6 +138,13 @@ class Operator:
                     "connection can read them. Use this before searching the hidden catalog "
                     "when orienting to a user's Appwrite workspace."
                 ),
+                annotations=types.ToolAnnotations(
+                    title="Get Appwrite Context",
+                    readOnlyHint=True,  # reads account/org/project metadata only; no writes
+                    destructiveHint=False,  # never deletes or modifies resources
+                    idempotentHint=True,  # same input returns same context for the lifetime of a session
+                    openWorldHint=True,  # calls Appwrite Cloud APIs (or self-hosted endpoint) for live data
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -176,6 +183,13 @@ class Operator:
                 description=(
                     "Search the hidden Appwrite tool catalog by natural language query. "
                     "Use this before appwrite_call_tool when using the Appwrite operator surface."
+                ),
+                annotations=types.ToolAnnotations(
+                    title="Search Appwrite Tools",
+                    readOnlyHint=True,  # searches the in-memory catalog; no API calls
+                    destructiveHint=False,  # never deletes or modifies resources
+                    idempotentHint=True,  # catalog is built once per session; queries are deterministic
+                    openWorldHint=False,  # purely local search over the prebuilt tool catalog
                 ),
                 input_schema={
                     "type": "object",
@@ -216,6 +230,13 @@ class Operator:
                     "Call a hidden Appwrite tool by name. Put Appwrite parameters inside `arguments`. "
                     "Mutating tools require confirm_write=true. Hidden Appwrite parameters accept "
                     "canonical snake_case names and common camelCase aliases."
+                ),
+                annotations=types.ToolAnnotations(
+                    title="Call Appwrite Tool",
+                    readOnlyHint=False,  # dispatches to Appwrite SDK methods which may include writes/deletes
+                    destructiveHint=False,  # set explicitly: the runtime gate is confirm_write=true on mutating calls, not the MCP-level hint
+                    idempotentHint=False,  # calls may have side effects; repeated calls can produce different results (e.g. create_document)
+                    openWorldHint=True,  # dispatches to live Appwrite APIs (Cloud or self-hosted)
                 ),
                 input_schema={
                     "type": "object",

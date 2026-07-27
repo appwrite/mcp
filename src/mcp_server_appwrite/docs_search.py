@@ -128,7 +128,14 @@ class DocsSearch:
                 "(databases, auth, storage, functions, messaging, sites, and more). "
                 "This does not require a project_id."
             ),
-            input_schema={
+            annotations=types.ToolAnnotations(
+                title="Appwrite Documentation Search",
+                readOnlyHint=True,  # searches the docs index; no project writes
+                destructiveHint=False,  # never deletes or modifies resources
+                idempotentHint=True,  # docs index is immutable within a release; same query returns same pages
+                openWorldHint=False,  # purely local search over the prebuilt docs index
+            ),
+            inputSchema={
                 "type": "object",
                 "properties": {
                     "query": {
