@@ -8,6 +8,8 @@ from appwrite.input_file import InputFile
 from docstring_parser import parse
 from mcp.types import Tool
 
+from .annotations import annotations_for_classification, classify_tool_name
+
 
 class Service:
     """Base class for all Appwrite services"""
@@ -187,6 +189,11 @@ class Service:
                 if param.default is param.empty:
                     required.append(param_name)
 
+            # Derive MCP safety annotations from the tool's action verb.
+            # The classification is computed locally (not from operator.py) to
+            # avoid a circular import between service.py and operator.py; the
+            # two paths are kept in lock-step by `tests.unit.test_annotations`.
+            tool_classification = classify_tool_name(tool_name)
             tool_definition = Tool(
                 name=tool_name,
                 description=docstring.short_description or "No description available",
@@ -196,6 +203,7 @@ class Service:
                     "required": required,
                     "additionalProperties": False,
                 },
+                annotations=annotations_for_classification(tool_classification),
             )
 
             tools[tool_name] = {

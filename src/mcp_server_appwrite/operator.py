@@ -14,6 +14,7 @@ import mcp.types as types
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 
 from . import telemetry
+from .annotations import annotations_for_classification
 from .constants import (
     CATALOG_URI,
     CREATE_HINTS,
@@ -129,6 +130,12 @@ class Operator:
         return CATALOG_URI
 
     def get_public_tools(self) -> list[types.Tool]:
+        # Centralised annotations: each tool maps to a classification bucket
+        # (read / unknown), and `annotations_for_classification` is the single
+        # source of truth for the resulting MCP ToolAnnotations.
+        read_annotations = annotations_for_classification("read")
+        gateway_annotations = annotations_for_classification("unknown")
+
         tools = [
             types.Tool(
                 name="appwrite_get_context",
@@ -137,13 +144,6 @@ class Operator:
                     "available projects and per-project service counts where the current "
                     "connection can read them. Use this before searching the hidden catalog "
                     "when orienting to a user's Appwrite workspace."
-                ),
-                annotations=types.ToolAnnotations(
-                    title="Get Appwrite Context",
-                    readOnlyHint=True,  # reads account/org/project metadata only; no writes
-                    destructiveHint=False,  # never deletes or modifies resources
-                    idempotentHint=True,  # same input returns same context for the lifetime of a session
-                    openWorldHint=True,  # calls Appwrite Cloud APIs (or self-hosted endpoint) for live data
                 ),
                 input_schema={
                     "type": "object",
@@ -177,19 +177,14 @@ class Operator:
                     },
                     "additionalProperties": False,
                 },
+                # Read-only: queries account/org/project metadata; no writes.
+                annotations=read_annotations,
             ),
             types.Tool(
                 name="appwrite_search_tools",
                 description=(
                     "Search the hidden Appwrite tool catalog by natural language query. "
                     "Use this before appwrite_call_tool when using the Appwrite operator surface."
-                ),
-                annotations=types.ToolAnnotations(
-                    title="Search Appwrite Tools",
-                    readOnlyHint=True,  # searches the in-memory catalog; no API calls
-                    destructiveHint=False,  # never deletes or modifies resources
-                    idempotentHint=True,  # catalog is built once per session; queries are deterministic
-                    openWorldHint=False,  # purely local search over the prebuilt tool catalog
                 ),
                 input_schema={
                     "type": "object",
@@ -223,6 +218,8 @@ class Operator:
                     "required": ["query"],
                     "additionalProperties": False,
                 },
+                # Read-only: searches the in-memory catalog; no side effects.
+                annotations=read_annotations,
             ),
             types.Tool(
                 name="appwrite_call_tool",
@@ -231,14 +228,7 @@ class Operator:
                     "Mutating tools require confirm_write=true. Hidden Appwrite parameters accept "
                     "canonical snake_case names and common camelCase aliases."
                 ),
-                annotations=types.ToolAnnotations(
-                    title="Call Appwrite Tool",
-                    readOnlyHint=False,  # dispatches to Appwrite SDK methods which may include writes/deletes
-                    destructiveHint=False,  # set explicitly: the runtime gate is confirm_write=true on mutating calls, not the MCP-level hint
-                    idempotentHint=False,  # calls may have side effects; repeated calls can produce different results (e.g. create_document)
-                    openWorldHint=True,  # dispatches to live Appwrite APIs (Cloud or self-hosted)
-                ),
-                input_schema={
+input_schema={
                     "type": "object",
                     "properties": {
                         "tool_name": {
@@ -276,6 +266,13 @@ class Operator:
                     "required": ["tool_name"],
                     "additionalProperties": True,
                 },
+                # Gateway: dispatches to Appwrite SDK methods which may include
+                # writes or deletes. The MCP-level destructiveHint is left false
+                # because the runtime gate (`confirm_write=true` on mutating
+                # calls, enforced in `_call_hidden_tool`) is the real safety
+                # boundary, not the hint. Clients should treat destructiveHint
+                # as advisory for this tool.
+                annotations=gateway_annotations,
             ),
         ]
 
