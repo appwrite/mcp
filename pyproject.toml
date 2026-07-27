@@ -35,6 +35,12 @@ dev = [
     "pyright>=1.1.390",
     # Only needed by scripts/build_docs_index.py to (re)build the docs index.
     "pyyaml>=6.0",
+    # Optional local runner. The CI matrix (AGENTS.md) drives the unit suite
+    # with `python -m unittest discover -s tests/unit` and the integration
+    # suite on same-repo pushes only; pytest is installed here purely so a
+    # developer who types `uv run pytest tests/unit` after `uv sync --group
+    # dev` doesn't get a "command not found" surprise.
+    "pytest>=8.0",
 ]
 
 [project.scripts]
@@ -65,8 +71,20 @@ venv = ".venv"
 typeCheckingMode = "basic"
 
 [tool.pytest.ini_options]
+# Place `src` on the import path so `pytest` can resolve `mcp_server_appwrite`
+# without a manual `PYTHONPATH` override. The CI unit job does not depend on
+# this — it uses `python -m unittest discover -s tests/unit` per AGENTS.md.
 pythonpath = ["src"]
-testpaths = ["tests"]
+# Default discovery root is narrowed to the **unit** suite so a bare
+# `uv run pytest` from a fresh `uv sync --group dev` does *not* traverse
+# `tests/integration/`. The integration suite needs `--extra integration`
+# and live Appwrite credentials (see AGENTS.md §Local development / §Unit
+# tests); letting pytest pick it up by default would import-error on the
+# integration extras in a fresh clone and, worse, hit live Appwrite
+# endpoints when credentials are present. Run it explicitly with
+# `uv sync --extra integration && uv run --extra integration pytest -m
+# integration tests/integration` when ready.
+testpaths = ["tests/unit"]
 
 [build-system]
 requires = ["hatchling"]
