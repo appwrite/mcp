@@ -17,7 +17,7 @@ def make_tool(
     return types.Tool(
         name=name,
         description=description,
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {"parameter": {"type": "string"}},
             "required": required or [],
@@ -374,6 +374,65 @@ class NoOpTests(unittest.TestCase):
 
     def test_session_window_constant_positive(self):
         self.assertGreater(ACTIVE_WINDOW_SECONDS, 0)
+
+
+class StatelessConnectionTests(TelemetryHarness):
+    def test_set_request_identity_returns_true_only_on_new_window(self):
+        self.assertTrue(
+            telemetry.set_request_identity(
+                client_name="cursor",
+                subject="user-a",
+                protocol_version="2026-07-28",
+            )
+        )
+        self.assertFalse(
+            telemetry.set_request_identity(
+                client_name="cursor",
+                subject="user-a",
+                protocol_version="2026-07-28",
+            )
+        )
+        self.assertTrue(
+            telemetry.set_request_identity(
+                client_name="claude-code",
+                subject="user-a",
+                protocol_version="2026-07-28",
+            )
+        )
+        self.assertFalse(
+            telemetry.set_request_identity(client_name="cursor", subject=None)
+        )
+
+    def test_record_stateless_connection_counts_once_per_window(self):
+        telemetry.record_stateless_connection(
+            client_name="cursor",
+            protocol_version="2026-07-28",
+            subject="user-a",
+        )
+        telemetry.record_stateless_connection(
+            client_name="cursor",
+            protocol_version="2026-07-28",
+            subject="user-a",
+        )
+        handshakes = self.points("mcp.handshake")
+        self.assertEqual(sum(p.value for p in handshakes), 1)
+        self.assertAttr(handshakes[0], "status", "success")
+        self.assertAttr(handshakes[0], "client_id", "cursor")
+
+    def test_record_stateless_connection_noop_when_disabled(self):
+        telemetry._enabled = False
+        with telemetry._active_lock:
+            telemetry._active_users.clear()
+            telemetry._active_sessions.clear()
+            telemetry._active_versions.clear()
+        telemetry.record_stateless_connection(
+            client_name="cursor",
+            protocol_version="2026-07-28",
+            subject="user-a",
+        )
+        self.assertEqual(len(telemetry._active_users), 0)
+        self.assertEqual(len(telemetry._active_sessions), 0)
+        self.assertEqual(self.points("mcp.handshake"), [])
 
 
 if __name__ == "__main__":

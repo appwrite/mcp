@@ -128,7 +128,7 @@ class DocsSearch:
                 "(databases, auth, storage, functions, messaging, sites, and more). "
                 "This does not require a project_id."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "query": {

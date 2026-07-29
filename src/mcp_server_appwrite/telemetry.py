@@ -366,10 +366,14 @@ def set_request_identity(
     client_name: str | None,
     subject: str | None,
     protocol_version: str | None = None,
-) -> None:
+) -> bool:
     """Bind the current request's client/user identity to the calling context and
     refresh the rolling activity stores. Contextvars propagate into the worker
-    threads that execute tools, so record helpers can label by client."""
+    threads that execute tools, so record helpers can label by client.
+
+    Returns True only when a new ``(client, subject)`` activity window was
+    opened. Callers that ignore the return value are unaffected.
+    """
     # Never downgrade an identity already bound for this request (e.g. by the
     # HTTP-layer middleware) to "unknown".
     client = _normalize_client_name(client_name) or _request_client.get()
@@ -377,19 +381,22 @@ def set_request_identity(
     if not _enabled:
         # The rolling stores are only pruned by the gauge callbacks, which never
         # run while disabled — do not let them grow.
-        return
+        return False
     now = time.monotonic()
     expiry = now + ACTIVE_WINDOW_SECONDS
+    started = False
     with _active_lock:
         if subject:
             _active_users[subject] = expiry
             session = _active_sessions.get((client, subject))
             if session is None:
                 _active_sessions[(client, subject)] = [now, expiry]
+                started = True
             else:
                 session[1] = expiry
             if protocol_version:
                 _active_versions[(protocol_version, client, subject)] = expiry
+    return started
 
 
 def current_client_id() -> str:
@@ -563,6 +570,26 @@ def record_connection(
         if len(_seen_sessions) > 100_000:
             _seen_sessions.clear()
             _seen_sessions.add(session_id)
+    client = _normalize_client_name(client_name) or "unknown"
+    _safe_add("handshake", 1, {"status": "success", "client_id": client})
+
+
+def record_stateless_connection(
+    *,
+    client_name: str | None,
+    protocol_version: str | None,
+    subject: str | None,
+) -> None:
+    """Modern (2026-07-28) clients never send ``initialize``, so there is no
+    handshake to count. Count one success per activity session instead — the
+    same window whose expiry emits the ``idle`` disconnect."""
+    started = set_request_identity(
+        client_name=client_name,
+        subject=subject,
+        protocol_version=protocol_version,
+    )
+    if not (_enabled and started):
+        return
     client = _normalize_client_name(client_name) or "unknown"
     _safe_add("handshake", 1, {"status": "success", "client_id": client})
 

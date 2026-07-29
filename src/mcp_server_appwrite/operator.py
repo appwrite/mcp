@@ -12,7 +12,6 @@ from uuid import uuid4
 
 import mcp.types as types
 from mcp.server.lowlevel.helper_types import ReadResourceContents
-from pydantic import AnyUrl
 
 from . import telemetry
 from .constants import (
@@ -139,7 +138,7 @@ class Operator:
                     "connection can read them. Use this before searching the hidden catalog "
                     "when orienting to a user's Appwrite workspace."
                 ),
-                inputSchema={
+                input_schema={
                     "type": "object",
                     "properties": {
                         "project_id": {
@@ -178,7 +177,7 @@ class Operator:
                     "Search the hidden Appwrite tool catalog by natural language query. "
                     "Use this before appwrite_call_tool when using the Appwrite operator surface."
                 ),
-                inputSchema={
+                input_schema={
                     "type": "object",
                     "properties": {
                         "query": {
@@ -218,7 +217,7 @@ class Operator:
                     "Mutating tools require confirm_write=true. Hidden Appwrite parameters accept "
                     "canonical snake_case names and common camelCase aliases."
                 ),
-                inputSchema={
+                input_schema={
                     "type": "object",
                     "properties": {
                         "tool_name": {
@@ -319,10 +318,10 @@ class Operator:
     def list_resources(self) -> list[types.Resource]:
         resources = [
             types.Resource(
-                uri=AnyUrl(CATALOG_URI),
+                uri=CATALOG_URI,
                 name="Appwrite Hidden Tool Catalog",
                 description="Full internal Appwrite tool catalog used by the Appwrite operator surface.",
-                mimeType="application/json",
+                mime_type="application/json",
                 size=len(self._cached_catalog_json.encode("utf-8")),
             )
         ]
@@ -330,10 +329,10 @@ class Operator:
         for stored_result in self._result_store.list():
             resources.append(
                 types.Resource(
-                    uri=AnyUrl(stored_result.uri),
+                    uri=stored_result.uri,
                     name=f"{stored_result.tool_name} result",
                     description="Stored Appwrite tool result. Read this resource to inspect the full output.",
-                    mimeType="application/json",
+                    mime_type="application/json",
                     size=len(stored_result.text.encode("utf-8")),
                 )
             )
@@ -343,10 +342,10 @@ class Operator:
     def list_resource_templates(self) -> list[types.ResourceTemplate]:
         return [
             types.ResourceTemplate(
-                uriTemplate=RESULT_URI_TEMPLATE,
+                uri_template=RESULT_URI_TEMPLATE,
                 name="Stored Appwrite Tool Result",
                 description="Stored result payloads created by appwrite_call_tool.",
-                mimeType="application/json",
+                mime_type="application/json",
             )
         ]
 
@@ -373,7 +372,7 @@ class Operator:
         entries: list[CatalogEntry] = []
         for tool in self._tools_manager.get_all_tools():
             parsed = _parse_tool_name(tool.name)
-            input_schema = tool.inputSchema or {}
+            input_schema = tool.input_schema or {}
             entries.append(
                 CatalogEntry(
                     action_verb=parsed["action_verb"],
@@ -788,7 +787,7 @@ def _content_size(content: list[ToolContent]) -> int:
 
 def _serialize_content(content: list[ToolContent]) -> str:
     return json.dumps(
-        [item.model_dump(mode="json") for item in content],
+        [item.model_dump(mode="json", by_alias=True) for item in content],
         indent=2,
         ensure_ascii=False,
     )
@@ -799,8 +798,8 @@ def _summarize_content_item(item: ToolContent) -> str:
         preview = item.text.strip().splitlines()[0] if item.text.strip() else "text"
         return f"text:{preview[:60]}"
     if isinstance(item, types.ImageContent):
-        return f"image:{item.mimeType}"
-    return f"resource:{item.resource.mimeType or 'application/octet-stream'}"
+        return f"image:{item.mime_type}"
+    return f"resource:{item.resource.mime_type or 'application/octet-stream'}"
 
 
 def _now_iso() -> str:

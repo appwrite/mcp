@@ -8,7 +8,7 @@ class SitesIntegrationTests(LiveIntegrationTestCase):
     def test_sites_smoke(self):
         runner = self.new_runner()
         site_id = runner.unique_id("site")
-        variable_id: str | None = None
+        variable_id = runner.unique_id("var")
 
         try:
             runner.call("sites_list")
@@ -25,11 +25,17 @@ class SitesIntegrationTests(LiveIntegrationTestCase):
                 },
             )
             runner.call("sites_get", {"site_id": site_id})
-            variable = runner.call(
+            # SDK ≥18.1 requires a client-supplied variable_id (same pattern as
+            # site_id / document_id); pass unique() or a custom ID.
+            runner.call(
                 "sites_create_variable",
-                {"site_id": site_id, "key": "SITE_ENV", "value": "smoke"},
+                {
+                    "site_id": site_id,
+                    "variable_id": variable_id,
+                    "key": "SITE_ENV",
+                    "value": "smoke",
+                },
             )
-            variable_id = variable["$id"]
             runner.call(
                 "sites_get_variable", {"site_id": site_id, "variable_id": variable_id}
             )

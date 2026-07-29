@@ -414,7 +414,7 @@ class ServerHelperTests(unittest.TestCase):
 
         self.assertEqual(len(result), 1)
         self.assertIsInstance(result[0], types.EmbeddedResource)
-        self.assertEqual(result[0].resource.mimeType, "application/octet-stream")
+        self.assertEqual(result[0].resource.mime_type, "application/octet-stream")
 
     def test_format_appwrite_error_truncates_large_html_body(self):
         exc = AppwriteException("<!DOCTYPE html>" + ("x" * 1000), 404, None)
@@ -426,21 +426,23 @@ class ServerHelperTests(unittest.TestCase):
         self.assertTrue(message.endswith("..."))
 
     def test_mcp_request_context_extracts_client_metadata(self):
-        server = Mock()
-        server.request_context.session.client_params = type(
+        ctx = Mock()
+        ctx.protocol_version = "2025-06-18"
+        ctx.meta = None
+        ctx.session.client_params = type(
             "Params",
             (),
             {
-                "clientInfo": type(
+                "client_info": type(
                     "ClientInfo",
                     (),
                     {"name": "codex", "version": "1.2.3"},
                 )(),
-                "protocolVersion": "2025-06-18",
+                "protocol_version": "2025-06-18",
             },
         )()
 
-        context = _mcp_request_context(server)
+        context = _mcp_request_context(ctx)
 
         self.assertEqual(
             context.tags,
@@ -461,14 +463,114 @@ class ServerHelperTests(unittest.TestCase):
             },
         )
 
-    def test_mcp_request_context_tolerates_missing_client_metadata(self):
-        server = Mock()
-        server.request_context.session.client_params = None
+    def test_mcp_request_context_falls_back_to_meta_client_info(self):
+        from mcp.types import CLIENT_INFO_META_KEY
 
-        context = _mcp_request_context(server)
+        ctx = Mock()
+        ctx.protocol_version = "2026-07-28"
+        ctx.session.client_params = None
+        ctx.meta = {
+            CLIENT_INFO_META_KEY: {"name": "cursor", "version": "2.0"},
+        }
+
+        context = _mcp_request_context(ctx)
+
+        self.assertEqual(
+            context.tags,
+            {
+                "mcp.client.name": "cursor",
+                "mcp.client.version": "2.0",
+                "mcp.protocol_version": "2026-07-28",
+            },
+        )
+
+    def test_mcp_request_context_tolerates_missing_client_metadata(self):
+        ctx = Mock()
+        ctx.protocol_version = None
+        ctx.meta = None
+        ctx.session.client_params = None
+
+        context = _mcp_request_context(ctx)
 
         self.assertEqual(context.tags, {})
         self.assertEqual(context.context, {})
+
+    def test_call_tool_handler_returns_is_error_for_confirm_write_refusal(self):
+        """v2 no longer wraps exceptions; the handler must return is_error=True."""
+
+        class RefusingOperator:
+            def has_public_tool(self, name):
+                return True
+
+            def execute_public_tool(self, name, arguments):
+                raise RuntimeError(
+                    "Tool tables_db_create is write. Re-run appwrite_call_tool "
+                    "with confirm_write=true if you intend to mutate Appwrite state."
+                )
+
+            def get_public_tools(self):
+                return []
+
+            def list_resources(self):
+                return []
+
+            def list_resource_templates(self):
+                return []
+
+            def read_resource(self, uri):
+                raise ValueError(f"Unknown resource URI: {uri}")
+
+        server = build_mcp_server(RefusingOperator(), transport="stdio")
+        entry = server.get_request_handler("tools/call")
+        self.assertIsNotNone(entry)
+
+        async def run_check():
+            ctx = Mock()
+            ctx.protocol_version = "2025-11-25"
+            ctx.meta = None
+            ctx.session.client_params = None
+            params = types.CallToolRequestParams(
+                name="appwrite_call_tool",
+                arguments={"tool_name": "tables_db_create"},
+            )
+            result = await entry.handler(ctx, params)
+            self.assertIsInstance(result, types.CallToolResult)
+            self.assertTrue(result.is_error)
+            self.assertIn("confirm_write=true", result.content[0].text)
+
+        asyncio.run(run_check())
+
+    def test_call_tool_handler_returns_is_error_for_unknown_tool(self):
+        class EmptyOperator:
+            def has_public_tool(self, name):
+                return False
+
+            def get_public_tools(self):
+                return []
+
+            def list_resources(self):
+                return []
+
+            def list_resource_templates(self):
+                return []
+
+        server = build_mcp_server(EmptyOperator(), transport="stdio")
+        entry = server.get_request_handler("tools/call")
+
+        async def run_check():
+            ctx = Mock()
+            ctx.protocol_version = "2025-11-25"
+            ctx.meta = None
+            ctx.session.client_params = None
+            params = types.CallToolRequestParams(
+                name="made_up_tool",
+                arguments={},
+            )
+            result = await entry.handler(ctx, params)
+            self.assertTrue(result.is_error)
+            self.assertIn("Tool made_up_tool not found", result.content[0].text)
+
+        asyncio.run(run_check())
 
     def test_register_services_returns_fresh_manager(self):
         manager_a = register_services(object())

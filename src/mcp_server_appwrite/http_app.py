@@ -34,6 +34,8 @@ import httpx
 from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser, BearerAuthBackend
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from mcp.types import CLIENT_INFO_META_KEY, PROTOCOL_VERSION_META_KEY
+from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.authentication import AuthenticationMiddleware
@@ -241,16 +243,47 @@ def _find_initialize_params(body: bytes) -> dict | None:
     return None
 
 
+def _find_request_meta(body: bytes) -> dict | None:
+    """Return ``params._meta`` from a single JSON-RPC request object, if present."""
+    try:
+        payload = json.loads(body)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    params = payload.get("params")
+    if not isinstance(params, dict):
+        return None
+    meta = params.get("_meta")
+    return meta if isinstance(meta, dict) else None
+
+
+def _is_modern_request(scope: Scope) -> bool:
+    """Match the SDK's era-routing predicate: a present ``MCP-Protocol-Version``
+    that is not a handshake-era revision goes to the modern path."""
+    version = _header(scope, b"mcp-protocol-version")
+    return version is not None and version not in HANDSHAKE_PROTOCOL_VERSIONS
+
+
 class MCPIdentityMiddleware:
     """Bind client/user identity for every authenticated MCP request.
 
     The hosted transport is stateless: each POST is its own MCP session, so
     ``session.client_params`` is only populated on the request that carries the
     ``initialize`` message — which the SDK answers internally, before any of our
-    handlers run. This middleware peeks at the JSON-RPC body instead: an
-    ``initialize`` request is counted as a connection/handshake (with clientInfo),
-    and every other request binds identity from the ``mcp-protocol-version``
-    header and User-Agent so tool metrics carry a real ``client_id``."""
+    handlers run. This middleware peeks at the JSON-RPC body instead:
+
+    * An ``initialize`` request (2025-era) is counted as a connection/handshake
+      with ``clientInfo``.
+    * A modern (2026-07-28) request — protocol version not in the handshake set —
+      has no ``initialize``, so one handshake is counted per newly-opened
+      activity session (the same ``(client, subject)`` window whose idle expiry
+      emits the disconnect). Client identity comes from ``params._meta`` when
+      present, else User-Agent. Resuming after the idle window, or landing on a
+      different replica, counts again.
+    * Every other request binds identity from the ``mcp-protocol-version``
+      header and User-Agent so tool metrics carry a real ``client_id``.
+    """
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -296,6 +329,27 @@ class MCPIdentityMiddleware:
                 client_name=client_info.get("name")
                 or _client_from_user_agent(_header(scope, b"user-agent")),
                 protocol_version=params.get("protocolVersion"),
+                subject=subject,
+            )
+            return
+        if _is_modern_request(scope):
+            meta = _find_request_meta(body) if body else None
+            client_info = (
+                meta.get(CLIENT_INFO_META_KEY) if isinstance(meta, dict) else None
+            )
+            client_name = None
+            if isinstance(client_info, dict):
+                name = client_info.get("name")
+                client_name = name if isinstance(name, str) else None
+            protocol_version = None
+            if isinstance(meta, dict):
+                version = meta.get(PROTOCOL_VERSION_META_KEY)
+                protocol_version = version if isinstance(version, str) else None
+            telemetry.record_stateless_connection(
+                client_name=client_name
+                or _client_from_user_agent(_header(scope, b"user-agent")),
+                protocol_version=protocol_version
+                or _header(scope, b"mcp-protocol-version"),
                 subject=subject,
             )
             return
