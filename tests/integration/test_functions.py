@@ -7,7 +7,7 @@ class FunctionsIntegrationTests(LiveIntegrationTestCase):
     def test_functions_smoke(self):
         runner = self.new_runner()
         function_id = runner.unique_id("fn")
-        variable_id: str | None = None
+        variable_id = runner.unique_id("var")
 
         try:
             runner.call("functions_list")
@@ -25,11 +25,17 @@ class FunctionsIntegrationTests(LiveIntegrationTestCase):
                 },
             )
             runner.call("functions_get", {"function_id": function_id})
-            variable = runner.call(
+            # SDK ≥18.1 requires a client-supplied variable_id (same pattern as
+            # function_id / document_id); pass unique() or a custom ID.
+            runner.call(
                 "functions_create_variable",
-                {"function_id": function_id, "key": "GREETING", "value": "hello"},
+                {
+                    "function_id": function_id,
+                    "variable_id": variable_id,
+                    "key": "GREETING",
+                    "value": "hello",
+                },
             )
-            variable_id = variable["$id"]
             runner.call(
                 "functions_get_variable",
                 {"function_id": function_id, "variable_id": variable_id},

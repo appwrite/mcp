@@ -21,7 +21,7 @@ from decimal import Decimal
 from enum import Enum
 from pathlib import Path
 from types import UnionType
-from typing import Any, Union, get_args, get_origin
+from typing import Any, Union, cast, get_args, get_origin
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 import httpx
@@ -34,11 +34,11 @@ from appwrite.exception import AppwriteException
 from appwrite.input_file import InputFile
 from appwrite.service import Service as _SdkService
 from dotenv import find_dotenv, load_dotenv
-from mcp.server import NotificationOptions, Server
+from mcp import MCPError
+from mcp.server import NotificationOptions, Server, ServerRequestContext
 from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.models import InitializationOptions
-from pydantic import AnyUrl
+from mcp.types import CLIENT_INFO_META_KEY, INVALID_PARAMS
 
 from . import error_monitoring, flags, telemetry
 from .constants import (
@@ -685,7 +685,7 @@ def _expected_argument_names(tool_info: dict) -> set[str]:
         return parameter_names
 
     definition = tool_info.get("definition")
-    input_schema = definition.inputSchema if definition is not None else None
+    input_schema = definition.input_schema if definition is not None else None
     properties = (
         input_schema.get("properties", {}) if isinstance(input_schema, dict) else {}
     )
@@ -916,15 +916,15 @@ def _format_binary_result(
     mime_type = _guess_mime_type(data, tool_name, arguments)
     encoded = base64.b64encode(data).decode("ascii")
     if mime_type.startswith("image/"):
-        return [types.ImageContent(type="image", data=encoded, mimeType=mime_type)]
+        return [types.ImageContent(type="image", data=encoded, mime_type=mime_type)]
 
     return [
         types.EmbeddedResource(
             type="resource",
             resource=types.BlobResourceContents(
-                uri=AnyUrl(f"appwrite://tool/{tool_name}"),
+                uri=f"appwrite://tool/{tool_name}",
                 blob=encoded,
-                mimeType=mime_type,
+                mime_type=mime_type,
             ),
         )
     ]
@@ -1001,20 +1001,13 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
     _configure_uploads(transport)
     instructions = build_instructions(transport)
 
-    server = Server(
-        "Appwrite MCP Server",
-        version=SERVER_VERSION,
-        instructions=instructions,
-        website_url=SERVER_WEBSITE_URL,
-        icons=[types.Icon(src=SERVER_ICON_URL, mimeType="image/svg+xml")],
-    )
-
-    @server.list_tools()
-    async def handle_list_tools() -> list[types.Tool]:
-        _emit_initialize(server)
+    async def handle_list_tools(
+        ctx: ServerRequestContext, params: types.PaginatedRequestParams | None
+    ) -> types.ListToolsResult:
+        _emit_initialize(ctx)
         start = time.monotonic()
         try:
-            result = operator.get_public_tools()
+            tools = operator.get_public_tools()
         except Exception as exc:
             telemetry.record_message(
                 "tools/list",
@@ -1023,7 +1016,7 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
                 error_code=_jsonrpc_error_code(exc),
                 error_message=type(exc).__name__,
             )
-            mcp_context = _mcp_request_context(server)
+            mcp_context = _mcp_request_context(ctx)
             error_monitoring.capture_exception(
                 exc,
                 tags={
@@ -1042,19 +1035,20 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
             )
             raise
         telemetry.record_message("tools/list", "success", time.monotonic() - start)
-        return result
+        return types.ListToolsResult(tools=tools)
 
-    @server.call_tool()
     async def handle_call_tool(
-        name: str, arguments: dict | None
-    ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
-        _emit_initialize(server)
+        ctx: ServerRequestContext, params: types.CallToolRequestParams
+    ) -> types.CallToolResult:
+        _emit_initialize(ctx)
         start = time.monotonic()
+        name = params.name
+        arguments = params.arguments or {}
         try:
             if not operator.has_public_tool(name):
                 telemetry.record_hallucination(name)
                 raise ValueError(f"Tool {name} not found")
-            result = await _execute_public_tool_for_transport(
+            content = await _execute_public_tool_for_transport(
                 operator, name, arguments, transport
             )
         except Exception as exc:
@@ -1065,7 +1059,7 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
                 error_code=_jsonrpc_error_code(exc),
                 error_message=type(exc).__name__,
             )
-            mcp_context = _mcp_request_context(server)
+            mcp_context = _mcp_request_context(ctx)
             error_monitoring.capture_exception(
                 exc,
                 tags={
@@ -1086,16 +1080,23 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
                 },
                 transaction=f"mcp.tools/call:{name}",
             )
-            raise
+            # v2 no longer wraps handler exceptions into is_error=True tool
+            # results. Return one explicitly so the model still sees refusals
+            # (confirm_write) and Appwrite API errors.
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text=str(exc))],
+                is_error=True,
+            )
         telemetry.record_message("tools/call", "success", time.monotonic() - start)
-        return result
+        return types.CallToolResult(content=cast(list[types.ContentBlock], content))
 
-    @server.list_resources()
-    async def handle_list_resources() -> list[types.Resource]:
-        _emit_initialize(server)
+    async def handle_list_resources(
+        ctx: ServerRequestContext, params: types.PaginatedRequestParams | None
+    ) -> types.ListResourcesResult:
+        _emit_initialize(ctx)
         start = time.monotonic()
         try:
-            result = operator.list_resources()
+            resources = operator.list_resources()
         except Exception as exc:
             telemetry.record_message(
                 "resources/list",
@@ -1104,7 +1105,7 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
                 error_code=_jsonrpc_error_code(exc),
                 error_message=type(exc).__name__,
             )
-            mcp_context = _mcp_request_context(server)
+            mcp_context = _mcp_request_context(ctx)
             error_monitoring.capture_exception(
                 exc,
                 tags={
@@ -1123,20 +1124,52 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
             )
             raise
         telemetry.record_message("resources/list", "success", time.monotonic() - start)
-        return result
+        return types.ListResourcesResult(resources=resources)
 
-    @server.list_resource_templates()
-    async def handle_list_resource_templates() -> list[types.ResourceTemplate]:
-        return operator.list_resource_templates()
+    async def handle_list_resource_templates(
+        ctx: ServerRequestContext, params: types.PaginatedRequestParams | None
+    ) -> types.ListResourceTemplatesResult:
+        return types.ListResourceTemplatesResult(
+            resource_templates=operator.list_resource_templates()
+        )
 
-    @server.read_resource()
-    async def handle_read_resource(uri) -> list[ReadResourceContents]:
-        _emit_initialize(server)
+    async def handle_read_resource(
+        ctx: ServerRequestContext, params: types.ReadResourceRequestParams
+    ) -> types.ReadResourceResult:
+        _emit_initialize(ctx)
         start = time.monotonic()
-        uri_str = str(uri)
+        uri_str = str(params.uri)
         resource_type = "catalog" if uri_str == CATALOG_URI else "result"
         try:
-            result = operator.read_resource(uri_str)
+            contents = operator.read_resource(uri_str)
+        except ValueError as exc:
+            telemetry.record_message(
+                "resources/read",
+                "error",
+                time.monotonic() - start,
+                error_code=_jsonrpc_error_code(exc),
+                error_message=type(exc).__name__,
+            )
+            mcp_context = _mcp_request_context(ctx)
+            error_monitoring.capture_exception(
+                exc,
+                tags={
+                    "mcp.method": "resources/read",
+                    "resource.type": resource_type,
+                    "transport": transport,
+                    **mcp_context.tags,
+                },
+                context={
+                    "mcp": {
+                        "method": "resources/read",
+                        "resource_type": resource_type,
+                        "transport": transport,
+                        **mcp_context.context,
+                    },
+                },
+                transaction=f"mcp.resources/read:{resource_type}",
+            )
+            raise MCPError(INVALID_PARAMS, str(exc)) from exc
         except Exception as exc:
             telemetry.record_message(
                 "resources/read",
@@ -1145,7 +1178,7 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
                 error_code=_jsonrpc_error_code(exc),
                 error_message=type(exc).__name__,
             )
-            mcp_context = _mcp_request_context(server)
+            mcp_context = _mcp_request_context(ctx)
             error_monitoring.capture_exception(
                 exc,
                 tags={
@@ -1171,13 +1204,37 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
                 if isinstance(item.content, bytes)
                 else len(str(item.content).encode("utf-8"))
             )
-            for item in result
+            for item in contents
         )
         telemetry.record_message_size("sent", size_bytes)
         telemetry.record_message("resources/read", "success", time.monotonic() - start)
-        return result
+        return types.ReadResourceResult(
+            contents=[
+                types.TextResourceContents(
+                    uri=uri_str,
+                    text=(
+                        item.content.decode("utf-8")
+                        if isinstance(item.content, bytes)
+                        else str(item.content)
+                    ),
+                    mime_type=item.mime_type,
+                )
+                for item in contents
+            ]
+        )
 
-    return server
+    return Server(
+        "Appwrite MCP Server",
+        version=SERVER_VERSION,
+        instructions=instructions,
+        website_url=SERVER_WEBSITE_URL,
+        icons=[types.Icon(src=SERVER_ICON_URL, mime_type="image/svg+xml")],
+        on_list_tools=handle_list_tools,
+        on_call_tool=handle_call_tool,
+        on_list_resources=handle_list_resources,
+        on_list_resource_templates=handle_list_resource_templates,
+        on_read_resource=handle_read_resource,
+    )
 
 
 def _jsonrpc_error_code(exc: Exception) -> int:
@@ -1190,18 +1247,47 @@ class McpRequestContext:
     context: dict[str, Any]
 
 
-def _mcp_request_context(server: Server) -> McpRequestContext:
+def _client_identity_from_ctx(
+    ctx: ServerRequestContext,
+) -> tuple[str | None, str | None, str | None]:
+    """Resolve client name/version/protocol from a request context.
+
+    Prefers the 2025-era handshake ``client_params`` when present; falls back to
+    the 2026-era ``_meta`` clientInfo key. ``protocol_version`` always comes from
+    ``ctx.protocol_version``, which both eras populate.
+    """
+    client_name: str | None = None
+    client_version: str | None = None
+    protocol_version: str | None = getattr(ctx, "protocol_version", None) or None
+
     try:
-        params = server.request_context.session.client_params
+        params = ctx.session.client_params
+    except Exception:
+        params = None
+
+    if params is not None:
+        client_info = getattr(params, "client_info", None)
+        client_name = getattr(client_info, "name", None)
+        client_version = getattr(client_info, "version", None)
+        if not protocol_version:
+            protocol_version = getattr(params, "protocol_version", None)
+
+    if client_name is None and isinstance(ctx.meta, dict):
+        meta_info = ctx.meta.get(CLIENT_INFO_META_KEY)
+        if isinstance(meta_info, dict):
+            name = meta_info.get("name")
+            version = meta_info.get("version")
+            client_name = name if isinstance(name, str) else None
+            client_version = version if isinstance(version, str) else None
+
+    return client_name, client_version, protocol_version
+
+
+def _mcp_request_context(ctx: ServerRequestContext) -> McpRequestContext:
+    try:
+        client_name, client_version, protocol_version = _client_identity_from_ctx(ctx)
     except Exception:
         return McpRequestContext(tags={}, context={})
-    if params is None:
-        return McpRequestContext(tags={}, context={})
-
-    client_info = getattr(params, "clientInfo", None)
-    client_name = getattr(client_info, "name", None)
-    client_version = getattr(client_info, "version", None)
-    protocol_version = getattr(params, "protocolVersion", None)
 
     tags = {
         key: value
@@ -1273,21 +1359,19 @@ async def _execute_public_tool_for_transport(
     )
 
 
-def _emit_initialize(server: Server) -> None:
-    """Refine the request identity from the MCP session's negotiated client params
-    when they are available. On the hosted stateless transport they usually are
-    not — each POST is its own session, and connections/handshakes are counted by
-    ``MCPIdentityMiddleware`` in the HTTP layer instead. Best-effort: any failure
-    to read the request context is swallowed."""
+def _emit_initialize(ctx: ServerRequestContext) -> None:
+    """Refine the request identity from negotiated client params / ``_meta``.
+
+    On the hosted stateless transport, 2025-era ``client_params`` are usually
+    absent — each POST is its own session, and connections/handshakes are counted
+    by ``MCPIdentityMiddleware`` in the HTTP layer instead. 2026-era clients carry
+    identity in ``_meta`` instead. Best-effort: any failure is swallowed.
+    """
     try:
-        session = server.request_context.session
-        params = session.client_params
+        client_name, _client_version, protocol_version = _client_identity_from_ctx(ctx)
     except Exception:
         return
-    if params is None:
-        return
 
-    client_info = getattr(params, "clientInfo", None)
     subject = None
     try:
         access_token = get_access_token()
@@ -1298,9 +1382,9 @@ def _emit_initialize(server: Server) -> None:
         pass
 
     telemetry.set_request_identity(
-        client_name=getattr(client_info, "name", None),
+        client_name=client_name,
         subject=subject,
-        protocol_version=getattr(params, "protocolVersion", None),
+        protocol_version=protocol_version,
     )
 
 

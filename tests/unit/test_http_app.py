@@ -16,6 +16,8 @@ from mcp_server_appwrite.http_app import (
     RequireBearer,
     _client_from_user_agent,
     _find_initialize_params,
+    _find_request_meta,
+    _is_modern_request,
     _send_401,
     authorization_server_metadata_endpoint,
     build_app,
@@ -492,6 +494,60 @@ class FindInitializeParamsTests(unittest.TestCase):
         self.assertIsNone(_find_initialize_params(b"not json"))
 
 
+class FindRequestMetaTests(unittest.TestCase):
+    def test_extracts_meta(self):
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "appwrite_get_context",
+                    "_meta": {
+                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                        "io.modelcontextprotocol/clientInfo": {"name": "cursor"},
+                    },
+                },
+            }
+        ).encode()
+        meta = _find_request_meta(body)
+        assert meta is not None
+        self.assertEqual(meta["io.modelcontextprotocol/protocolVersion"], "2026-07-28")
+
+    def test_missing_or_invalid(self):
+        self.assertIsNone(
+            _find_request_meta(b'{"jsonrpc":"2.0","method":"tools/call"}')
+        )
+        self.assertIsNone(
+            _find_request_meta(b'{"jsonrpc":"2.0","method":"tools/call","params":[]}')
+        )
+        self.assertIsNone(_find_request_meta(b"[{}]"))
+        self.assertIsNone(_find_request_meta(b"not json"))
+
+
+class IsModernRequestTests(unittest.TestCase):
+    def test_modern_version(self):
+        self.assertTrue(
+            _is_modern_request(
+                {
+                    "type": "http",
+                    "headers": [(b"mcp-protocol-version", b"2026-07-28")],
+                }
+            )
+        )
+
+    def test_handshake_and_missing(self):
+        self.assertFalse(
+            _is_modern_request(
+                {
+                    "type": "http",
+                    "headers": [(b"mcp-protocol-version", b"2025-06-18")],
+                }
+            )
+        )
+        self.assertFalse(_is_modern_request({"type": "http", "headers": []}))
+
+
 class MCPIdentityMiddlewareTests(unittest.TestCase):
     def setUp(self):
         self.reader = InMemoryMetricReader()
@@ -508,8 +564,15 @@ class MCPIdentityMiddlewareTests(unittest.TestCase):
             telemetry._active_users.clear()
             telemetry._active_sessions.clear()
             telemetry._active_versions.clear()
+            telemetry._seen_sessions.clear()
 
-    def _run(self, body: bytes, headers: list[tuple[bytes, bytes]]):
+    def _run(
+        self,
+        body: bytes,
+        headers: list[tuple[bytes, bytes]],
+        *,
+        subject: str | None = None,
+    ):
         downstream_bodies: list[bytes] = []
 
         async def app(scope, receive, send):
@@ -517,7 +580,19 @@ class MCPIdentityMiddlewareTests(unittest.TestCase):
             message = await receive()
             downstream_bodies.append(message.get("body", b""))
 
-        scope = {"type": "http", "method": "POST", "path": "/mcp", "headers": headers}
+        scope: dict = {
+            "type": "http",
+            "method": "POST",
+            "path": "/mcp",
+            "headers": headers,
+        }
+        if subject is not None:
+            token = mock.Mock()
+            token.subject = subject
+            token.claims = {"sub": subject}
+            user = mock.Mock()
+            user.access_token = token
+            scope["user"] = user
         received = [{"type": "http.request", "body": body, "more_body": False}]
 
         async def receive():
@@ -569,6 +644,71 @@ class MCPIdentityMiddlewareTests(unittest.TestCase):
         self.assertEqual(self.seen_client, ["cursor"])
         # No handshake counted for non-initialize requests.
         self.assertEqual(self._points("mcp.handshake"), [])
+
+    def test_modern_request_records_handshake_from_meta(self):
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "appwrite_get_context",
+                    "arguments": {},
+                    "_meta": {
+                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                        "io.modelcontextprotocol/clientCapabilities": {},
+                        "io.modelcontextprotocol/clientInfo": {
+                            "name": "claude-code",
+                            "version": "2.0",
+                        },
+                    },
+                },
+            }
+        ).encode()
+        headers = [
+            (b"user-agent", b"other-agent/1.0"),
+            (b"mcp-protocol-version", b"2026-07-28"),
+            (b"mcp-method", b"tools/call"),
+        ]
+        self._run(body, headers, subject="user-a")
+        handshakes = self._points("mcp.handshake")
+        self.assertEqual(len(handshakes), 1)
+        self.assertEqual(handshakes[0].attributes.get("client_id"), "claude-code")
+        self.assertEqual(handshakes[0].attributes.get("status"), "success")
+        self.assertEqual(self.seen_client, ["claude-code"])
+
+        # Same activity window — no second handshake.
+        self._run(body, headers, subject="user-a")
+        handshakes = self._points("mcp.handshake")
+        self.assertEqual(sum(p.value for p in handshakes), 1)
+
+    def test_modern_request_falls_back_to_user_agent(self):
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list",
+                "params": {
+                    "_meta": {
+                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                        "io.modelcontextprotocol/clientCapabilities": {},
+                    },
+                },
+            }
+        ).encode()
+        self._run(
+            body,
+            [
+                (b"user-agent", b"cursor/1.5 (linux)"),
+                (b"mcp-protocol-version", b"2026-07-28"),
+                (b"mcp-method", b"tools/list"),
+            ],
+            subject="user-b",
+        )
+        handshakes = self._points("mcp.handshake")
+        self.assertEqual(len(handshakes), 1)
+        self.assertEqual(handshakes[0].attributes.get("client_id"), "cursor")
+        self.assertEqual(self.seen_client, ["cursor"])
 
 
 if __name__ == "__main__":

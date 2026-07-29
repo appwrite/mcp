@@ -13,7 +13,7 @@ def make_tool(
     return types.Tool(
         name=name,
         description=description,
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "parameter": {"type": "string"},
@@ -33,7 +33,7 @@ class FakeDocsSearch:
         return types.Tool(
             name="appwrite_search_docs",
             description="Search the Appwrite documentation.",
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {"query": {"type": "string"}},
                 "required": ["query"],
@@ -315,7 +315,7 @@ class OperatorTests(unittest.TestCase):
         runtime = Operator(
             manager,
             lambda name, arguments, *_: [
-                types.ImageContent(type="image", data="aW1hZ2U=", mimeType="image/png")
+                types.ImageContent(type="image", data="aW1hZ2U=", mime_type="image/png")
             ],
             store_results=False,
         )
@@ -327,7 +327,7 @@ class OperatorTests(unittest.TestCase):
 
         self.assertEqual(len(result), 1)
         self.assertIsInstance(result[0], types.ImageContent)
-        self.assertEqual(result[0].mimeType, "image/png")
+        self.assertEqual(result[0].mime_type, "image/png")
 
 
 class ResultStoreTests(unittest.TestCase):

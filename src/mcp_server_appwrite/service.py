@@ -190,7 +190,7 @@ class Service:
             tool_definition = Tool(
                 name=tool_name,
                 description=docstring.short_description or "No description available",
-                inputSchema={
+                input_schema={
                     "type": "object",
                     "properties": properties,
                     "required": required,

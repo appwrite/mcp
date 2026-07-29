@@ -51,7 +51,7 @@ class ServiceSchemaTests(unittest.TestCase):
     def test_generates_enum_and_input_file_schema(self):
         tools = Service(ExampleService(), "example").list_tools()
         tool = tools["example_create"]
-        schema = tool["definition"].inputSchema
+        schema = tool["definition"].input_schema
 
         self.assertEqual(tool["definition"].description, "Create example resource.")
         self.assertNotIn("on_progress", schema["properties"])

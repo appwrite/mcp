@@ -77,7 +77,11 @@ CACHE_TTL_SECONDS = 300.0
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version",
+    # Mcp-Method / Mcp-Name are required on 2026-07-28 Streamable HTTP (SEP-2243).
+    "Access-Control-Allow-Headers": (
+        "Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version, "
+        "Mcp-Method, Mcp-Name"
+    ),
     "Access-Control-Expose-Headers": "Mcp-Session-Id, WWW-Authenticate, Link",
 }
 
