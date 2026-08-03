@@ -8,14 +8,18 @@ from mcp_server_appwrite.tool_manager import ToolManager
 
 
 def make_tool(
-    name: str, description: str, required: list[str] | None = None
+    name: str,
+    description: str,
+    required: list[str] | None = None,
+    properties: dict | None = None,
 ) -> types.Tool:
     return types.Tool(
         name=name,
         description=description,
         input_schema={
             "type": "object",
-            "properties": {
+            "properties": properties
+            or {
                 "parameter": {"type": "string"},
             },
             "required": required or [],
@@ -61,13 +65,54 @@ class OperatorTests(unittest.TestCase):
             },
             "tables_db_create": {
                 "definition": make_tool(
-                    "tables_db_create", "Create a database.", ["database_id"]
+                    "tables_db_create",
+                    "Create a database.",
+                    ["database_id", "name"],
+                    properties={
+                        "database_id": {
+                            "type": "string",
+                            "description": (
+                                "Unique Id. Choose a custom ID or generate a "
+                                "random ID with `ID.unique()`."
+                            ),
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Database name. Max length: 128 chars.",
+                        },
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "Is the database enabled?",
+                        },
+                    },
                 ),
                 "function": object(),
                 "parameter_types": {},
             },
             "functions_list": {
                 "definition": make_tool("functions_list", "List all functions."),
+                "function": object(),
+                "parameter_types": {},
+            },
+            "users_list": {
+                "definition": make_tool(
+                    "users_list",
+                    "Get a list of all the project's users.",
+                    properties={
+                        "queries": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Array of query strings generated using the "
+                                "Query class provided by the SDK."
+                            ),
+                        },
+                        "search": {
+                            "type": "string",
+                            "description": "Search term to filter your list results.",
+                        },
+                    },
+                ),
                 "function": object(),
                 "parameter_types": {},
             },
@@ -84,7 +129,35 @@ class OperatorTests(unittest.TestCase):
                 "definition": make_tool(
                     "tables_db_create_string_column",
                     "Create a string column in a table.",
-                    ["database_id", "table_id", "key", "size"],
+                    ["database_id", "table_id", "key", "size", "required"],
+                    properties={
+                        "database_id": {
+                            "type": "string",
+                            "description": "Database ID.",
+                        },
+                        "table_id": {
+                            "type": "string",
+                            "description": "Table ID.",
+                        },
+                        "key": {
+                            "type": "string",
+                            "description": "Column Key.",
+                        },
+                        "size": {
+                            "type": "number",
+                            "description": (
+                                "Column size for text columns, in number of characters."
+                            ),
+                        },
+                        "required": {
+                            "type": "boolean",
+                            "description": "Is column required?",
+                        },
+                        "default": {
+                            "type": "string",
+                            "description": "Default value for column when not provided.",
+                        },
+                    },
                 ),
                 "function": object(),
                 "parameter_types": {},
@@ -210,6 +283,46 @@ class OperatorTests(unittest.TestCase):
 
         self.assertEqual(len(result), 1)
         self.assertIn("tables_db_create_string_column", result[0].text)
+
+    def test_search_tools_includes_parameter_schemas(self):
+        runtime = self.make_runtime(lambda name, arguments, *_: [])
+
+        users_result = runtime.execute_public_tool(
+            "appwrite_search_tools",
+            {"query": "list users", "service_hints": "users"},
+        )
+        self.assertIn("users_list", users_result[0].text)
+        self.assertIn("params:", users_result[0].text)
+        self.assertIn(
+            "queries (array[string], optional): Array of query strings generated",
+            users_result[0].text,
+        )
+
+        create_result = runtime.execute_public_tool(
+            "appwrite_search_tools",
+            {"query": "create database", "service_hints": "tables_db"},
+        )
+        self.assertIn("tables_db_create", create_result[0].text)
+        self.assertIn(
+            "database_id (string, required): Unique Id. Choose a custom ID",
+            create_result[0].text,
+        )
+        self.assertIn("name (string, required): Database name.", create_result[0].text)
+        self.assertIn("enabled (boolean, optional)", create_result[0].text)
+
+        column_result = runtime.execute_public_tool(
+            "appwrite_search_tools",
+            {"query": "create string column"},
+        )
+        self.assertIn("tables_db_create_string_column", column_result[0].text)
+        self.assertIn(
+            "size (number, required): Column size for text columns",
+            column_result[0].text,
+        )
+        # Required params are listed before optional ones.
+        size_pos = column_result[0].text.index("size (number, required)")
+        default_pos = column_result[0].text.index("default (string, optional)")
+        self.assertLess(size_pos, default_pos)
 
     def test_search_tools_scores_get_queries_against_get_tools(self):
         runtime = self.make_runtime(lambda name, arguments, *_: [])
