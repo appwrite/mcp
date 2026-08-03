@@ -28,11 +28,11 @@ import httpx
 import mcp.server.stdio
 import mcp.types as types
 from anyio import to_thread
-from appwrite.client import Client
-from appwrite.enums.browser import Browser
-from appwrite.exception import AppwriteException
-from appwrite.input_file import InputFile
-from appwrite.service import Service as _SdkService
+from appwrite_console.client import Client
+from appwrite_console.enums.browser import Browser
+from appwrite_console.exception import AppwriteException
+from appwrite_console.input_file import InputFile
+from appwrite_console.service import Service as _SdkService
 from dotenv import find_dotenv, load_dotenv
 from mcp import MCPError
 from mcp.server import NotificationOptions, Server, ServerRequestContext
@@ -41,6 +41,13 @@ from mcp.server.models import InitializationOptions
 from mcp.types import CLIENT_INFO_META_KEY, INVALID_PARAMS
 
 from . import error_monitoring, flags, telemetry
+from .catalog_policy import (
+    API_KEY_PROFILE,
+    OAUTH_PROFILE,
+    CatalogProfile,
+    context_scope,
+    method_allowed,
+)
 from .constants import (
     CACHE_TTL_SECONDS,
     CATALOG_URI,
@@ -76,14 +83,14 @@ def _discover_service_classes() -> dict[str, type]:
     prefix. The catalog/schema is built once from these classes; at execution time
     the matching class is re-instantiated on a per-request client (see
     ``resolve_client``)."""
-    import appwrite.services as services_pkg
+    import appwrite_console.services as services_pkg
 
     discovered: dict[str, type] = {}
     for module_info in pkgutil.iter_modules(services_pkg.__path__):
         name = module_info.name
         if name in EXCLUDED_SERVICES:
             continue
-        module = importlib.import_module(f"appwrite.services.{name}")
+        module = importlib.import_module(f"appwrite_console.services.{name}")
         for _, cls in inspect.getmembers(module, inspect.isclass):
             if (
                 issubclass(cls, _SdkService)
@@ -239,17 +246,19 @@ def build_client_for_request(
     client = Client()
     client.set_endpoint(endpoint or os.getenv("APPWRITE_ENDPOINT", DEFAULT_ENDPOINT))
     client.set_project(target_project or project_id)
-    client.add_header("Authorization", f"Bearer {bearer_token}")
+    client.set_bearer(bearer_token)
     client = _configure_mcp_client_headers(client)
     if target_project:
+        # Generated service methods read the project from client config. Keep the
+        # global header too for raw client.call() paths used by this server.
         client.add_header("x-appwrite-project", target_project)
         # Admin mode lets the console-issued token be recognized on another project
         # (as the owner) instead of falling back to guest. It is only valid when
         # targeting a real project — the API rejects admin mode on the console
         # project itself — so it is gated on target_project, not organization_id.
-        client.add_header("x-appwrite-mode", "admin")
+        client.set_mode("admin")
     if organization_id:
-        client.add_header("x-appwrite-organization", organization_id)
+        client.set_organization(organization_id)
     return client
 
 
@@ -349,10 +358,29 @@ def resolve_client(
     )
 
 
-def register_services(client: Client) -> ToolManager:
+def register_services(
+    client: Client, *, profile: CatalogProfile = OAUTH_PROFILE
+) -> ToolManager:
     tools_manager = ToolManager()
     for name, service_cls in SERVICE_CLASSES.items():
-        tools_manager.register_service(Service(service_cls(client), name))
+        service_instance = service_cls(client)
+        allowed_methods = frozenset(
+            method_name
+            for method_name, method in inspect.getmembers(
+                service_instance, predicate=inspect.ismethod
+            )
+            if method_allowed(profile, name, method_name)
+        )
+        if not allowed_methods:
+            continue
+        tools_manager.register_service(
+            Service(
+                service_instance,
+                name,
+                allowed_methods=allowed_methods,
+                context_scope=context_scope(name),
+            )
+        )
     return tools_manager
 
 
@@ -1421,6 +1449,7 @@ def build_operator(
         ),
         context_provider=lambda arguments: _get_context_for_request(arguments, client),
         docs_search=docs_search,
+        require_target_context=client is None,
         store_results=store_results,
     )
 
@@ -1472,7 +1501,7 @@ def _get_context_for_request(
 def build_catalog_tools_manager() -> ToolManager:
     """Build the tool catalog/schema once from SDK introspection. Credentials arrive
     per request (OAuth) rather than at startup, so a credential-less client suffices."""
-    return register_services(build_introspection_client())
+    return register_services(build_introspection_client(), profile=OAUTH_PROFILE)
 
 
 async def run_stdio() -> None:
@@ -1482,7 +1511,7 @@ async def run_stdio() -> None:
     client = build_client(config)
     _log_startup(f"Using Appwrite endpoint: {config.endpoint}")
     _log_startup("Registering Appwrite services")
-    tools_manager = register_services(client)
+    tools_manager = register_services(client, profile=API_KEY_PROFILE)
     _log_startup("Starting Appwrite service validation")
     validate_services(tools_manager)
     _log_startup("Building Appwrite operator surface")

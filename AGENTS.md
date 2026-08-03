@@ -49,8 +49,9 @@ needs no credentials. Dashboards live in the `dashboards` repo under `MCP/`.
 
 The server boots in a compact workflow: the client sees up to 4 tools
 (`appwrite_get_context`, `appwrite_search_tools`, `appwrite_call_tool`, and
-optionally `appwrite_search_docs`), while the full Appwrite catalog (25 services)
-stays internal and is searched at runtime. Mutating hidden tools require
+optionally `appwrite_search_docs`), while the full OAuth Appwrite catalog (38
+services) stays internal and is searched at runtime. API-key stdio uses a filtered
+26-service catalog. Mutating hidden tools require
 `confirm_write=true`. Large outputs are stored as MCP resources and returned as a
 preview + resource URI.
 

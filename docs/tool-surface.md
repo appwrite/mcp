@@ -18,9 +18,9 @@ flowchart LR
     ST -.searches.-> CAT
     CT -.invokes.-> CAT
 
-    subgraph CAT[Internal catalog — 25 services]
+    subgraph CAT[Internal catalog — authentication-aware]
         direction LR
-        K[account · databases · functions<br/>storage · teams · users · …]
+        K[OAuth: 38 services / 981 tools<br/>API key: 26 services / 647 tools]
     end
 
     CT -->|large output| R[(MCP resource<br/>preview + URI)]
@@ -43,7 +43,16 @@ flowchart LR
 - **Large outputs** are stored as an MCP resource and returned as preview text
   plus a resource URI.
 - **Writes** through hidden mutating tools require `confirm_write=true`.
-- **Access** is gated per-route by the scopes the OAuth token was granted, not by
-  the catalog.
-- **Registration** is automatic — every service the installed SDK ships becomes a
-  catalog entry.
+- **Target context** is included in search results as `context=console`,
+  `context=organization`, or `context=project`. Hosted calls enforce the required
+  top-level `organization_id` or `project_id` before making a request.
+- **Access** is still gated per-route by the scopes granted to the OAuth token.
+- **Hosted OAuth** registers all 38 services and 981 methods shipped by
+  `appwrite-console` 0.2.1. This adds console control-plane services including
+  projects, organizations, domains, migrations, dedicated databases, usage, VCS,
+  vectors, WAF, notifications, and regions.
+- **API-key stdio** deliberately registers only the 647 project-key-compatible
+  methods across 26 services. It includes the new DocumentsDB, VectorsDB, and
+  text-embeddings APIs, while console administration methods remain hidden.
+- **Registration** remains SDK-driven, with the authentication profile policy
+  applied while the internal catalog is built.

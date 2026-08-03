@@ -10,11 +10,12 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import mcp.types as types
-from appwrite.enums.browser import Browser
-from appwrite.exception import AppwriteException
-from appwrite.input_file import InputFile
+from appwrite_console.enums.browser import Browser
+from appwrite_console.exception import AppwriteException
+from appwrite_console.input_file import InputFile
 
 from mcp_server_appwrite import server as server_module
+from mcp_server_appwrite.catalog_policy import API_KEY_PROFILE, OAUTH_PROFILE
 from mcp_server_appwrite.server import (
     _coerce_argument,
     _configure_uploads,
@@ -573,8 +574,8 @@ class ServerHelperTests(unittest.TestCase):
         asyncio.run(run_check())
 
     def test_register_services_returns_fresh_manager(self):
-        manager_a = register_services(object())
-        manager_b = register_services(object())
+        manager_a = register_services(object(), profile=OAUTH_PROFILE)
+        manager_b = register_services(object(), profile=OAUTH_PROFILE)
 
         self.assertIsNot(manager_a, manager_b)
         self.assertEqual(len(manager_a.get_all_tools()), len(manager_b.get_all_tools()))
@@ -584,8 +585,28 @@ class ServerHelperTests(unittest.TestCase):
             {service.service_name for service in manager_a.services},
             set(SERVICE_CLASSES),
         )
-        # Every advertised service is registered (the SDK currently ships 14).
-        self.assertGreaterEqual(len(manager_a.services), 14)
+        self.assertEqual(len(manager_a.services), 38)
+        self.assertEqual(len(manager_a.get_all_tools()), 981)
+
+    def test_api_key_profile_only_advertises_server_capabilities(self):
+        manager = register_services(object(), profile=API_KEY_PROFILE)
+        service_names = {service.service_name for service in manager.services}
+        tool_names = {tool.name for tool in manager.get_all_tools()}
+
+        self.assertEqual(len(manager.services), 26)
+        self.assertEqual(len(tool_names), 647)
+        self.assertIn("documents_db_list", tool_names)
+        self.assertIn("vectors_db_list", tool_names)
+        self.assertIn("embeddings_create_text_embeddings", tool_names)
+        self.assertNotIn("domains", service_names)
+        self.assertNotIn("organizations", service_names)
+        self.assertNotIn("documents_db_list_operations", tool_names)
+        self.assertNotIn("account_list_invoices", tool_names)
+
+    def test_console_sdk_internal_model_type_is_never_advertised(self):
+        manager = register_services(object(), profile=OAUTH_PROFILE)
+        for tool in manager.get_all_tools():
+            self.assertNotIn("model_type", tool.input_schema["properties"])
 
     def test_validate_services_raises_with_service_name(self):
         class FailingSdkService:

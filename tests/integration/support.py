@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from mcp_server_appwrite.catalog_policy import API_KEY_PROFILE
 from mcp_server_appwrite.docs_search import DocsSearch
 from mcp_server_appwrite.operator import Operator
 from mcp_server_appwrite.server import (
@@ -49,7 +50,7 @@ class ToolOutcome:
 class LiveSurfaceRunner:
     def __init__(self):
         self.client = build_client()
-        self.manager = register_services(self.client)
+        self.manager = register_services(self.client, profile=API_KEY_PROFILE)
         docs_search = DocsSearch()
         self.docs_available = docs_search.available
         self.runtime = Operator(

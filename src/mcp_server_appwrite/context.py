@@ -3,12 +3,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from appwrite.client import Client
-from appwrite.exception import AppwriteException
-from appwrite.models.project import Project
-from appwrite.models.team import Team
-from appwrite.models.user import User
-from appwrite.query import Query
+from appwrite_console.client import Client
+from appwrite_console.exception import AppwriteException
+from appwrite_console.models.project import Project
+from appwrite_console.models.team import Team
+from appwrite_console.models.user import User
+from appwrite_console.query import Query
 
 from .constants import REDACTED_KEYS, SERVICE_PROBES
 

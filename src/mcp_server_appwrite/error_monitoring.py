@@ -13,7 +13,7 @@ import sys
 from collections.abc import Mapping
 from typing import Any
 
-from appwrite.exception import AppwriteException
+from appwrite_console.exception import AppwriteException
 
 _enabled = False
 

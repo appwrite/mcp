@@ -2,7 +2,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from appwrite.exception import AppwriteException
+from appwrite_console.exception import AppwriteException
 
 from mcp_server_appwrite import error_monitoring
 
