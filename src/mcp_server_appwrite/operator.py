@@ -175,6 +175,8 @@ class Operator:
                 name="appwrite_search_tools",
                 description=(
                     "Search the hidden Appwrite tool catalog by natural language query. "
+                    "Matches include parameter schemas (name, type, required/optional, "
+                    "description) to use with appwrite_call_tool. "
                     "Use this before appwrite_call_tool when using the Appwrite operator surface."
                 ),
                 input_schema={
@@ -444,9 +446,11 @@ class Operator:
                     if match.entry.description
                     else ""
                 )
+                params = _format_params_block(match.entry)
                 lines.append(
                     f"{index}. tool={match.entry.tool_name} service={match.entry.service_name} "
-                    f"class={match.entry.classification} required={required}{missing} score={match.score}{description}"
+                    f"class={match.entry.classification} required={required}{missing} "
+                    f"score={match.score}{description}{params}"
                 )
             lines.append("")
             lines.append(
@@ -620,6 +624,56 @@ def _get_missing_required(
 def _has_schema_property(entry: CatalogEntry, key: str) -> bool:
     properties = entry.input_schema.get("properties")
     return isinstance(properties, dict) and key in properties
+
+
+_PARAM_DESCRIPTION_LIMIT = 120
+
+
+def _json_schema_type_label(schema: dict[str, Any] | Any) -> str:
+    if not isinstance(schema, dict):
+        return "string"
+
+    schema_type = schema.get("type")
+    if schema_type == "array":
+        items = schema.get("items")
+        if isinstance(items, dict):
+            item_type = items.get("type")
+            if isinstance(item_type, str) and item_type:
+                return f"array[{item_type}]"
+        return "array"
+
+    if isinstance(schema_type, str) and schema_type:
+        return schema_type
+
+    return "string"
+
+
+def _format_params_block(entry: CatalogEntry) -> str:
+    properties = entry.input_schema.get("properties")
+    if not isinstance(properties, dict) or not properties:
+        return ""
+
+    required = set(entry.required)
+    ordered_names = [name for name in entry.required if name in properties]
+    ordered_names.extend(name for name in properties if name not in required)
+
+    lines = ["\n   params:"]
+    for name in ordered_names:
+        prop_schema = properties.get(name)
+        if not isinstance(prop_schema, dict):
+            prop_schema = {}
+        type_label = _json_schema_type_label(prop_schema)
+        requirement = "required" if name in required else "optional"
+        description = str(prop_schema.get("description") or "").strip()
+        if description:
+            lines.append(
+                f"     - {name} ({type_label}, {requirement}): "
+                f"{description[:_PARAM_DESCRIPTION_LIMIT]}"
+            )
+        else:
+            lines.append(f"     - {name} ({type_label}, {requirement})")
+
+    return "\n".join(lines)
 
 
 def _compute_score(
