@@ -42,6 +42,7 @@ ContextProvider = Callable[[dict[str, Any]], dict[str, Any]]
 class CatalogEntry:
     action_verb: str
     classification: str
+    context_scope: str
     description: str
     input_schema: dict[str, Any]
     required: list[str]
@@ -110,6 +111,7 @@ class Operator:
         docs_search: DocsSearch | None = None,
         context_provider: ContextProvider | None = None,
         preview_threshold: int = PREVIEW_THRESHOLD,
+        require_target_context: bool = False,
         store_results: bool = True,
         search_limit: int = SEARCH_LIMIT,
     ):
@@ -118,6 +120,7 @@ class Operator:
         self._docs_search = docs_search
         self._context_provider = context_provider
         self._preview_threshold = preview_threshold
+        self._require_target_context = require_target_context
         self._store_results = store_results
         self._search_limit = search_limit
         self._result_store = ResultStore()
@@ -240,8 +243,9 @@ class Operator:
                                 "Appwrite project ID to act on (sent as X-Appwrite-Project). "
                                 "The connection authenticates against the Appwrite console, which "
                                 "can list your projects/organizations but holds no data — so "
-                                "project-scoped tools (TablesDB, tables, users, storage, "
-                                "functions, messaging, sites) require this. Discover a project "
+                                "project-scoped tools (databases, documents, vectors, users, "
+                                "storage, functions, messaging, sites, usage, VCS, and WAF) "
+                                "require this. Search results identify each tool's context. Discover a project "
                                 "first, then pass its id. Omit for console/account-level tools."
                             ),
                         },
@@ -375,10 +379,12 @@ class Operator:
         for tool in self._tools_manager.get_all_tools():
             parsed = _parse_tool_name(tool.name)
             input_schema = tool.input_schema or {}
+            tool_info = self._tools_manager.get_tool(tool.name) or {}
             entries.append(
                 CatalogEntry(
                     action_verb=parsed["action_verb"],
                     classification=parsed["classification"],
+                    context_scope=str(tool_info.get("context_scope", "console")),
                     description=tool.description or "",
                     input_schema=input_schema,
                     required=list(input_schema.get("required", [])),
@@ -395,6 +401,7 @@ class Operator:
                 {
                     "action_verb": entry.action_verb,
                     "classification": entry.classification,
+                    "context_scope": entry.context_scope,
                     "description": entry.description,
                     "required": entry.required,
                     "resource_name": entry.resource_name,
@@ -449,7 +456,8 @@ class Operator:
                 params = _format_params_block(match.entry)
                 lines.append(
                     f"{index}. tool={match.entry.tool_name} service={match.entry.service_name} "
-                    f"class={match.entry.classification} required={required}{missing} "
+                    f"class={match.entry.classification} context={match.entry.context_scope} "
+                    f"required={required}{missing} "
                     f"score={match.score}{description}{params}"
                 )
             lines.append("")
@@ -484,6 +492,17 @@ class Operator:
         organization_id = raw_arguments.get(
             "organization_id", raw_arguments.get("organizationId")
         )
+        if self._require_target_context:
+            if entry.context_scope == "project" and not project_id:
+                raise ValueError(
+                    f"Tool {tool_name} requires project_id. Use appwrite_get_context "
+                    "to select a project, then retry with that project ID."
+                )
+            if entry.context_scope == "organization" and not organization_id:
+                raise ValueError(
+                    f"Tool {tool_name} requires organization_id. Use appwrite_get_context "
+                    "to select an organization, then retry with that organization ID."
+                )
         arguments_object = _normalize_arguments(raw_arguments)
         result_content = self._execute_tool(
             tool_name, arguments_object, project_id, organization_id

@@ -1,7 +1,7 @@
 import unittest
 
-from appwrite.client import Client
-from appwrite.exception import AppwriteException
+from appwrite_console.client import Client
+from appwrite_console.exception import AppwriteException
 
 from mcp_server_appwrite.context import get_appwrite_context
 from mcp_server_appwrite.server import _get_context_for_request

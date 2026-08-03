@@ -38,16 +38,16 @@ wheels = [
 ]
 
 [[package]]
-name = "appwrite"
-version = "22.2.0"
+name = "appwrite-console"
+version = "0.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/58/8f/3e28094d410d1b7c6ff1d5182ee1f5f1b9157e1e695666593e1ba31564cc/appwrite-22.2.0.tar.gz", hash = "sha256:ef08d16a6b8669405e8a44218cca167a24838ca419efe2c104b2461b0438a042", size = 188505, upload-time = "2026-07-24T06:15:08.007Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/40/b2/36866a4356930ea66cd9209060a43a7a4b775840788c493fa76ff6e4e7fd/appwrite_console-0.2.1.tar.gz", hash = "sha256:a3892c0e94ed211260f404646f7b82f9d8ae596a4a428590be63bc9fff476585", size = 293961, upload-time = "2026-08-03T17:01:20.336Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/76/b6/ec1c14d80fc324c432742b10f586041915eb6e0cd78111a05a8cd96a6e54/appwrite-22.2.0-py3-none-any.whl", hash = "sha256:12cc8c41e0f59e33ae5b2fcee04f06fe933ff977e2258148b4745e6bbd274379", size = 332277, upload-time = "2026-07-24T06:15:06.593Z" },
+    { url = "https://files.pythonhosted.org/packages/b5/16/70b34ba7fe38a158c9d9879d88118f1dcf9ba900c70d58b1a9587c82ca76/appwrite_console-0.2.1-py3-none-any.whl", hash = "sha256:6aa4f5d32eadf0ecf3c98b2ef78b628443c8f01f58bc7e0855263c8af82a5b86", size = 515596, upload-time = "2026-08-03T17:01:18.886Z" },
 ]
 
 [[package]]
@@ -660,7 +660,7 @@ name = "mcp-server-appwrite"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },
-    { name = "appwrite" },
+    { name = "appwrite-console" },
     { name = "docstring-parser" },
     { name = "httpx" },
     { name = "mcp", extra = ["cli"] },
@@ -695,7 +695,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anyio", specifier = ">=4.0.0" },
-    { name = "appwrite", specifier = ">=22.2.0,<23" },
+    { name = "appwrite-console", specifier = ">=0.2.1,<0.3" },
     { name = "argon2-cffi", marker = "extra == 'integration'", specifier = ">=23.1.0" },
     { name = "bcrypt", marker = "extra == 'integration'", specifier = ">=4.1.2" },
     { name = "docstring-parser", specifier = ">=0.16" },

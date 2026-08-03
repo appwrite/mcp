@@ -5,13 +5,13 @@ from __future__ import annotations
 from importlib import metadata as importlib_metadata
 from pathlib import Path
 
-from appwrite.models.bucket import Bucket
-from appwrite.models.database import Database
-from appwrite.models.function import Function
-from appwrite.models.message import Message
-from appwrite.models.site import Site
-from appwrite.models.team import Team
-from appwrite.models.user import User
+from appwrite_console.models.bucket import Bucket
+from appwrite_console.models.database import Database
+from appwrite_console.models.function import Function
+from appwrite_console.models.message import Message
+from appwrite_console.models.site import Site
+from appwrite_console.models.team import Team
+from appwrite_console.models.user import User
 
 # --- server ---------------------------------------------------------------
 

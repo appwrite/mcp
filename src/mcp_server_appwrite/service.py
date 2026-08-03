@@ -4,7 +4,7 @@ from enum import Enum
 from types import UnionType
 from typing import Any, Dict, List, Union, get_args, get_origin, get_type_hints
 
-from appwrite.input_file import InputFile
+from appwrite_console.input_file import InputFile
 from docstring_parser import parse
 from mcp.types import Tool
 
@@ -12,11 +12,20 @@ from mcp.types import Tool
 class Service:
     """Base class for all Appwrite services"""
 
-    _IGNORED_PARAMETERS = {"on_progress"}
+    _IGNORED_PARAMETERS = {"model_type", "on_progress"}
 
-    def __init__(self, service_instance, service_name: str):
+    def __init__(
+        self,
+        service_instance,
+        service_name: str,
+        *,
+        allowed_methods: frozenset[str] | None = None,
+        context_scope: str = "console",
+    ):
         self.service = service_instance
         self.service_name = service_name
+        self.allowed_methods = allowed_methods
+        self.context_scope = context_scope
         self._method_name_overrides = self.get_method_name_overrides()
 
     def get_method_name_overrides(self) -> Dict[str, str]:
@@ -151,6 +160,8 @@ class Service:
         for name, func in inspect.getmembers(self.service, predicate=inspect.ismethod):
             if name.startswith("_"):  # Skip private methods
                 continue
+            if self.allowed_methods is not None and name not in self.allowed_methods:
+                continue
 
             original_func = func.__func__
 
@@ -205,6 +216,7 @@ class Service:
                 # mode) instead of the credential-less client used for introspection.
                 "service_name": self.service_name,
                 "method_name": name,
+                "context_scope": self.context_scope,
                 "parameter_types": {
                     param_name: type_hints[param_name]
                     for param_name in signature.parameters

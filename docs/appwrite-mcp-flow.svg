@@ -115,7 +115,7 @@
   <text x="916" y="437" font-size="10.5" fill="#C9C9CD" text-anchor="middle" font-family="'SF Mono', ui-monospace, Menlo, monospace">search_docs</text>
 
   <rect x="664" y="462" width="332" height="60" rx="10" fill="none" stroke="#3A3A40" stroke-dasharray="5 4"/>
-  <text x="682" y="488" font-size="11.5" fill="#A5A5AA">hidden catalog · 25 services · 100s of tools</text>
+  <text x="682" y="488" font-size="11.5" fill="#A5A5AA">hosted catalog · 38 services · 981 tools</text>
   <text x="682" y="506" font-size="11.5" fill="#A5A5AA">writes need <tspan fill="#EDEDF0" font-size="11" font-family="'SF Mono', ui-monospace, Menlo, monospace">confirm_write: true</tspan></text>
 
   <!-- arrow 6 -->

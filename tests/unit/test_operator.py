@@ -228,7 +228,66 @@ class OperatorTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertIsInstance(result[0], types.TextContent)
         self.assertIn("tables_db_list", result[0].text)
+        self.assertIn("context=console", result[0].text)
         self.assertIn(CATALOG_URI, result[0].text)
+
+    def test_catalog_and_search_surface_target_context(self):
+        manager = ToolManager()
+        manager.tools_registry = {
+            "domains_list": {
+                "definition": make_tool("domains_list", "List domains."),
+                "context_scope": "organization",
+            }
+        }
+        runtime = Operator(manager, lambda *_: [])
+
+        result = runtime.execute_public_tool(
+            "appwrite_search_tools", {"query": "list domains"}
+        )
+        self.assertIn("context=organization", result[0].text)
+
+        catalog = runtime.read_resource(CATALOG_URI)[0].content
+        self.assertIn('"context_scope": "organization"', catalog)
+
+    def test_hosted_calls_require_the_catalog_target_context(self):
+        manager = ToolManager()
+        manager.tools_registry = {
+            "tables_db_list": {
+                "definition": make_tool("tables_db_list", "List databases."),
+                "context_scope": "project",
+            },
+            "domains_list": {
+                "definition": make_tool("domains_list", "List domains."),
+                "context_scope": "organization",
+            },
+        }
+        runtime = Operator(manager, lambda *_: [], require_target_context=True)
+
+        with self.assertRaisesRegex(ValueError, "requires project_id"):
+            runtime.execute_public_tool(
+                "appwrite_call_tool", {"tool_name": "tables_db_list"}
+            )
+        with self.assertRaisesRegex(ValueError, "requires organization_id"):
+            runtime.execute_public_tool(
+                "appwrite_call_tool", {"tool_name": "domains_list"}
+            )
+
+    def test_stdio_calls_use_configured_project_without_target_argument(self):
+        manager = ToolManager()
+        manager.tools_registry = {
+            "tables_db_list": {
+                "definition": make_tool("tables_db_list", "List databases."),
+                "context_scope": "project",
+            }
+        }
+        runtime = Operator(manager, lambda *_: [], require_target_context=False)
+
+        self.assertEqual(
+            runtime.execute_public_tool(
+                "appwrite_call_tool", {"tool_name": "tables_db_list"}
+            ),
+            [],
+        )
 
     def test_get_context_dispatches_provider(self):
         runtime = Operator(
