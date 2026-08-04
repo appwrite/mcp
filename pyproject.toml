@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "anyio>=4.0.0",
-    "appwrite-console>=0.2.1,<0.3",
+    "appwrite-console>=0.3.0,<0.4",
     "docstring-parser>=0.16",
     "mcp[cli]>=2,<3",
     "python-dotenv>=1.0.1",
