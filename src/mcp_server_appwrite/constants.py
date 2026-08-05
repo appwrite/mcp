@@ -49,7 +49,9 @@ VALIDATION_SERVICE_ORDER = (
 EXCLUDED_SERVICES: frozenset[str] = frozenset()
 
 MAX_FETCH_BYTES = 25 * 1024 * 1024  # 25 MB cap on server-fetched files
-MAX_INLINE_BYTES = 256 * 1024  # 256 KB cap on decoded inline content
+# Match Cloud/agent chat attachment max (10 MB). Hosted uploads resolve
+# turn attachments to inline base64; keep this at least that large.
+MAX_INLINE_BYTES = 10 * 1024 * 1024  # 10 MB cap on decoded inline content
 FETCH_TIMEOUT_SECONDS = 30.0
 FETCH_MAX_REDIRECTS = 5
 
