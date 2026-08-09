@@ -15,6 +15,8 @@ from typing import Any
 
 from appwrite_console.exception import AppwriteException
 
+from .error_classification import classify_tool_error
+
 _enabled = False
 
 _SENSITIVE_KEYS = {
@@ -98,6 +100,7 @@ def capture_exception(
         import sentry_sdk
 
         with sentry_sdk.new_scope() as scope:
+            scope.set_tag("mcp.error_category", classify_tool_error(exc))
             for key, value in (tags or {}).items():
                 if value is not None:
                     scope.set_tag(key, str(value))
@@ -160,8 +163,7 @@ def _should_capture(exc: BaseException) -> bool:
         return False
     if isinstance(exc, ValueError):
         return False
-    appwrite_error = _find_appwrite_exception(exc)
-    if appwrite_error is not None and _is_appwrite_client_error(appwrite_error):
+    if classify_tool_error(exc) in {"write_confirmation", "appwrite_4xx"}:
         return False
     return True
 
@@ -182,14 +184,6 @@ def _find_exception(
             return current
         current = current.__cause__ or current.__context__
     return None
-
-
-def _is_appwrite_client_error(exc: AppwriteException) -> bool:
-    try:
-        code = int(getattr(exc, "code", 0) or 0)
-    except (TypeError, ValueError):
-        return False
-    return 400 <= code < 500
 
 
 def _already_captured(exc: BaseException) -> bool:

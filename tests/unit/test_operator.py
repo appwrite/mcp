@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import mcp.types as types
 
+from mcp_server_appwrite.error_classification import WriteConfirmationRequired
 from mcp_server_appwrite.operator import CATALOG_URI, Operator, ResultStore
 from mcp_server_appwrite.tool_manager import ToolManager
 
@@ -397,7 +398,7 @@ class OperatorTests(unittest.TestCase):
     def test_call_tool_requires_confirm_write(self):
         runtime = self.make_runtime(lambda name, arguments, *_: [])
 
-        with self.assertRaisesRegex(RuntimeError, "confirm_write=true"):
+        with self.assertRaisesRegex(WriteConfirmationRequired, "confirm_write=true"):
             runtime.execute_public_tool(
                 "appwrite_call_tool",
                 {"tool_name": "tables_db_create", "arguments": {"database_id": "db"}},

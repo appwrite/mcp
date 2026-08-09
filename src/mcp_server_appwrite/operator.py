@@ -28,6 +28,11 @@ from .constants import (
     VERBS,
 )
 from .docs_search import DocsSearch
+from .error_classification import (
+    ErrorCategory,
+    WriteConfirmationRequired,
+    classify_tool_error,
+)
 from .tool_manager import ToolManager
 
 ToolContent = types.TextContent | types.ImageContent | types.EmbeddedResource
@@ -281,6 +286,7 @@ class Operator:
         start = time.monotonic()
         status = "success"
         error_type: str | None = None
+        error_category: ErrorCategory | None = None
         output_chars = 0
         telemetry.tool_call_started(name)
         try:
@@ -290,6 +296,7 @@ class Operator:
         except Exception as exc:
             status = "error"
             error_type = type(exc).__name__
+            error_category = classify_tool_error(exc)
             raise
         finally:
             telemetry.record_tool_call(
@@ -297,6 +304,7 @@ class Operator:
                 status,
                 time.monotonic() - start,
                 error_type=error_type,
+                error_category=error_category,
                 input_chars=len(json.dumps(arguments)) if arguments else 0,
                 output_chars=output_chars,
             )
@@ -484,7 +492,7 @@ class Operator:
             raw_arguments.get("confirm_write", raw_arguments.get("confirmWrite", False))
         )
         if entry.classification != "read" and not confirm_write:
-            raise RuntimeError(
+            raise WriteConfirmationRequired(
                 f"Tool {tool_name} is {entry.classification}. Re-run appwrite_call_tool with confirm_write=true if you intend to mutate Appwrite state."
             )
 
