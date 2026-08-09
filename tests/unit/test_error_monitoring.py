@@ -5,6 +5,7 @@ from unittest.mock import patch
 from appwrite_console.exception import AppwriteException
 
 from mcp_server_appwrite import error_monitoring
+from mcp_server_appwrite.error_classification import WriteConfirmationRequired
 
 
 class ErrorMonitoringTests(unittest.TestCase):
@@ -62,6 +63,9 @@ class ErrorMonitoringTests(unittest.TestCase):
             def __exit__(self, *args):
                 return False
 
+            def set_tag(self, key, value):
+                pass
+
         scope = FakeScope()
         with patch("sentry_sdk.capture_exception") as capture:
             with patch("sentry_sdk.new_scope", return_value=scope):
@@ -86,6 +90,16 @@ class ErrorMonitoringTests(unittest.TestCase):
                 action="list",
                 classification="read",
             )
+
+        self.assertFalse(captured)
+        capture.assert_not_called()
+
+    def test_write_confirmation_is_not_captured(self):
+        error_monitoring._enabled = True
+        exc = WriteConfirmationRequired("confirm_write=true")
+
+        with patch("sentry_sdk.capture_exception") as capture:
+            captured = error_monitoring.capture_exception(exc)
 
         self.assertFalse(captured)
         capture.assert_not_called()
@@ -163,6 +177,7 @@ class ErrorMonitoringTests(unittest.TestCase):
         self.assertTrue(captured)
         capture.assert_called_once_with(exc)
         self.assertEqual(scope.tags["mcp.method"], "tools/call")
+        self.assertEqual(scope.tags["mcp.error_category"], "internal")
         self.assertEqual(scope.contexts["appwrite_mcp"]["arguments"], "[Filtered]")
         self.assertEqual(scope.contexts["appwrite_mcp"]["safe"], "ok")
         self.assertEqual(scope.transaction, "mcp.tools/call:appwrite_call_tool")
@@ -210,6 +225,7 @@ class ErrorMonitoringTests(unittest.TestCase):
         capture.assert_called_once_with(exc)
         self.assertEqual(scope.tags["appwrite.project_id"], "project-1")
         self.assertEqual(scope.tags["appwrite.organization_id"], "org-1")
+        self.assertEqual(scope.tags["mcp.error_category"], "appwrite_5xx")
         self.assertEqual(
             scope.contexts["appwrite_mcp"]["appwrite"]["project_id"], "project-1"
         )

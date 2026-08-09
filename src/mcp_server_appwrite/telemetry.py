@@ -56,6 +56,7 @@ from contextvars import ContextVar
 from typing import Any, Iterable
 
 from .constants import ACTIVE_WINDOW_SECONDS, KNOWN_MCP_CLIENTS
+from .error_classification import ERROR_CATEGORIES, ErrorCategory
 
 _enabled = False
 _lock = threading.Lock()
@@ -254,7 +255,10 @@ def _build_instruments(meter: Any, transport: str, version: str) -> None:
     _instruments["tool_errors"] = meter.create_counter(
         "mcp.tool.errors",
         unit="{error}",
-        description="Failed public operator tool invocations by error type.",
+        description=(
+            "Failed public operator tool invocations by exception type and "
+            "operational category."
+        ),
     )
     _instruments["tool_inflight"] = meter.create_up_down_counter(
         "mcp.tool.inflight",
@@ -649,6 +653,7 @@ def record_tool_call(
     duration_s: float,
     *,
     error_type: str | None = None,
+    error_category: ErrorCategory | None = None,
     input_chars: int | None = None,
     output_chars: int | None = None,
 ) -> None:
@@ -663,10 +668,15 @@ def record_tool_call(
     )
     _safe_record("tool_duration", duration_s, {"tool_name": tool_name})
     if status == "error":
+        category = error_category if error_category in ERROR_CATEGORIES else "internal"
         _safe_add(
             "tool_errors",
             1,
-            {"tool_name": tool_name, "error_type": error_type or "unknown"},
+            {
+                "tool_name": tool_name,
+                "error_type": error_type or "unknown",
+                "error_category": category,
+            },
         )
 
     input_tokens = _estimate_tokens(input_chars or 0)

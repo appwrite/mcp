@@ -16,6 +16,7 @@ from appwrite_console.input_file import InputFile
 
 from mcp_server_appwrite import server as server_module
 from mcp_server_appwrite.catalog_policy import API_KEY_PROFILE, OAUTH_PROFILE
+from mcp_server_appwrite.error_classification import WriteConfirmationRequired
 from mcp_server_appwrite.server import (
     _coerce_argument,
     _configure_uploads,
@@ -504,7 +505,7 @@ class ServerHelperTests(unittest.TestCase):
                 return True
 
             def execute_public_tool(self, name, arguments):
-                raise RuntimeError(
+                raise WriteConfirmationRequired(
                     "Tool tables_db_create is write. Re-run appwrite_call_tool "
                     "with confirm_write=true if you intend to mutate Appwrite state."
                 )

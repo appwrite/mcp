@@ -7,6 +7,7 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
 from mcp_server_appwrite import telemetry
 from mcp_server_appwrite.constants import ACTIVE_WINDOW_SECONDS
+from mcp_server_appwrite.error_classification import WriteConfirmationRequired
 from mcp_server_appwrite.operator import Operator
 from mcp_server_appwrite.tool_manager import ToolManager
 
@@ -243,6 +244,7 @@ class ToolExecutionTests(TelemetryHarness):
         self.assertEqual(len(errors), 1)
         self.assertAttr(errors[0], "tool_name", "appwrite_search_tools")
         self.assertAttr(errors[0], "error_type", "ValueError")
+        self.assertAttr(errors[0], "error_category", "internal")
 
     def test_hallucination_sanitizes_tool_name(self):
         self.connect()
@@ -288,14 +290,15 @@ class OperatorTelemetryTests(TelemetryHarness):
 
     def test_blocked_write_counts_tool_error(self):
         runtime = self.make_runtime(lambda name, arguments, *_: [])
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(WriteConfirmationRequired):
             runtime.execute_public_tool(
                 "appwrite_call_tool",
                 {"tool_name": "tables_db_create", "arguments": {"database_id": "db"}},
             )
         errors = self.points("mcp.tool.errors")
         self.assertEqual(len(errors), 1)
-        self.assertAttr(errors[0], "error_type", "RuntimeError")
+        self.assertAttr(errors[0], "error_type", "WriteConfirmationRequired")
+        self.assertAttr(errors[0], "error_category", "write_confirmation")
 
     def test_tool_call_counter(self):
         runtime = self.make_runtime(
