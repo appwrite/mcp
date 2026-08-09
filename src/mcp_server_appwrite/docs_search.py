@@ -21,6 +21,7 @@ from typing import Any, Callable
 
 import mcp.types as types
 
+from .annotations import annotations_for_classification
 from .constants import (
     DATA_DIR,
     DOCS_DEFAULT_LIMIT,
@@ -119,6 +120,9 @@ class DocsSearch:
         return self._vectors is not None and len(self._pages) > 0
 
     def get_tool(self) -> types.Tool:
+        # Read-only local search over the prebuilt docs index; no network
+        # calls beyond the OpenAI embedding call (which is part of the search
+        # query, not a side-effect on user data).
         return types.Tool(
             name=DOCS_TOOL_NAME,
             description=(
@@ -128,7 +132,7 @@ class DocsSearch:
                 "(databases, auth, storage, functions, messaging, sites, and more). "
                 "This does not require a project_id."
             ),
-            input_schema={
+            inputSchema={
                 "type": "object",
                 "properties": {
                     "query": {
@@ -145,6 +149,10 @@ class DocsSearch:
                 "required": ["query"],
                 "additionalProperties": False,
             },
+            # Read-only local search over the prebuilt docs index; no network
+            # calls beyond the OpenAI embedding call (which is part of the search
+            # query, not a side-effect on user data).
+            annotations=annotations_for_classification("read"),
         )
 
     def search(self, arguments: dict[str, Any] | None) -> list[ToolContent]:

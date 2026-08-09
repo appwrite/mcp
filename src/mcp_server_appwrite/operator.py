@@ -14,6 +14,7 @@ import mcp.types as types
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 
 from . import telemetry
+from .annotations import annotations_for_classification, annotations_for_gateway
 from .constants import (
     CATALOG_URI,
     CREATE_HINTS,
@@ -137,6 +138,20 @@ class Operator:
         return CATALOG_URI
 
     def get_public_tools(self) -> list[types.Tool]:
+        # Centralised annotations: each tool maps to a classification bucket
+        # (read / unknown), and `annotations_for_classification` is the single
+        # source of truth for the resulting MCP ToolAnnotations.
+        read_annotations = annotations_for_classification("read")
+        # `appwrite_call_tool` is a *gateway* — it dispatches to Appwrite SDK
+        # methods whose read/write/delete nature is determined at runtime from
+        # caller-supplied input. We cannot honestly advertise a static safety
+        # profile here; `annotations_for_gateway()` leaves `destructiveHint`
+        # unset so MCP clients default to destructive (their spec default) and
+        # prompt the human user — matching the runtime `confirm_write=true`
+        # gate inside `_call_hidden_tool`. See annotations.py for the full
+        # rationale and the Greptile review that motivated the split.
+        gateway_annotations = annotations_for_gateway()
+
         tools = [
             types.Tool(
                 name="appwrite_get_context",
@@ -178,6 +193,8 @@ class Operator:
                     },
                     "additionalProperties": False,
                 },
+                # Read-only: queries account/org/project metadata; no writes.
+                annotations=read_annotations,
             ),
             types.Tool(
                 name="appwrite_search_tools",
@@ -219,6 +236,8 @@ class Operator:
                     "required": ["query"],
                     "additionalProperties": False,
                 },
+                # Read-only: searches the in-memory catalog; no side effects.
+                annotations=read_annotations,
             ),
             types.Tool(
                 name="appwrite_call_tool",
@@ -227,7 +246,7 @@ class Operator:
                     "Mutating tools require confirm_write=true. Hidden Appwrite parameters accept "
                     "canonical snake_case names and common camelCase aliases."
                 ),
-                input_schema={
+input_schema={
                     "type": "object",
                     "properties": {
                         "tool_name": {
@@ -266,6 +285,14 @@ class Operator:
                     "required": ["tool_name"],
                     "additionalProperties": True,
                 },
+                # Gateway: dispatches to Appwrite SDK methods which may include
+                # writes or deletes. `destructiveHint` is intentionally **unset**
+                # (None) — the MCP 2025-06-18 spec treats unset as `true`, so
+                # clients that gate approval on the hint will prompt the human
+                # user for every gateway call. The runtime `confirm_write=true`
+                # check in `_call_hidden_tool` provides the secondary boundary
+                # inside the server.
+                annotations=gateway_annotations,
             ),
         ]
 
