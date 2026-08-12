@@ -6,6 +6,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from difflib import get_close_matches
 from typing import Any, Callable
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -404,13 +405,17 @@ class Operator:
         return entries
 
     def _catalog_json(self) -> str:
+        # Parameter names and shapes are included (descriptions are not, to keep
+        # the resource small) so a client can read the catalog once instead of
+        # paying a search call per tool it already knows it wants.
         return json.dumps(
             [
                 {
                     "action_verb": entry.action_verb,
                     "classification": entry.classification,
                     "context_scope": entry.context_scope,
-                    "description": entry.description,
+                    "description": entry.description[:_CATALOG_DESCRIPTION_LIMIT],
+                    "parameters": _catalog_parameters(entry),
                     "required": entry.required,
                     "resource_name": entry.resource_name,
                     "service_name": entry.service_name,
@@ -457,7 +462,7 @@ class Operator:
                     else ""
                 )
                 description = (
-                    f"\n   {match.entry.description[:140]}"
+                    f"\n   {match.entry.description[:_TOOL_DESCRIPTION_LIMIT]}"
                     if match.entry.description
                     else ""
                 )
@@ -484,9 +489,17 @@ class Operator:
         entry = self._catalog_map.get(tool_name)
         if not entry:
             telemetry.record_hallucination(tool_name)
-            raise ValueError(
-                f"Tool {tool_name} was not found. Use appwrite_search_tools first."
+            # Naming the near misses saves the search round trip a near-miss guess
+            # would otherwise cost.
+            suggestions = get_close_matches(
+                tool_name, self._catalog_map, n=_SUGGESTION_LIMIT, cutoff=0.6
             )
+            hint = (
+                f" Closest matches: {', '.join(suggestions)}."
+                if suggestions
+                else " Use appwrite_search_tools to find the right tool."
+            )
+            raise ValueError(f"Tool {tool_name} was not found.{hint}")
 
         confirm_write = bool(
             raw_arguments.get("confirm_write", raw_arguments.get("confirmWrite", False))
@@ -586,6 +599,10 @@ class Operator:
             score = _compute_score(
                 entry, query_tokens, query_lower, service_hint_set, missing_required
             )
+            # Relevance is gated by whether the query names the entry at all
+            # (see _compute_score), not by a score threshold: an inflection is a
+            # weaker signal than an exact token but still a real match, and a
+            # numeric floor on top of the gate only discards those.
             if score <= 0:
                 continue
             ranked.append(
@@ -598,6 +615,13 @@ class Operator:
         return ranked[:limit]
 
 
+_MIN_INFLECTION_TOKEN_LENGTH = 3
+_MAX_INFLECTION_SUFFIX = 2
+_SUGGESTION_LIMIT = 5
+# A read whose query names neither "get" nor "list".
+AMBIGUOUS_READ_INTENT = "read"
+
+
 def _normalize_token(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
 
@@ -606,6 +630,29 @@ def _tokenize(value: str) -> list[str]:
     normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", value)
     tokens = re.split(r"[^a-zA-Z0-9]+", normalized.lower())
     return list(dict.fromkeys(token for token in tokens if len(token) >= 2))
+
+
+def _is_inflection(first: str, second: str) -> bool:
+    """Whether two tokens differ only by a common inflection.
+
+    Searching "row" must still find ``list_rows``, and "policy" must find
+    ``policies``. Plain containment is too loose to carry that — it also matches
+    "id" against "identity" and pulled unrelated services into every result — so
+    require a shared stem and a short difference in length instead.
+    """
+    shorter, longer = sorted((first, second), key=len)
+    if len(shorter) < _MIN_INFLECTION_TOKEN_LENGTH:
+        return False
+    if len(longer) - len(shorter) > _MAX_INFLECTION_SUFFIX:
+        return False
+
+    shared = 0
+    for shorter_char, longer_char in zip(shorter, longer):
+        if shorter_char != longer_char:
+            break
+        shared += 1
+
+    return shared >= _MIN_INFLECTION_TOKEN_LENGTH and shared >= len(shorter) - 2
 
 
 def _classify_verb(action_verb: str) -> str:
@@ -653,26 +700,72 @@ def _has_schema_property(entry: CatalogEntry, key: str) -> bool:
     return isinstance(properties, dict) and key in properties
 
 
-_PARAM_DESCRIPTION_LIMIT = 120
+_PARAM_DESCRIPTION_LIMIT = 600
+_TOOL_DESCRIPTION_LIMIT = 400
+_CATALOG_DESCRIPTION_LIMIT = 200
 
 
 def _json_schema_type_label(schema: dict[str, Any] | Any) -> str:
+    """Render a parameter's accepted shape.
+
+    Search output is the only channel through which the model sees a hidden
+    tool's schema, so enum members and union branches must survive: labelling a
+    ``oneOf[string, object]`` upload parameter as ``string`` makes the object
+    form undiscoverable, and dropping enum members leaves values unguessable.
+    """
     if not isinstance(schema, dict):
         return "string"
+
+    branches = schema.get("oneOf") or schema.get("anyOf")
+    if isinstance(branches, list) and branches:
+        labels = list(
+            dict.fromkeys(_json_schema_type_label(branch) for branch in branches)
+        )
+        return "|".join(labels)
 
     schema_type = schema.get("type")
     if schema_type == "array":
         items = schema.get("items")
         if isinstance(items, dict):
-            item_type = items.get("type")
-            if isinstance(item_type, str) and item_type:
-                return f"array[{item_type}]"
+            return f"array[{_json_schema_type_label(items)}]"
         return "array"
 
-    if isinstance(schema_type, str) and schema_type:
-        return schema_type
+    label = schema_type if isinstance(schema_type, str) and schema_type else "string"
 
-    return "string"
+    enum_values = schema.get("enum")
+    if isinstance(enum_values, list) and enum_values:
+        members = "|".join(str(value) for value in enum_values)
+        return f"{label} enum[{members}]"
+
+    return label
+
+
+def _catalog_parameters(entry: CatalogEntry) -> dict[str, str]:
+    properties = entry.input_schema.get("properties")
+    if not isinstance(properties, dict):
+        return {}
+    return {
+        name: _json_schema_type_label(schema) for name, schema in properties.items()
+    }
+
+
+def _object_keys_hint(schema: dict[str, Any] | Any) -> str:
+    """Names of the properties an object parameter (or object branch) accepts."""
+    if not isinstance(schema, dict):
+        return ""
+
+    keys: list[str] = []
+    candidates = [schema]
+    branches = schema.get("oneOf") or schema.get("anyOf")
+    if isinstance(branches, list):
+        candidates.extend(branch for branch in branches if isinstance(branch, dict))
+
+    for candidate in candidates:
+        properties = candidate.get("properties")
+        if isinstance(properties, dict):
+            keys.extend(key for key in properties if key not in keys)
+
+    return ", ".join(keys)
 
 
 def _format_params_block(entry: CatalogEntry) -> str:
@@ -700,6 +793,10 @@ def _format_params_block(entry: CatalogEntry) -> str:
         else:
             lines.append(f"     - {name} ({type_label}, {requirement})")
 
+        object_keys = _object_keys_hint(prop_schema)
+        if object_keys:
+            lines.append(f"       object keys: {object_keys}")
+
     return "\n".join(lines)
 
 
@@ -724,26 +821,35 @@ def _compute_score(
     )
 
     score = 0
-    needs_substring = False
+    matches = 0
     for query_token in query_tokens:
         if query_token in haystack_tokens:
+            matches += 1
             score += 5
-        else:
-            needs_substring = True
+        elif any(
+            _is_inflection(query_token, haystack_token)
+            for haystack_token in haystack_tokens
+        ):
+            matches += 1
+            score += 3
 
-    if needs_substring:
-        for query_token in query_tokens:
-            if query_token not in haystack_tokens and any(
-                haystack_token in query_token or query_token in haystack_token
-                for haystack_token in haystack_tokens
-            ):
-                score += 3
+    names_this_tool = entry.tool_name.lower() in query_lower
+    hinted_service = bool(
+        service_hints and _normalize_token(entry.service_name) in service_hints
+    )
+    # An entry nothing in the query actually names is noise, however much
+    # generic credit the heuristics below would award it.
+    if not matches and not hinted_service and not names_this_tool:
+        return 0
 
-    if service_hints and _normalize_token(entry.service_name) in service_hints:
+    if hinted_service:
         score += 8
 
     query_intent = _infer_query_intent(query_tokens)
-    if query_intent == entry.action_verb:
+    if query_intent == AMBIGUOUS_READ_INTENT:
+        # Let the resource tokens decide between get and list.
+        score += 6 if entry.classification == "read" else -5
+    elif query_intent == entry.action_verb:
         score += 12
     elif query_intent:
         if query_intent in READ_VERBS and entry.classification != "read":
@@ -759,13 +865,20 @@ def _compute_score(
     elif entry.required:
         score += 3
 
-    if entry.tool_name.lower() in query_lower:
+    if names_this_tool:
         score += 10
 
     return score
 
 
 def _infer_query_intent(query_tokens: list[str]) -> str | None:
+    """Infer the action the query is asking for.
+
+    ``AMBIGUOUS_READ_INTENT`` means "a read, but get or list is undecided" —
+    words like "read" or "fetch" name neither. Collapsing them onto ``get``
+    scored every single-item tool above every list tool, so "read rows with
+    pagination" returned eight get-one-row tools and no list tool at all.
+    """
     token_set = set(query_tokens)
     if token_set & CREATE_HINTS:
         return "create"
@@ -775,8 +888,10 @@ def _infer_query_intent(query_tokens: list[str]) -> str | None:
         return "delete"
     if token_set & {"list"}:
         return "list"
-    if token_set & READ_HINTS:
+    if token_set & {"get"}:
         return "get"
+    if token_set & READ_HINTS:
+        return AMBIGUOUS_READ_INTENT
     return None
 
 
@@ -785,7 +900,7 @@ def _resolve_include_mutating(value: Any, query: str) -> bool:
         return bool(value)
 
     query_intent = _infer_query_intent(_tokenize(query))
-    return query_intent not in {None, "list", "get"}
+    return query_intent not in {None, "list", "get", AMBIGUOUS_READ_INTENT}
 
 
 def _normalize_string_list(value: Any) -> list[str] | None:

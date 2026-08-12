@@ -3,9 +3,14 @@ from concurrent.futures import ThreadPoolExecutor
 
 import mcp.types as types
 
+from mcp_server_appwrite.constants import PREVIEW_THRESHOLD
 from mcp_server_appwrite.error_classification import WriteConfirmationRequired
 from mcp_server_appwrite.operator import CATALOG_URI, Operator, ResultStore
 from mcp_server_appwrite.tool_manager import ToolManager
+
+# Tracks the threshold rather than hardcoding a size, so tuning the threshold
+# does not silently turn these into same-shape tests of the inline path.
+OVERSIZED_TEXT = "x" * (PREVIEW_THRESHOLD + 100)
 
 
 def make_tool(
@@ -210,7 +215,7 @@ class OperatorTests(unittest.TestCase):
         self.assertEqual(result[0].text, '{"results": []}')
 
     def test_docs_tool_large_result_is_stored_as_resource(self):
-        docs = FakeDocsSearch([types.TextContent(type="text", text="x" * 1200)])
+        docs = FakeDocsSearch([types.TextContent(type="text", text=OVERSIZED_TEXT)])
         runtime = self.make_runtime_with_docs(docs)
 
         result = runtime.execute_public_tool(
@@ -231,6 +236,203 @@ class OperatorTests(unittest.TestCase):
         self.assertIn("tables_db_list", result[0].text)
         self.assertIn("context=console", result[0].text)
         self.assertIn(CATALOG_URI, result[0].text)
+
+    def test_search_output_renders_enum_members(self):
+        manager = ToolManager()
+        manager.tools_registry = {
+            "tables_db_create_relationship_column": {
+                "definition": make_tool(
+                    "tables_db_create_relationship_column",
+                    "Create relationship column.",
+                    ["type"],
+                    properties={
+                        "type": {
+                            "type": "string",
+                            "enum": ["oneToOne", "oneToMany"],
+                            "description": "Relation type",
+                        },
+                    },
+                ),
+            }
+        }
+        runtime = Operator(manager, lambda *_: [])
+
+        result = runtime.execute_public_tool(
+            "appwrite_search_tools",
+            {"query": "create relationship column", "include_mutating": True},
+        )
+
+        # Search output is the only channel carrying a hidden tool's schema, so
+        # unguessable values must survive rendering.
+        self.assertIn("string enum[oneToOne|oneToMany]", result[0].text)
+
+    def test_search_output_renders_union_and_object_keys(self):
+        manager = ToolManager()
+        manager.tools_registry = {
+            "storage_create_file": {
+                "definition": make_tool(
+                    "storage_create_file",
+                    "Create a file.",
+                    ["file"],
+                    properties={
+                        "file": {
+                            "oneOf": [
+                                {"type": "string"},
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "url": {"type": "string"},
+                                        "filename": {"type": "string"},
+                                    },
+                                },
+                            ],
+                            "description": "Binary file.",
+                        },
+                    },
+                ),
+            }
+        }
+        runtime = Operator(manager, lambda *_: [])
+
+        result = runtime.execute_public_tool(
+            "appwrite_search_tools",
+            {"query": "create file", "include_mutating": True},
+        )
+
+        self.assertIn("file (string|object, required)", result[0].text)
+        self.assertIn("object keys: url, filename", result[0].text)
+
+    def test_search_drops_entries_sharing_no_query_token(self):
+        manager = ToolManager()
+        manager.tools_registry = {
+            "tables_db_list": {
+                "definition": make_tool("tables_db_list", "List all databases."),
+            },
+            "avatars_get_favicon": {
+                "definition": make_tool("avatars_get_favicon", "Get a favicon."),
+            },
+        }
+        runtime = Operator(manager, lambda *_: [])
+
+        result = runtime.execute_public_tool(
+            "appwrite_search_tools", {"query": "list databases"}
+        )
+
+        # An entry nothing in the query names is noise the model still has to
+        # read and discard; loose substring overlap used to keep it in.
+        self.assertIn("tables_db_list", result[0].text)
+        self.assertNotIn("avatars_get_favicon", result[0].text)
+
+    def test_search_matches_across_singular_and_plural(self):
+        manager = ToolManager()
+        manager.tools_registry = {
+            "tables_db_list_rows": {
+                "definition": make_tool("tables_db_list_rows", "List rows."),
+            },
+            "tables_db_get_row": {
+                "definition": make_tool("tables_db_get_row", "Get a row."),
+            },
+            "avatars_get_favicon": {
+                "definition": make_tool("avatars_get_favicon", "Get a favicon."),
+            },
+        }
+        runtime = Operator(manager, lambda *_: [])
+
+        for query in ("row", "rows"):
+            result = runtime.execute_public_tool(
+                "appwrite_search_tools", {"query": query}
+            )
+            # An inflection is a real match; requiring an exact token hid the
+            # sibling tool entirely (searching "row" lost list_rows).
+            self.assertIn("tables_db_list_rows", result[0].text, query)
+            self.assertIn("tables_db_get_row", result[0].text, query)
+            self.assertNotIn("avatars_get_favicon", result[0].text, query)
+
+    def test_inflection_alone_is_enough_to_be_returned(self):
+        manager = ToolManager()
+        manager.tools_registry = {
+            # No required params and a mutating verb, so the inflection match is
+            # this entry's only source of score — the case a numeric relevance
+            # floor on top of the match gate would silently discard.
+            "tables_db_create_rows": {
+                "definition": make_tool("tables_db_create_rows", "Create new rows."),
+            },
+        }
+        runtime = Operator(manager, lambda *_: [])
+
+        result = runtime.execute_public_tool(
+            "appwrite_search_tools", {"query": "row", "include_mutating": True}
+        )
+
+        self.assertIn("tables_db_create_rows", result[0].text)
+
+    def test_search_ranks_the_named_service_first(self):
+        runtime = self.make_runtime(lambda name, arguments, *_: [])
+
+        result = runtime.execute_public_tool(
+            "appwrite_search_tools", {"query": "list databases"}
+        )
+
+        # Sibling list tools still match on the verb, but rank below the service
+        # the query actually names, and a verb mismatch drops out entirely.
+        self.assertLess(
+            result[0].text.index("tables_db_list"), result[0].text.index("users_list")
+        )
+        self.assertNotIn("functions_get", result[0].text)
+
+    def test_ambiguous_read_verb_does_not_bury_list_tools(self):
+        runtime = self.make_runtime(lambda name, arguments, *_: [])
+
+        result = runtime.execute_public_tool(
+            "appwrite_search_tools", {"query": "read all databases"}
+        )
+
+        # "read" names neither get nor list; collapsing it onto get scored every
+        # single-item tool above every list tool, so the list tool fell off the
+        # page entirely. Resource tokens should decide instead.
+        self.assertIn("tables_db_list", result[0].text)
+        self.assertLess(
+            result[0].text.index("tables_db_list"), result[0].text.index("users_list")
+        )
+
+    def test_ambiguous_read_verb_still_excludes_mutating_tools(self):
+        runtime = self.make_runtime(lambda name, arguments, *_: [])
+
+        result = runtime.execute_public_tool(
+            "appwrite_search_tools", {"query": "read all databases"}
+        )
+
+        self.assertNotIn("tables_db_create", result[0].text)
+
+    def test_unknown_tool_names_the_closest_matches(self):
+        runtime = self.make_runtime(lambda name, arguments, *_: [])
+
+        with self.assertRaises(ValueError) as caught:
+            runtime.execute_public_tool(
+                "appwrite_call_tool", {"tool_name": "tables_db_lst"}
+            )
+
+        # Naming near misses saves the search round trip a typo would cost.
+        self.assertIn("tables_db_list", str(caught.exception))
+
+    def test_unknown_tool_without_near_misses_points_at_search(self):
+        runtime = self.make_runtime(lambda name, arguments, *_: [])
+
+        with self.assertRaises(ValueError) as caught:
+            runtime.execute_public_tool(
+                "appwrite_call_tool", {"tool_name": "wholly_unrelated"}
+            )
+
+        self.assertIn("appwrite_search_tools", str(caught.exception))
+
+    def test_catalog_carries_parameter_shapes(self):
+        runtime = self.make_runtime(lambda name, arguments, *_: [])
+
+        catalog = runtime.read_resource(CATALOG_URI)[0].content
+
+        # Lets a client read the catalog once instead of searching per tool.
+        self.assertIn('"parameters"', catalog)
+        self.assertIn('"size": "number"', catalog)
 
     def test_catalog_and_search_surface_target_context(self):
         manager = ToolManager()
@@ -429,7 +631,7 @@ class OperatorTests(unittest.TestCase):
     def test_large_result_is_stored_as_resource(self):
         runtime = self.make_runtime(
             lambda name, arguments, *_: [
-                types.TextContent(type="text", text="x" * 1200)
+                types.TextContent(type="text", text=OVERSIZED_TEXT)
             ]
         )
 
@@ -463,7 +665,7 @@ class OperatorTests(unittest.TestCase):
         runtime = Operator(
             manager,
             lambda name, arguments, *_: [
-                types.TextContent(type="text", text="x" * 1200)
+                types.TextContent(type="text", text=OVERSIZED_TEXT)
             ],
             store_results=False,
         )
@@ -473,7 +675,7 @@ class OperatorTests(unittest.TestCase):
             {"tool_name": "tables_db_list"},
         )
 
-        self.assertEqual(result[0].text, "x" * 1200)
+        self.assertEqual(result[0].text, OVERSIZED_TEXT)
         self.assertNotIn("appwrite://operator/results/", result[0].text)
 
     def test_store_results_false_returns_image_inline(self):

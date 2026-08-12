@@ -72,6 +72,7 @@ from .context import (
     get_appwrite_context,
 )
 from .docs_search import DocsSearch
+from .error_classification import is_response_parse_error
 from .operator import Operator, _parse_tool_name
 from .service import Service
 from .tool_manager import ToolManager
@@ -857,7 +858,7 @@ def execute_registered_tool(
             project_id=target_project,
             organization_id=organization_id,
         )
-        raise RuntimeError(_format_appwrite_error(exc)) from exc
+        raise RuntimeError(_format_appwrite_error(exc, tool_name=name)) from exc
     except Exception as exc:
         error_monitoring.capture_exception(
             exc,
@@ -973,7 +974,10 @@ def _format_tool_result(
     return [types.TextContent(type="text", text=str(result))]
 
 
-def _format_appwrite_error(exc: AppwriteException) -> str:
+def _format_appwrite_error(exc: AppwriteException, tool_name: str | None = None) -> str:
+    if is_response_parse_error(exc):
+        return _format_response_parse_error(tool_name)
+
     details = []
     if getattr(exc, "code", None):
         details.append(f"code={exc.code}")
@@ -984,6 +988,26 @@ def _format_appwrite_error(exc: AppwriteException) -> str:
     if len(message) > 500:
         message = f"{message[:500]}..."
     return f"Appwrite request failed{detail_text}: {message}"
+
+
+def _format_response_parse_error(tool_name: str | None) -> str:
+    """Explain an SDK deserialization failure without implying the write failed.
+
+    ``Service._parse_response`` raises this after Appwrite has already accepted
+    the request, and it discards the response body, so the operation usually
+    succeeded. Reporting the raw Pydantic error invites the model to retry a
+    completed mutation.
+    """
+    verify = (
+        f" Verify with the matching get or list tool for {tool_name} before retrying."
+        if tool_name
+        else " Verify with the matching get or list tool before retrying."
+    )
+    return (
+        "Appwrite accepted the request, but the SDK could not deserialize the "
+        "response, so the result is unavailable. The operation most likely "
+        f"succeeded — do not retry it blindly.{verify}"
+    )
 
 
 def build_instructions(transport: str = "http") -> str:

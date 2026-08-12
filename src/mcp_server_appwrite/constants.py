@@ -90,7 +90,9 @@ CORS_HEADERS = {
 # --- operator -------------------------------------------------------------
 
 SEARCH_LIMIT = 8
-PREVIEW_THRESHOLD = 800
+# A page of rows does not fit in 800 characters, so the model paid a
+# resources/read for every list call. Only stdio stores results at all.
+PREVIEW_THRESHOLD = 4000
 RESULT_STORE_SIZE = 50
 CATALOG_URI = "appwrite://operator/catalog"
 RESULT_URI_TEMPLATE = "appwrite://operator/results/{result_id}"

@@ -76,6 +76,15 @@ def _exception_chain(exc: BaseException) -> Iterator[BaseException]:
             pending.append(current.__cause__)
 
 
+def is_response_parse_error(exc: BaseException) -> bool:
+    """Whether ``exc`` is the SDK failing to deserialize an Appwrite response.
+
+    The request itself reached Appwrite and was accepted, so the caller must not
+    present this as a failed operation (see ``_format_appwrite_error``).
+    """
+    return any(_is_sdk_validation_error(item) for item in _exception_chain(exc))
+
+
 def _is_sdk_validation_error(exc: BaseException) -> bool:
     error_type = type(exc)
     if error_type.__name__ == "ValidationError" and error_type.__module__.startswith(

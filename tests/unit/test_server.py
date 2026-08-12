@@ -427,6 +427,18 @@ class ServerHelperTests(unittest.TestCase):
         self.assertLess(len(message), 560)
         self.assertTrue(message.endswith("..."))
 
+    def test_format_appwrite_error_does_not_report_parse_failure_as_failure(self):
+        exc = AppwriteException(
+            "Unable to parse response into Project: 1 validation error for Project"
+        )
+
+        message = _format_appwrite_error(exc, tool_name="projects_create")
+
+        self.assertIn("accepted the request", message)
+        self.assertIn("most likely", message)
+        self.assertIn("projects_create", message)
+        self.assertNotIn("validation error", message)
+
     def test_mcp_request_context_extracts_client_metadata(self):
         ctx = Mock()
         ctx.protocol_version = "2025-06-18"
