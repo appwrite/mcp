@@ -1,17 +1,9 @@
 """Documentation the SDK docstrings deliberately leave to helper classes.
 
-The Appwrite API spec describes `queries` in terms of the `Query` class each SDK
-ships, which is intentional — SDK users should reach for the helper rather than
-hand-build query strings. An MCP client has no such helper: it sends JSON over
-`appwrite_call_tool`, so the wire format is the only thing it can act on, and
-nothing in the generated description states it.
-
-This module supplies that missing half for the MCP surface. It documents how to
-address the API, and never corrects a defect: anything wrong upstream belongs
-upstream, where every SDK benefits rather than this one client.
-
-Not to be confused with `docs_search.py`, which searches the Appwrite product
-documentation for the user.
+The spec describes `queries` via each SDK's `Query` class, which is intentional.
+An MCP client has no helper — it sends JSON — so the wire format is all it can
+act on, and nothing generated states it. This documents how to address the API;
+defects belong upstream, where every SDK benefits. Unrelated to `docs_search.py`.
 """
 
 from __future__ import annotations
