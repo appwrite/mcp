@@ -8,7 +8,7 @@ from appwrite_console.input_file import InputFile
 from docstring_parser import parse
 from mcp.types import Tool
 
-from .parameter_docs import describe_parameter
+from .docs import describe_parameter
 
 
 class Service:

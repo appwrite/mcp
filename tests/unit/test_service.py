@@ -4,7 +4,7 @@ from typing import Any, Dict, List
 
 from appwrite_console.input_file import InputFile
 
-from mcp_server_appwrite.parameter_docs import QUERIES_GUIDANCE
+from mcp_server_appwrite.docs import QUERIES_GUIDANCE
 from mcp_server_appwrite.service import Service
 
 
