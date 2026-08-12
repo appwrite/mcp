@@ -13,6 +13,7 @@ import mcp.types as types
 from appwrite_console.enums.browser import Browser
 from appwrite_console.exception import AppwriteException
 from appwrite_console.input_file import InputFile
+from appwrite_console.models.row_list import RowList
 
 from mcp_server_appwrite import server as server_module
 from mcp_server_appwrite.catalog_policy import API_KEY_PROFILE, OAUTH_PROFILE
@@ -427,6 +428,48 @@ class ServerHelperTests(unittest.TestCase):
         self.assertLess(len(message), 560)
         self.assertTrue(message.endswith("..."))
 
+    def test_format_tool_result_keeps_nested_row_columns(self):
+        row_list = RowList.with_data(
+            {
+                "total": 1,
+                "rows": [
+                    {
+                        "$id": "b01",
+                        "$sequence": "1",
+                        "$tableId": "books",
+                        "$databaseId": "library",
+                        "$createdAt": "2026-01-01T00:00:00.000+00:00",
+                        "$updatedAt": "2026-01-01T00:00:00.000+00:00",
+                        "$permissions": [],
+                        "title": "Dune",
+                        "rating": 4.5,
+                    }
+                ],
+            }
+        )
+
+        result = _format_tool_result("tables_db_list_rows", row_list, {})
+
+        # Listing rows returned IDs with no column values until the SDK stopped
+        # dropping nested payloads; pin it so a regression is loud.
+        self.assertIn('"title": "Dune"', result[0].text)
+        self.assertIn('"rating": 4.5', result[0].text)
+
+    def test_format_appwrite_error_returns_the_unhydrated_payload(self):
+        exc = AppwriteException(
+            "Unable to parse response into Project: 1 validation error",
+            response={"$id": "proj-1", "name": "New Project"},
+        )
+
+        message = _format_appwrite_error(exc, tool_name="projects_create")
+
+        # The SDK now keeps the body, so the model gets the result of the write
+        # rather than a hedge and a re-fetch.
+        self.assertIn("it succeeded", message)
+        self.assertIn("Do not retry", message)
+        self.assertIn('"$id": "proj-1"', message)
+        self.assertNotIn("validation error", message)
+
     def test_format_appwrite_error_does_not_report_parse_failure_as_failure(self):
         exc = AppwriteException(
             "Unable to parse response into Project: 1 validation error for Project"
@@ -598,8 +641,8 @@ class ServerHelperTests(unittest.TestCase):
             {service.service_name for service in manager_a.services},
             set(SERVICE_CLASSES),
         )
-        self.assertEqual(len(manager_a.services), 38)
-        self.assertEqual(len(manager_a.get_all_tools()), 981)
+        self.assertEqual(len(manager_a.services), 39)
+        self.assertEqual(len(manager_a.get_all_tools()), 992)
 
     def test_api_key_profile_only_advertises_server_capabilities(self):
         manager = register_services(object(), profile=API_KEY_PROFILE)
@@ -607,13 +650,15 @@ class ServerHelperTests(unittest.TestCase):
         tool_names = {tool.name for tool in manager.get_all_tools()}
 
         self.assertEqual(len(manager.services), 26)
-        self.assertEqual(len(tool_names), 647)
+        self.assertEqual(len(tool_names), 650)
         self.assertIn("documents_db_list", tool_names)
         self.assertIn("vectors_db_list", tool_names)
         self.assertIn("embeddings_create_text_embeddings", tool_names)
         self.assertNotIn("domains", service_names)
         self.assertNotIn("organizations", service_names)
         self.assertNotIn("documents_db_list_operations", tool_names)
+        self.assertNotIn("tables_db_cutover_migration", tool_names)
+        self.assertNotIn("affiliates", service_names)
         self.assertNotIn("account_list_invoices", tool_names)
 
     def test_console_sdk_internal_model_type_is_never_advertised(self):
