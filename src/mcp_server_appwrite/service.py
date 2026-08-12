@@ -8,6 +8,8 @@ from appwrite_console.input_file import InputFile
 from docstring_parser import parse
 from mcp.types import Tool
 
+from .docs import describe_parameter
+
 
 class Service:
     """Base class for all Appwrite services"""
@@ -187,13 +189,17 @@ class Service:
 
                 param_type = type_hints.get(param_name, str)
                 properties[param_name] = self.python_type_to_json_schema(param_type)
-                properties[param_name]["description"] = f"Parameter '{param_name}'"
+                description = f"Parameter '{param_name}'"
 
                 for doc_param in docstring.params:
                     if doc_param.arg_name == param_name:
-                        properties[param_name]["description"] = self._clean_description(
+                        description = self._clean_description(
                             doc_param.description or ""
                         )
+
+                properties[param_name]["description"] = describe_parameter(
+                    param_name, description
+                )
 
                 if param.default is param.empty:
                     required.append(param_name)
