@@ -25,7 +25,7 @@ jobs:
           version: "0.11.22"
 
       - name: Install dev dependencies
-        run: uv sync --group dev
+        run: uv sync --frozen --group dev
 
       - name: Lint
         run: uv run --group dev ruff check src tests
@@ -54,7 +54,7 @@ jobs:
           version: "0.11.22"
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --frozen
 
       - name: Run unit tests
         run: uv run python -m unittest discover -s tests/unit -v
@@ -92,7 +92,7 @@ jobs:
           version: "0.11.22"
 
       - name: Install dependencies
-        run: uv sync --extra integration
+        run: uv sync --frozen --extra integration
 
       - name: Run integration tests
         run: uv run --extra integration python -m unittest discover -s tests/integration -v
