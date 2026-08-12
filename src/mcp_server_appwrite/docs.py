@@ -12,8 +12,8 @@ QUERIES_GUIDANCE = (
     "Each query is its own JSON string, e.g. "
     '{"method":"greaterThanEqual","attribute":"rating","values":[2]}. Filters '
     "take attribute and values: equal, notEqual, lessThan, lessThanEqual, "
-    "greaterThan, greaterThanEqual, between, isNull, isNotNull, startsWith, "
-    "endsWith, contains, search. orderAsc and orderDesc take attribute only. "
+    "greaterThan, greaterThanEqual, between, startsWith, endsWith, contains, "
+    "search. isNull, isNotNull, orderAsc and orderDesc take attribute only. "
     "limit, offset, cursorAfter and cursorBefore take values only. On list "
     "endpoints a relationship returns only the related ID unless selected: "
     '{"method":"select","values":["*","author.*"]} expands it in the same call, '
