@@ -32,11 +32,11 @@ integration = [
 
 [dependency-groups]
 dev = [
-    "black>=25.1.0",
-    "ruff>=0.10.0",
-    "pyright>=1.1.390",
+    "black==26.3.1",
+    "ruff==0.15.18",
+    "pyright==1.1.411",
     # Only needed by scripts/build_docs_index.py to (re)build the docs index.
-    "pyyaml>=6.0",
+    "pyyaml==6.0.3",
 ]
 
 [project.scripts]
@@ -70,5 +70,5 @@ venv = ".venv"
 typeCheckingMode = "basic"
 
 [build-system]
-requires = ["hatchling", "hatch-vcs"]
+requires = ["hatchling==1.32.0", "hatch-vcs==0.5.0"]
 build-backend = "hatchling.build"

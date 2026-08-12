@@ -24,10 +24,6 @@ jobs:
       - name: Install build dependencies
         run: |
           python -m pip install --upgrade pip
-          # twine must be new enough for the metadata version hatchling emits.
-          # The build backend is resolved at build time and floats, so hatchling
-          # 1.32.0 moved wheels to Metadata-Version 2.5, which twine 6.2.0
-          # rejects outright ("'2.5' is not a valid metadata version").
           pip install build==1.5.0 twine==7.0.0
 
       - name: Derive release version
@@ -41,8 +37,6 @@ jobs:
       - name: Build package
         run: python -m build
 
-      # Validate before uploading, so a metadata mismatch fails with a clear
-      # message instead of surfacing mid-upload.
       - name: Check distribution metadata
         run: twine check dist/*
 
