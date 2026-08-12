@@ -6,6 +6,7 @@ from pydantic import BaseModel, ValidationError
 from mcp_server_appwrite.error_classification import (
     WriteConfirmationRequired,
     classify_tool_error,
+    is_response_parse_error,
 )
 
 
@@ -71,6 +72,17 @@ class ErrorClassificationTests(unittest.TestCase):
         second.__context__ = first
 
         self.assertEqual(classify_tool_error(first), "appwrite_4xx")
+
+    def test_recognizes_response_parse_errors_through_the_chain(self):
+        parse_failure = AppwriteException("Unable to parse response into Project: ...")
+        wrapped = RuntimeError("wrapped")
+        wrapped.__cause__ = parse_failure
+
+        self.assertTrue(is_response_parse_error(parse_failure))
+        self.assertTrue(is_response_parse_error(wrapped))
+        self.assertFalse(
+            is_response_parse_error(AppwriteException("not found", 404, "not_found"))
+        )
 
 
 if __name__ == "__main__":
