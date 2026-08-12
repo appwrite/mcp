@@ -47,6 +47,13 @@ class TablesDbIntegrationTests(LiveIntegrationTestCase):
                 "tables_db_get_row",
                 {"database_id": database_id, "table_id": table_id, "row_id": "row1"},
             )
+
+            listed = runner.call(
+                "tables_db_list_rows",
+                {"database_id": database_id, "table_id": table_id},
+            )
+            self.assertEqual(listed["rows"][0]["$id"], "row1")
+            self.assertEqual(listed["rows"][0]["data"]["name"], "smoke")
         finally:
             try:
                 runner.call(

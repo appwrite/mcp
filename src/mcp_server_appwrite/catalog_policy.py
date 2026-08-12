@@ -101,6 +101,7 @@ API_KEY_EXCLUDED_METHODS: dict[str, frozenset[str]] = {
     "tables_db": frozenset(
         {
             "create_migration",
+            "cutover_migration",
             "delete_migration",
             "get_migration",
             "list_migrations",

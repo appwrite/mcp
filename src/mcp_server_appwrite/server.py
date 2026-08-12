@@ -976,7 +976,7 @@ def _format_tool_result(
 
 def _format_appwrite_error(exc: AppwriteException, tool_name: str | None = None) -> str:
     if is_response_parse_error(exc):
-        return _format_response_parse_error(tool_name)
+        return _format_response_parse_error(tool_name, _parse_error_response(exc))
 
     details = []
     if getattr(exc, "code", None):
@@ -990,14 +990,30 @@ def _format_appwrite_error(exc: AppwriteException, tool_name: str | None = None)
     return f"Appwrite request failed{detail_text}: {message}"
 
 
-def _format_response_parse_error(tool_name: str | None) -> str:
+def _parse_error_response(exc: BaseException) -> Any:
+    """The raw body the SDK failed to hydrate, if it kept one."""
+    for item in (exc, exc.__cause__, exc.__context__):
+        response = getattr(item, "response", None)
+        if response is not None:
+            return response
+    return None
+
+
+def _format_response_parse_error(tool_name: str | None, response: Any = None) -> str:
     """Explain an SDK deserialization failure without implying the write failed.
 
     ``Service._parse_response`` raises this after Appwrite has already accepted
-    the request, and it discards the response body, so the operation usually
-    succeeded. Reporting the raw Pydantic error invites the model to retry a
+    the request, so the operation succeeded even though the result could not be
+    hydrated. Reporting the raw Pydantic error invites the model to retry a
     completed mutation.
     """
+    if response is not None:
+        return (
+            "Appwrite accepted the request and it succeeded; the SDK could not "
+            "deserialize the response into its model, so the raw payload "
+            f"follows. Do not retry.\n{_serialize_result(response)}"
+        )
+
     verify = (
         f" Verify with the matching get or list tool for {tool_name} before retrying."
         if tool_name
