@@ -99,9 +99,13 @@ def mcp_path_resource() -> str:
     return f"{public_base_url()}/mcp"
 
 
-def accepted_resources() -> tuple[str, str]:
-    """Resource audiences accepted by the two shared MCP endpoints."""
-    return canonical_resource(), mcp_path_resource()
+def accepted_resources() -> tuple[str, str, str]:
+    """Resource audiences accepted by the two shared MCP endpoints.
+
+    Some clients normalize an origin-only resource URI by dropping its trailing
+    slash. Accept that equivalent spelling alongside the advertised root URI.
+    """
+    return canonical_resource(), public_base_url(), mcp_path_resource()
 
 
 def resource_metadata_url(resource: str | None = None) -> str:

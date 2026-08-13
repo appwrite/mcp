@@ -428,6 +428,12 @@ class AudienceTests(unittest.TestCase):
     def test_audience_match_string(self):
         self.assertEqual(self.verifier._accepted_resource(self.resource), self.resource)
 
+    def test_root_audience_without_trailing_slash_matches(self):
+        root_without_slash = "https://mcp.appwrite.io"
+        self.assertEqual(
+            self.verifier._accepted_resource(root_without_slash), root_without_slash
+        )
+
     def test_mcp_path_audience_match_string(self):
         self.assertEqual(
             self.verifier._accepted_resource(self.mcp_path_resource),
