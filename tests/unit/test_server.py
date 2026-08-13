@@ -165,6 +165,11 @@ class ServerHelperTests(unittest.TestCase):
         self.assertIn("Large results are stored as resources", stdio)
         self.assertIn("returns tool results inline", http)
 
+    def test_build_mcp_server_supports_modern_subscriptions(self):
+        server = build_mcp_server(Mock(), transport="http")
+
+        self.assertIsNotNone(server.get_request_handler("subscriptions/listen"))
+
     def test_build_mcp_server_reports_appwrite_metadata(self):
         server = build_mcp_server(Mock(), transport="stdio")
         options = server.create_initialization_options()
