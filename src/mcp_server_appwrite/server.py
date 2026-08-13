@@ -38,6 +38,7 @@ from mcp import MCPError
 from mcp.server import NotificationOptions, Server, ServerRequestContext
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.models import InitializationOptions
+from mcp.server.subscriptions import InMemorySubscriptionBus, ListenHandler
 from mcp.types import CLIENT_INFO_META_KEY, INVALID_PARAMS
 
 from . import error_monitoring, flags, telemetry
@@ -1068,6 +1069,7 @@ def build_instructions(transport: str = "http") -> str:
 def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
     _configure_uploads(transport)
     instructions = build_instructions(transport)
+    subscriptions = ListenHandler(InMemorySubscriptionBus())
 
     async def handle_list_tools(
         ctx: ServerRequestContext, params: types.PaginatedRequestParams | None
@@ -1302,6 +1304,7 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
         on_list_resources=handle_list_resources,
         on_list_resource_templates=handle_list_resource_templates,
         on_read_resource=handle_read_resource,
+        on_subscriptions_listen=subscriptions,
     )
 
 
