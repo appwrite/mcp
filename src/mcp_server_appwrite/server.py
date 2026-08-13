@@ -1054,7 +1054,7 @@ def build_instructions(transport: str = "http") -> str:
     return (
         "You authenticate against the Appwrite console, which can list your "
         "organizations and projects but stores no project data itself. Project-scoped "
-        "tools (TablesDB, tables, users, storage, functions, messaging, sites) need a "
+        "tools (Advisor, TablesDB, tables, users, storage, functions, messaging, sites) need a "
         "target project: use appwrite_get_context first, then pass the selected "
         "project id as project_id to appwrite_call_tool. "
         "Organization-scoped console tools (e.g. creating a project) need organization_id. "

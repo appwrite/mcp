@@ -127,6 +127,7 @@ API_KEY_EXCLUDED_METHODS: dict[str, frozenset[str]] = {
 # calls. API-key mode already has a fixed project on its configured client.
 PROJECT_CONTEXT_SERVICES: frozenset[str] = frozenset(
     {
+        "advisor",
         "databases",
         "documents_db",
         "embeddings",
