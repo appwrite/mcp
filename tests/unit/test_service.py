@@ -96,6 +96,8 @@ class ServiceSchemaTests(unittest.TestCase):
         # actionable part. It leads, because search output truncates.
         self.assertTrue(description.startswith(QUERIES_GUIDANCE))
         self.assertIn('{"method":"greaterThanEqual"', description)
+        self.assertIn('`{"method":"search"', description)
+        self.assertIn("must have a full-text index", description)
         self.assertIn("Query class provided by the SDK", description)
 
     def test_leaves_other_parameters_untouched(self):

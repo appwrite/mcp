@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import io
+import json
 import os
 import sys
 import tempfile
@@ -963,6 +964,79 @@ class ServerHelperTests(unittest.TestCase):
         self.assertEqual(capture.call_args.kwargs["service"], "users")
         self.assertEqual(capture.call_args.kwargs["action"], "list")
         self.assertIsNone(capture.call_args.kwargs["project_id"])
+
+    def test_execute_registered_tool_returns_raw_success_on_sdk_parse_failure(self):
+        tool = types.Tool(
+            name="sites_list_logs",
+            description="List site logs.",
+            inputSchema={
+                "type": "object",
+                "properties": {"site_id": {"type": "string"}},
+                "required": ["site_id"],
+            },
+        )
+        manager = ToolManager()
+        manager.tools_registry = {
+            "sites_list_logs": {
+                "definition": tool,
+                "service_name": "sites",
+                "method_name": "list_logs",
+                "parameter_types": {"site_id": str},
+            }
+        }
+        executions = [
+            {
+                "$id": f"log-{status}",
+                "requestHeaders": [{"name": "x-request-id", "value": "req-1"}],
+                "responseHeaders": [{"name": "content-type", "value": "text/plain"}],
+                "responseStatusCode": status,
+                "status": "completed" if status < 500 else "failed",
+                "duration": status / 1000,
+                "logs": f"stdout-{status}",
+                "errors": f"stderr-{status}",
+            }
+            for status in (200, 400, 500)
+        ]
+        raw_response = {"total": len(executions), "executions": executions}
+
+        class SitesService:
+            def __init__(self, client):
+                pass
+
+            def list_logs(self, site_id):
+                raise AppwriteException(
+                    "Unable to parse response into ExecutionList: validation error",
+                    response=raw_response,
+                )
+
+        with (
+            patch.dict(server_module.SERVICE_CLASSES, {"sites": SitesService}),
+            patch.object(
+                server_module.error_monitoring, "capture_appwrite_exception"
+            ) as capture,
+        ):
+            content = execute_registered_tool(
+                manager,
+                "sites_list_logs",
+                {"site_id": "site-1"},
+                client=object(),
+            )
+
+        result = json.loads(content[0].text)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["warning"], "SDK deserialization failed")
+        self.assertEqual(result["data"]["raw"], raw_response)
+        for expected, actual in zip(executions, result["data"]["raw"]["executions"]):
+            self.assertEqual(actual["requestHeaders"], expected["requestHeaders"])
+            self.assertEqual(actual["responseHeaders"], expected["responseHeaders"])
+            self.assertEqual(
+                actual["responseStatusCode"], expected["responseStatusCode"]
+            )
+            self.assertEqual(actual["status"], expected["status"])
+            self.assertEqual(actual["duration"], expected["duration"])
+            self.assertEqual(actual["logs"], expected["logs"])
+            self.assertEqual(actual["errors"], expected["errors"])
+        capture.assert_called_once()
 
     def test_execute_registered_tool_passes_target_context_to_appwrite_capture(self):
         tool = types.Tool(

@@ -859,6 +859,8 @@ def execute_registered_tool(
             project_id=target_project,
             organization_id=organization_id,
         )
+        if is_response_parse_error(exc):
+            return _format_response_parse_fallback(exc, name, prepared_arguments)
         raise RuntimeError(_format_appwrite_error(exc, tool_name=name)) from exc
     except Exception as exc:
         error_monitoring.capture_exception(
@@ -881,6 +883,8 @@ def execute_registered_tool(
             },
             transaction=(f"appwrite.{parsed['service_name']}.{parsed['action_verb']}"),
         )
+        if is_response_parse_error(exc):
+            return _format_response_parse_fallback(exc, name, prepared_arguments)
         raise
 
     return _format_tool_result(name, result, prepared_arguments)
@@ -973,6 +977,21 @@ def _format_tool_result(
         return [types.TextContent(type="text", text=_serialize_result(result))]
 
     return [types.TextContent(type="text", text=str(result))]
+
+
+def _format_response_parse_fallback(
+    exc: BaseException, tool_name: str, arguments: dict[str, Any]
+) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+    """Return an upstream success even when the SDK response model is stale."""
+    return _format_tool_result(
+        tool_name,
+        {
+            "ok": True,
+            "data": {"raw": _parse_error_response(exc)},
+            "warning": "SDK deserialization failed",
+        },
+        arguments,
+    )
 
 
 def _format_appwrite_error(exc: AppwriteException, tool_name: str | None = None) -> str:

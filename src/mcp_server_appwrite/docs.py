@@ -12,9 +12,13 @@ QUERIES_GUIDANCE = (
     "Each query is its own JSON string, e.g. "
     '{"method":"greaterThanEqual","attribute":"rating","values":[2]}. Filters '
     "take attribute and values: equal, notEqual, lessThan, lessThanEqual, "
-    "greaterThan, greaterThanEqual, between, startsWith, endsWith, contains, "
-    "search. isNull, isNotNull, orderAsc and orderDesc take attribute only. "
-    "limit, offset, cursorAfter and cursorBefore take values only. On list "
+    "greaterThan, greaterThanEqual, between, startsWith, endsWith and contains. "
+    "Free-text search can be passed in this array as "
+    '`{"method":"search","attribute":"search","values":["term"]}`. '
+    "The search attribute must have a full-text index; a listed filter attribute "
+    "is not necessarily searchable. Use the tool's top-level `search` parameter "
+    "instead when one is available. isNull, isNotNull, orderAsc and orderDesc "
+    "take attribute only. limit, offset, cursorAfter and cursorBefore take values only. On list "
     "endpoints a relationship returns only the related ID unless selected: "
     '{"method":"select","values":["*","author.*"]} expands it in the same call, '
     "avoiding one call per row."
