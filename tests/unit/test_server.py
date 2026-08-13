@@ -649,6 +649,19 @@ class ServerHelperTests(unittest.TestCase):
         self.assertEqual(len(manager_a.services), 39)
         self.assertEqual(len(manager_a.get_all_tools()), 992)
 
+    def test_advisor_tools_are_project_scoped(self):
+        manager = register_services(object(), profile=OAUTH_PROFILE)
+        advisor_tools = {
+            name: tool
+            for name, tool in manager.tools_registry.items()
+            if name.startswith("advisor_")
+        }
+
+        self.assertTrue(advisor_tools)
+        self.assertEqual(
+            {tool["context_scope"] for tool in advisor_tools.values()}, {"project"}
+        )
+
     def test_api_key_profile_only_advertises_server_capabilities(self):
         manager = register_services(object(), profile=API_KEY_PROFILE)
         service_names = {service.service_name for service in manager.services}

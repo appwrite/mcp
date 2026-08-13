@@ -249,7 +249,7 @@ class Operator:
                                 "Appwrite project ID to act on (sent as X-Appwrite-Project). "
                                 "The connection authenticates against the Appwrite console, which "
                                 "can list your projects/organizations but holds no data — so "
-                                "project-scoped tools (databases, documents, vectors, users, "
+                                "project-scoped tools (Advisor, databases, documents, vectors, users, "
                                 "storage, functions, messaging, sites, usage, VCS, and WAF) "
                                 "require this. Search results identify each tool's context. Discover a project "
                                 "first, then pass its id. Omit for console/account-level tools."
