@@ -10,6 +10,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  actions: write
   contents: write
 
 jobs:
@@ -43,11 +44,13 @@ jobs:
         run: uv run --group dev python scripts/build_docs_index.py
 
       - name: Commit updated index
+        id: commit
         run: |
           git add src/mcp_server_appwrite/data/docs_index.npz \
             src/mcp_server_appwrite/data/docs_index_meta.json
           if git diff --cached --quiet; then
             echo "Documentation index is already up to date"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -56,3 +59,36 @@ jobs:
           git commit -m "chore: refresh documentation search index"
           git pull --rebase origin main
           git push origin HEAD:main
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Create patch release
+        id: release
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ steps.commit.outputs.commit_sha }}
+        run: |
+          LATEST_TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+          if [[ ! "$LATEST_TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Latest release tag $LATEST_TAG must match vMAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+
+          TAG="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))"
+          gh release create "$TAG" \
+            --target "$COMMIT_SHA" \
+            --title "$TAG" \
+            --notes "- Refresh the embedded Appwrite documentation index."
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      # Events created with GITHUB_TOKEN do not start other workflows, so dispatch
+      # publishing and production explicitly for the newly created release tag.
+      - name: Publish and deploy release
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          gh workflow run publish.yml --ref "$TAG" -f tag="$TAG"
+          gh workflow run production.yml --ref "$TAG" -f tag="$TAG"
