@@ -3,6 +3,15 @@ name: Publish
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag in vMAJOR.MINOR.PATCH format
+        required: true
+        type: string
+
+env:
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
 
 jobs:
   publish:
@@ -28,7 +37,7 @@ jobs:
 
       - name: Derive release version
         run: |
-          TAG="${{ github.event.release.tag_name }}"
+          TAG="$RELEASE_TAG"
           if ! echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "Release tag $TAG must match vMAJOR.MINOR.PATCH" >&2
             exit 1
@@ -66,7 +75,7 @@ jobs:
 
       - name: Render MCP Registry metadata
         run: |
-          TAG="${{ github.event.release.tag_name }}"
+          TAG="$RELEASE_TAG"
           if ! echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "Release tag $TAG must match vMAJOR.MINOR.PATCH" >&2
             exit 1
