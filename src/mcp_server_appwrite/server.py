@@ -1027,24 +1027,38 @@ def _format_response_parse_error(tool_name: str | None, response: Any = None) ->
     )
 
 
-def build_instructions(transport: str = "http") -> str:
+def build_instructions(transport: str = "http", *, docs_enabled: bool = True) -> str:
+    docs = (
+        "For questions about Appwrite concepts, products, features, or guides, "
+        "use appwrite_search_docs — it searches the official Appwrite "
+        "documentation and needs no project or credentials. "
+        if docs_enabled
+        else ""
+    )
+    capabilities = (
+        "This server covers the full Appwrite platform: it operates on Appwrite "
+        "resources (databases, auth/users, storage, functions, messaging, sites, "
+        "and more) via a searchable tool catalog"
+        + (" and answers Appwrite documentation questions" if docs_enabled else "")
+        + ". "
+    )
     result_handling = (
         "Large results are stored as resources; read the URI returned by the tool."
         if transport == "stdio"
         else "Hosted HTTP returns tool results inline, including images and other binary payloads."
     )
     common = (
+        f"{docs}"
         "Appwrite workflow: use appwrite_get_context to understand the current "
         "connection and available project resources, then use appwrite_search_tools "
         "and appwrite_call_tool for specific operations. "
         "Mutating hidden tools require confirm_write=true. "
-        "For questions about Appwrite concepts, products, or guides, use "
-        "appwrite_search_docs to search the documentation when available. "
         f"{result_handling}"
     )
 
     if transport == "stdio":
         return (
+            f"{capabilities}"
             "This local Appwrite MCP connection uses the API key, endpoint, and "
             "project configured in the server environment. Appwrite API calls target "
             "that configured APPWRITE_PROJECT_ID by default. "
@@ -1052,6 +1066,7 @@ def build_instructions(transport: str = "http") -> str:
         )
 
     return (
+        f"{capabilities}"
         "You authenticate against the Appwrite console, which can list your "
         "organizations and projects but stores no project data itself. Project-scoped "
         "tools (Advisor, TablesDB, tables, users, storage, functions, messaging, sites) need a "
@@ -1068,7 +1083,9 @@ def build_instructions(transport: str = "http") -> str:
 
 def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
     _configure_uploads(transport)
-    instructions = build_instructions(transport)
+    instructions = build_instructions(
+        transport, docs_enabled=bool(getattr(operator, "docs_enabled", False))
+    )
     subscriptions = ListenHandler(InMemorySubscriptionBus())
 
     async def handle_list_tools(
