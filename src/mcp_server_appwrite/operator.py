@@ -137,6 +137,10 @@ class Operator:
     def get_catalog_resource_uri(self) -> str:
         return CATALOG_URI
 
+    @property
+    def docs_enabled(self) -> bool:
+        return self._docs_search is not None
+
     def get_public_tools(self) -> list[types.Tool]:
         tools = [
             types.Tool(

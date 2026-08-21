@@ -1,7 +1,7 @@
 [project]
 name = "mcp-server-appwrite"
 dynamic = ["version"]
-description = "MCP (Model Context Protocol) server for Appwrite"
+description = "MCP server for Appwrite: manage projects and their databases, auth, storage, functions, messaging, and sites, and search the official Appwrite documentation"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

@@ -165,6 +165,25 @@ class ServerHelperTests(unittest.TestCase):
         self.assertIn("Large results are stored as resources", stdio)
         self.assertIn("returns tool results inline", http)
 
+    def test_build_instructions_lead_with_capabilities(self):
+        for transport in ("stdio", "http"):
+            instructions = build_instructions(transport)
+            self.assertTrue(
+                instructions.startswith(
+                    "This server covers the full Appwrite platform"
+                ),
+                instructions,
+            )
+
+    def test_build_instructions_state_docs_search_when_enabled(self):
+        for transport in ("stdio", "http"):
+            enabled = build_instructions(transport, docs_enabled=True)
+            disabled = build_instructions(transport, docs_enabled=False)
+            self.assertIn("appwrite_search_docs", enabled)
+            self.assertIn("documentation", enabled)
+            self.assertNotIn("when available", enabled)
+            self.assertNotIn("appwrite_search_docs", disabled)
+
     def test_build_mcp_server_supports_modern_subscriptions(self):
         server = build_mcp_server(Mock(), transport="http")
 
