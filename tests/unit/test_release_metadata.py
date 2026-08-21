@@ -34,6 +34,13 @@ class ServerVersionTests(unittest.TestCase):
             self.assertEqual(constants._resolve_server_version(), "0.0.0+unknown")
 
 
+class ServerTemplateTests(unittest.TestCase):
+    def test_description_fits_mcp_registry_limit(self):
+        template_path = Path(__file__).parents[2] / "server.template.json"
+        template = json.loads(template_path.read_text())
+        self.assertLessEqual(len(template["description"]), 100)
+
+
 class RenderServerMetadataTests(unittest.TestCase):
     def test_render_server_metadata_sets_all_release_versions(self):
         module = _load_render_module()
