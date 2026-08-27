@@ -30,6 +30,14 @@ _SENSITIVE_KEYS = {
     "x_appwrite_key",
 }
 
+_IGNORED_LOGGER_PREFIXES = ("opentelemetry.exporter.otlp.",)
+_IGNORED_LOG_MESSAGES = {
+    (
+        "uvicorn.error",
+        "ASGI callable returned without completing response.",
+    ),
+}
+
 
 def _log(message: str) -> None:
     print(f"[appwrite-mcp][sentry] {message}", file=sys.stderr, flush=True)
@@ -161,11 +169,32 @@ def capture_appwrite_exception(
 def _should_capture(exc: BaseException) -> bool:
     if _already_captured(exc):
         return False
-    if isinstance(exc, ValueError):
+
+    category = classify_tool_error(exc)
+    if category in {"write_confirmation", "appwrite_4xx"}:
         return False
-    if classify_tool_error(exc) in {"write_confirmation", "appwrite_4xx"}:
+    # Pydantic validation errors are ValueError subclasses, but SDK response
+    # validation is actionable model drift and must remain visible.
+    if category != "sdk_validation" and _find_exception(exc, ValueError) is not None:
+        return False
+    if _find_expected_disconnect(exc) is not None:
         return False
     return True
+
+
+def _find_expected_disconnect(exc: BaseException) -> BaseException | None:
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        error_type = type(current)
+        if (
+            error_type.__name__ == "ClientDisconnect"
+            and error_type.__module__.startswith("starlette.")
+        ):
+            return current
+        current = current.__cause__ or current.__context__
+    return None
 
 
 def _find_appwrite_exception(exc: BaseException) -> AppwriteException | None:
@@ -210,7 +239,29 @@ def _before_send(event: Any, hint: Any) -> Any:
         exc = exc_info[1]
         if isinstance(exc, BaseException) and not _should_capture(exc):
             return None
+    if _is_ignored_log_event(event):
+        return None
     return _normalize_transaction(_sanitize(event))
+
+
+def _is_ignored_log_event(event: Any) -> bool:
+    """Drop noisy infrastructure logs that have no exception to classify."""
+    if not isinstance(event, dict):
+        return False
+
+    tags = _event_tags(event)
+    raw_logger = event.get("logger") or tags.get("logger")
+    logger = str(raw_logger) if raw_logger else ""
+    if logger.startswith(_IGNORED_LOGGER_PREFIXES):
+        return True
+
+    logentry = event.get("logentry")
+    message = logentry.get("formatted") if isinstance(logentry, dict) else None
+    if not isinstance(message, str):
+        raw_message = event.get("message")
+        message = raw_message if isinstance(raw_message, str) else ""
+
+    return (logger, message) in _IGNORED_LOG_MESSAGES
 
 
 def _normalize_transaction(event: Any) -> Any:
