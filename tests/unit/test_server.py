@@ -666,7 +666,53 @@ class ServerHelperTests(unittest.TestCase):
             set(SERVICE_CLASSES),
         )
         self.assertEqual(len(manager_a.services), 39)
-        self.assertEqual(len(manager_a.get_all_tools()), 992)
+        self.assertEqual(len(manager_a.get_all_tools()), 994)
+
+    def test_console_sdk_0_6_surface(self):
+        manager = register_services(object(), profile=OAUTH_PROFILE)
+        tools = manager.tools_registry
+
+        self.assertIn("avatars_get_photo", tools)
+        self.assertIn("project_update_o_auth2_hugging_face", tools)
+
+        site_scopes = tools["sites_create"]["definition"].input_schema["properties"][
+            "scopes"
+        ]
+        self.assertEqual(site_scopes["type"], "array")
+        self.assertNotIn("dedicateddatabases.execute", site_scopes["items"]["enum"])
+
+        for tool_name in ("usage_list_events", "usage_list_gauges"):
+            metrics = tools[tool_name]["definition"].input_schema["properties"][
+                "metrics"
+            ]
+            self.assertEqual(metrics["type"], "array")
+            self.assertEqual(metrics["items"], {"type": "string"})
+            self.assertNotIn("enum", metrics["items"])
+
+        create_rate_limit = tools["waf_create_rate_limit_rule"][
+            "definition"
+        ].input_schema["properties"]
+        self.assertEqual(create_rate_limit["strategy"]["type"], "string")
+        self.assertEqual(create_rate_limit["max_bucket_size"]["type"], "number")
+        update_rate_limit = tools["waf_update_rate_limit_rule"][
+            "definition"
+        ].input_schema["properties"]
+        self.assertEqual(update_rate_limit["max_bucket_size"]["type"], "number")
+
+        addon = tools["organizations_get_addon_price"]["definition"].input_schema[
+            "properties"
+        ]["addon"]
+        self.assertEqual(addon["type"], "string")
+        self.assertIn("backup_recovery", addon["enum"])
+
+        runtime = tools["functions_create"]["definition"].input_schema["properties"][
+            "runtime"
+        ]
+        self.assertIn("bun-1.4", runtime["enum"])
+        build_runtime = tools["sites_create"]["definition"].input_schema["properties"][
+            "build_runtime"
+        ]
+        self.assertIn("bun-1.4", build_runtime["enum"])
 
     def test_advisor_tools_are_project_scoped(self):
         manager = register_services(object(), profile=OAUTH_PROFILE)
@@ -687,7 +733,9 @@ class ServerHelperTests(unittest.TestCase):
         tool_names = {tool.name for tool in manager.get_all_tools()}
 
         self.assertEqual(len(manager.services), 26)
-        self.assertEqual(len(tool_names), 650)
+        self.assertEqual(len(tool_names), 652)
+        self.assertIn("avatars_get_photo", tool_names)
+        self.assertIn("project_update_o_auth2_hugging_face", tool_names)
         self.assertIn("documents_db_list", tool_names)
         self.assertIn("vectors_db_list", tool_names)
         self.assertIn("embeddings_create_text_embeddings", tool_names)
