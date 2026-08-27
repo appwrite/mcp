@@ -3,6 +3,8 @@ import unittest
 from unittest.mock import patch
 
 from appwrite_console.exception import AppwriteException
+from pydantic import BaseModel, ValidationError
+from starlette.requests import ClientDisconnect
 
 from mcp_server_appwrite import error_monitoring
 from mcp_server_appwrite.error_classification import WriteConfirmationRequired
@@ -53,31 +55,40 @@ class ErrorMonitoringTests(unittest.TestCase):
         self.assertFalse(captured)
         capture.assert_not_called()
 
-    def test_wrapped_value_errors_are_captured(self):
+    def test_wrapped_value_errors_are_not_captured(self):
         error_monitoring._enabled = True
 
-        class FakeScope:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return False
-
-            def set_tag(self, key, value):
-                pass
-
-        scope = FakeScope()
         with patch("sentry_sdk.capture_exception") as capture:
-            with patch("sentry_sdk.new_scope", return_value=scope):
-                try:
-                    raise ValueError("bad input")
-                except ValueError as exc:
-                    wrapped = RuntimeError("wrapped")
-                    wrapped.__cause__ = exc
-                    captured = error_monitoring.capture_exception(wrapped)
+            try:
+                raise ValueError("bad input")
+            except ValueError as exc:
+                wrapped = RuntimeError("wrapped")
+                wrapped.__cause__ = exc
+                captured = error_monitoring.capture_exception(wrapped)
 
-        self.assertTrue(captured)
-        capture.assert_called_once_with(wrapped)
+        self.assertFalse(captured)
+        capture.assert_not_called()
+
+    def test_wrapped_sdk_validation_errors_are_captured(self):
+        class Payload(BaseModel):
+            required: str
+
+        try:
+            Payload.model_validate({})
+        except ValidationError as exc:
+            wrapped = RuntimeError("wrapped")
+            wrapped.__cause__ = exc
+
+        self.assertTrue(error_monitoring._should_capture(wrapped))
+
+    def test_client_disconnects_are_not_captured(self):
+        error_monitoring._enabled = True
+
+        with patch("sentry_sdk.capture_exception") as capture:
+            captured = error_monitoring.capture_exception(ClientDisconnect())
+
+        self.assertFalse(captured)
+        capture.assert_not_called()
 
     def test_appwrite_4xx_errors_are_not_captured(self):
         error_monitoring._enabled = True
@@ -265,6 +276,32 @@ class ErrorMonitoringTests(unittest.TestCase):
                 {"event_id": "1"}, {"exc_info": (RuntimeError, wrapped, None)}
             )
         )
+
+    def test_before_send_drops_otel_exporter_logs(self):
+        event = {
+            "logger": "opentelemetry.exporter.otlp.proto.http.metric_exporter",
+            "logentry": {"formatted": "Failed to export metrics batch"},
+        }
+
+        self.assertIsNone(error_monitoring._before_send(event, {}))
+
+    def test_before_send_drops_incomplete_disconnect_responses(self):
+        event = {
+            "tags": [["logger", "uvicorn.error"]],
+            "logentry": {
+                "formatted": "ASGI callable returned without completing response."
+            },
+        }
+
+        self.assertIsNone(error_monitoring._before_send(event, {}))
+
+    def test_before_send_keeps_other_uvicorn_errors(self):
+        event = {
+            "logger": "uvicorn.error",
+            "logentry": {"formatted": "Unexpected server failure"},
+        }
+
+        self.assertEqual(error_monitoring._before_send(event, {}), event)
 
     def test_before_send_normalizes_mcp_tool_call_transaction(self):
         event = {
