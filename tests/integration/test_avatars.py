@@ -8,5 +8,6 @@ class AvatarsIntegrationTests(LiveIntegrationTestCase):
 
         runner.call("avatars_get_browser", {"code": "ch"})
         runner.call("avatars_get_initials", {"name": "MCP Smoke"})
+        runner.call("avatars_get_photo", {"name": "MCP Smoke"})
 
         self.assert_no_unexpected_errors(runner)
