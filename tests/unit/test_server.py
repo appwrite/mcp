@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import io
+import json
 import os
 import sys
 import tempfile
@@ -9,6 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import httpx
 import mcp.types as types
 from appwrite_console.enums.browser import Browser
 from appwrite_console.exception import AppwriteException
@@ -19,6 +21,7 @@ from mcp_server_appwrite import server as server_module
 from mcp_server_appwrite.catalog_policy import API_KEY_PROFILE, OAUTH_PROFILE
 from mcp_server_appwrite.error_classification import WriteConfirmationRequired
 from mcp_server_appwrite.server import (
+    _bounded_binary_client_call,
     _coerce_argument,
     _configure_uploads,
     _execute_public_tool_for_transport,
@@ -45,15 +48,27 @@ from mcp_server_appwrite.tool_manager import ToolManager
 
 
 class _FakeResponse:
-    def __init__(self, *, data=b"", headers=None, url="https://example.com/pic.png"):
+    def __init__(
+        self,
+        *,
+        data=b"",
+        headers=None,
+        url="https://example.com/pic.png",
+        status_code=200,
+        reason_phrase="OK",
+    ):
         self._data = data
         self.headers = headers or {}
         self.url = url
+        self.status_code = status_code
+        self.reason_phrase = reason_phrase
+        self.iterated = False
 
     def raise_for_status(self):
         return None
 
     def iter_bytes(self):
+        self.iterated = True
         for index in range(0, len(self._data), 64):
             yield self._data[index : index + 64]
 
@@ -72,6 +87,7 @@ class _FakeStream:
 class _FakeClient:
     def __init__(self, response):
         self._response = response
+        self.stream_kwargs = None
 
     def __enter__(self):
         return self
@@ -79,7 +95,8 @@ class _FakeClient:
     def __exit__(self, *args):
         return False
 
-    def stream(self, method, url):
+    def stream(self, method, url, **kwargs):
+        self.stream_kwargs = {"method": method, "url": url, **kwargs}
         return _FakeStream(self._response)
 
 
@@ -442,6 +459,110 @@ class ServerHelperTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertIsInstance(result[0], types.EmbeddedResource)
         self.assertEqual(result[0].resource.mime_type, "application/octet-stream")
+
+    def test_bounded_binary_call_returns_content_within_limit(self):
+        client = build_client_for_request(
+            "console",
+            "secret",
+            target_project="project-1",
+            organization_id="organization-1",
+        )
+        response = _FakeResponse(data=b"plain-bytes", headers={"content-length": "11"})
+        http_client = _FakeClient(response)
+
+        with patch.object(server_module.httpx, "Client", return_value=http_client):
+            result = _bounded_binary_client_call(
+                client,
+                "storage_get_file_download",
+                "get",
+                "/download",
+                params={"token": "file-token"},
+            )
+
+        self.assertEqual(result, b"plain-bytes")
+        request = http_client.stream_kwargs
+        self.assertEqual(request["headers"]["accept-encoding"], "identity")
+        self.assertEqual(request["headers"]["authorization"], "Bearer secret")
+        self.assertEqual(request["headers"]["x-appwrite-project"], "project-1")
+        self.assertEqual(
+            request["headers"]["x-appwrite-organization"], "organization-1"
+        )
+        self.assertEqual(request["params"], {"token": "file-token"})
+
+    def test_bounded_binary_call_rejects_declared_oversize_before_reading(self):
+        client = build_introspection_client()
+        response = _FakeResponse(data=b"unread", headers={"content-length": "11"})
+
+        with (
+            patch.object(server_module, "MAX_HOSTED_BINARY_RESPONSE_BYTES", 10),
+            patch.object(
+                server_module.httpx, "Client", return_value=_FakeClient(response)
+            ),
+        ):
+            with self.assertRaises(
+                server_module.HostedBinaryResponseTooLarge
+            ) as raised:
+                _bounded_binary_client_call(
+                    client, "storage_get_file_download", "get", "/download"
+                )
+
+        error = json.loads(str(raised.exception))["error"]
+        self.assertEqual(error["code"], "hosted_response_too_large")
+        self.assertEqual(error["limitBytes"], 10)
+        self.assertEqual(error["contentLength"], 11)
+
+    def test_bounded_binary_call_rejects_compressed_response_before_iteration(self):
+        client = build_introspection_client()
+        response = _FakeResponse(
+            data=b"compressed", headers={"content-encoding": "gzip"}
+        )
+
+        with patch.object(
+            server_module.httpx, "Client", return_value=_FakeClient(response)
+        ):
+            with self.assertRaisesRegex(ValueError, "compressed binary response"):
+                _bounded_binary_client_call(
+                    client, "storage_get_file_download", "get", "/download"
+                )
+
+        self.assertFalse(response.iterated)
+
+    def test_bounded_binary_call_wraps_httpx_transport_errors(self):
+        client = build_introspection_client()
+        failure = httpx.ConnectError("connection failed")
+
+        with patch.object(
+            server_module,
+            "_perform_bounded_binary_client_call",
+            side_effect=failure,
+        ):
+            with self.assertRaises(AppwriteException) as raised:
+                _bounded_binary_client_call(
+                    client, "storage_get_file_download", "get", "/download"
+                )
+
+        self.assertIs(raised.exception.__cause__, failure)
+
+    def test_bounded_binary_call_rejects_stream_without_content_length(self):
+        client = build_introspection_client()
+        response = _FakeResponse(data=b"eleven-byte")
+
+        with (
+            patch.object(server_module, "MAX_HOSTED_BINARY_RESPONSE_BYTES", 10),
+            patch.object(
+                server_module.httpx, "Client", return_value=_FakeClient(response)
+            ),
+        ):
+            with self.assertRaises(
+                server_module.HostedBinaryResponseTooLarge
+            ) as raised:
+                _bounded_binary_client_call(
+                    client, "storage_get_file_view", "get", "/view"
+                )
+
+        error = json.loads(str(raised.exception))["error"]
+        self.assertEqual(error["code"], "hosted_response_too_large")
+        self.assertGreater(error["observedBytes"], 10)
 
     def test_format_appwrite_error_truncates_large_html_body(self):
         exc = AppwriteException("<!DOCTYPE html>" + ("x" * 1000), 404, None)
@@ -993,6 +1114,79 @@ class ServerHelperTests(unittest.TestCase):
         self.assertEqual(captured["code"], "ch")
         self.assertEqual(captured["width"], 1)
         self.assertEqual(captured["height"], 1)
+
+    def test_hosted_binary_tool_uses_bounded_streaming_call(self):
+        tool = types.Tool(
+            name="storage_get_file_download",
+            description="Download a file.",
+            inputSchema={"type": "object", "properties": {}, "required": []},
+        )
+        manager = ToolManager()
+        manager.tools_registry = {
+            "storage_get_file_download": {
+                "definition": tool,
+                "service_name": "storage",
+                "method_name": "get_file_download",
+                "parameter_types": {},
+            }
+        }
+
+        class StorageService:
+            def __init__(self, client):
+                self.client = client
+
+            def get_file_download(self) -> bytes:
+                return self.client.call("get", "/download", {}, {})
+
+        client = build_introspection_client()
+        with (
+            patch.dict(server_module.SERVICE_CLASSES, {"storage": StorageService}),
+            patch.object(server_module, "resolve_client", return_value=client),
+            patch.object(
+                server_module,
+                "_bounded_binary_client_call",
+                return_value=b"bounded",
+            ) as bounded_call,
+        ):
+            result = execute_registered_tool(manager, tool.name, {})
+
+        bounded_call.assert_called_once()
+        self.assertIsInstance(result[0], types.EmbeddedResource)
+
+    def test_explicit_stdio_client_keeps_sdk_binary_call(self):
+        tool = types.Tool(
+            name="storage_get_file_download",
+            description="Download a file.",
+            inputSchema={"type": "object", "properties": {}, "required": []},
+        )
+        manager = ToolManager()
+        manager.tools_registry = {
+            "storage_get_file_download": {
+                "definition": tool,
+                "service_name": "storage",
+                "method_name": "get_file_download",
+                "parameter_types": {},
+            }
+        }
+
+        class StorageService:
+            def __init__(self, client):
+                self.client = client
+
+            def get_file_download(self) -> bytes:
+                return self.client.call("get", "/download", {}, {})
+
+        client = build_introspection_client()
+        client.call = Mock(return_value=b"sdk")
+        with (
+            patch.dict(server_module.SERVICE_CLASSES, {"storage": StorageService}),
+            patch.object(server_module, "_bounded_binary_client_call") as bounded_call,
+        ):
+            result = execute_registered_tool(manager, tool.name, {}, client=client)
+
+        bounded_call.assert_not_called()
+        client.call.assert_called_once()
+        self.assertIsInstance(result[0], types.EmbeddedResource)
 
     def test_execute_registered_tool_captures_publishable_appwrite_error(self):
         tool = types.Tool(

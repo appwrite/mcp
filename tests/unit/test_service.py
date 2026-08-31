@@ -51,6 +51,12 @@ class ExampleService:
         return {"ok": True}
 
 
+class BinaryService:
+    def download(self) -> bytes:
+        """Download binary content."""
+        return b"content"
+
+
 class QueryService:
     def list(self, queries: List[str] = [], search: str = "") -> Dict[str, Any]:
         """
@@ -83,6 +89,15 @@ class ServiceSchemaTests(unittest.TestCase):
         self.assertIn("oneOf", schema["properties"]["file"])
         self.assertIn("file", schema["required"])
         self.assertTrue(schema["additionalProperties"] is False)
+
+    def test_documents_hosted_binary_response_limit(self):
+        definition = Service(
+            BinaryService(), "binary", binary_response_limit=25 * 1024 * 1024
+        ).list_tools()["binary_download"]["definition"]
+
+        self.assertIn(
+            "Hosted MCP returns binary responses up to 25 MiB", definition.description
+        )
 
     def test_documents_the_query_wire_format(self):
         properties = (

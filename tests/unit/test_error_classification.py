@@ -4,6 +4,7 @@ from appwrite_console.exception import AppwriteException
 from pydantic import BaseModel, ValidationError
 
 from mcp_server_appwrite.error_classification import (
+    HostedBinaryResponseTooLarge,
     WriteConfirmationRequired,
     classify_tool_error,
     is_response_parse_error,
@@ -16,6 +17,10 @@ class ErrorClassificationTests(unittest.TestCase):
             classify_tool_error(WriteConfirmationRequired("confirm_write=true")),
             "write_confirmation",
         )
+
+    def test_hosted_binary_response_too_large(self):
+        error = HostedBinaryResponseTooLarge("storage_get_file_download", 1024)
+        self.assertEqual(classify_tool_error(error), "response_too_large")
 
     def test_wrapped_appwrite_4xx(self):
         for code in (400, 401, 404, 409, 429, 499):

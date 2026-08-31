@@ -7,8 +7,9 @@ Prometheus and Sentry agree about which failures are expected and actionable.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
-from typing import Literal
+from typing import Any, Literal
 
 from appwrite_console.exception import AppwriteException
 
@@ -17,6 +18,7 @@ ErrorCategory = Literal[
     "appwrite_4xx",
     "appwrite_5xx",
     "sdk_validation",
+    "response_too_large",
     "internal",
 ]
 
@@ -26,6 +28,7 @@ ERROR_CATEGORIES: frozenset[str] = frozenset(
         "appwrite_4xx",
         "appwrite_5xx",
         "sdk_validation",
+        "response_too_large",
         "internal",
     }
 )
@@ -35,12 +38,42 @@ class WriteConfirmationRequired(RuntimeError):
     """A mutating hidden tool was called without explicit confirmation."""
 
 
+class HostedBinaryResponseTooLarge(ValueError):
+    """A binary Appwrite response exceeded the hosted MCP memory-safe limit."""
+
+    def __init__(
+        self,
+        tool_name: str,
+        limit_bytes: int,
+        *,
+        content_length: int | None = None,
+        observed_bytes: int | None = None,
+    ) -> None:
+        error: dict[str, Any] = {
+            "code": "hosted_response_too_large",
+            "tool": tool_name,
+            "limitBytes": limit_bytes,
+            "message": (
+                "The binary response is too large to return through hosted MCP. "
+                "Use an Appwrite SDK or REST API for larger content."
+            ),
+        }
+        if content_length is not None:
+            error["contentLength"] = content_length
+        if observed_bytes is not None:
+            error["observedBytes"] = observed_bytes
+        super().__init__(json.dumps({"error": error}, separators=(",", ":")))
+
+
 def classify_tool_error(exc: BaseException) -> ErrorCategory:
     """Return the bounded operational category for an exception chain."""
     chain = tuple(_exception_chain(exc))
 
     if any(isinstance(item, WriteConfirmationRequired) for item in chain):
         return "write_confirmation"
+
+    if any(isinstance(item, HostedBinaryResponseTooLarge) for item in chain):
+        return "response_too_large"
 
     if any(_is_sdk_validation_error(item) for item in chain):
         return "sdk_validation"
