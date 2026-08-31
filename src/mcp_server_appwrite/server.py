@@ -880,15 +880,18 @@ def _perform_bounded_binary_client_call(
         with http_client.stream(
             method, endpoint + path, headers=request_headers, params=request_params
         ) as response:
-            if response.status_code >= 400:
-                _raise_bounded_response_error(response)
-
+            # Check before reading success or error bodies: HTTPX decodes
+            # ``iter_bytes()`` chunks, so either path could otherwise inflate a
+            # compressed response beyond the limit before we can count it.
             content_encoding = response.headers.get("content-encoding", "identity")
             if content_encoding.lower().strip() not in {"", "identity"}:
                 raise ValueError(
                     "Hosted MCP cannot safely return a compressed binary response. "
                     "Use an Appwrite SDK or REST API for this content."
                 )
+
+            if response.status_code >= 400:
+                _raise_bounded_response_error(response)
 
             warning = response.headers.get("x-appwrite-warning")
             if warning:

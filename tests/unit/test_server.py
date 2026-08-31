@@ -527,6 +527,25 @@ class ServerHelperTests(unittest.TestCase):
 
         self.assertFalse(response.iterated)
 
+    def test_bounded_binary_call_rejects_compressed_error_before_iteration(self):
+        client = build_introspection_client()
+        response = _FakeResponse(
+            data=b"compressed error",
+            headers={"content-encoding": "gzip"},
+            status_code=502,
+            reason_phrase="Bad Gateway",
+        )
+
+        with patch.object(
+            server_module.httpx, "Client", return_value=_FakeClient(response)
+        ):
+            with self.assertRaisesRegex(ValueError, "compressed binary response"):
+                _bounded_binary_client_call(
+                    client, "storage_get_file_download", "get", "/download"
+                )
+
+        self.assertFalse(response.iterated)
+
     def test_bounded_binary_call_wraps_httpx_transport_errors(self):
         client = build_introspection_client()
         failure = httpx.ConnectError("connection failed")
