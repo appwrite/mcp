@@ -23,11 +23,13 @@ class Service:
         *,
         allowed_methods: frozenset[str] | None = None,
         context_scope: str = "console",
+        binary_response_limit: int | None = None,
     ):
         self.service = service_instance
         self.service_name = service_name
         self.allowed_methods = allowed_methods
         self.context_scope = context_scope
+        self.binary_response_limit = binary_response_limit
         self._method_name_overrides = self.get_method_name_overrides()
 
     def get_method_name_overrides(self) -> Dict[str, str]:
@@ -204,9 +206,20 @@ class Service:
                 if param.default is param.empty:
                     required.append(param_name)
 
+            description = docstring.short_description or "No description available"
+            if (
+                self.binary_response_limit is not None
+                and type_hints.get("return") is bytes
+            ):
+                limit_mib = self.binary_response_limit // (1024 * 1024)
+                description = (
+                    f"{description} Hosted MCP returns binary responses up to "
+                    f"{limit_mib} MiB; use an Appwrite SDK or REST API for larger content."
+                )
+
             tool_definition = Tool(
                 name=tool_name,
-                description=docstring.short_description or "No description available",
+                description=description,
                 input_schema={
                     "type": "object",
                     "properties": properties,

@@ -60,6 +60,7 @@ from .constants import (
     FETCH_TIMEOUT_SECONDS,
     HOSTED_PATH_GUIDANCE,
     MAX_FETCH_BYTES,
+    MAX_HOSTED_BINARY_RESPONSE_BYTES,
     MAX_INLINE_BYTES,
     SERVER_ICON_URL,
     SERVER_VERSION,
@@ -73,7 +74,7 @@ from .context import (
     get_appwrite_context,
 )
 from .docs_search import DocsSearch
-from .error_classification import is_response_parse_error
+from .error_classification import HostedBinaryResponseTooLarge, is_response_parse_error
 from .operator import Operator, _parse_tool_name
 from .service import Service
 from .tool_manager import ToolManager
@@ -381,6 +382,11 @@ def register_services(
                 name,
                 allowed_methods=allowed_methods,
                 context_scope=context_scope(name),
+                binary_response_limit=(
+                    MAX_HOSTED_BINARY_RESPONSE_BYTES
+                    if profile == OAUTH_PROFILE
+                    else None
+                ),
             )
         )
     return tools_manager
@@ -820,6 +826,126 @@ def _prepare_arguments(tool_info: dict, arguments: dict[str, Any]) -> dict[str, 
     return prepared_arguments
 
 
+def _raise_bounded_response_error(response: httpx.Response) -> None:
+    """Translate an upstream streaming error into the SDK's public exception."""
+    body = bytearray()
+    for chunk in response.iter_bytes():
+        remaining = MAX_INLINE_BYTES - len(body)
+        if remaining <= 0:
+            break
+        body.extend(chunk[:remaining])
+    text = bytes(body).decode("utf-8", errors="replace")
+    message = text or response.reason_phrase
+    error_type = None
+    try:
+        payload = json.loads(text)
+        if isinstance(payload, dict):
+            message = str(payload.get("message") or message)
+            raw_type = payload.get("type")
+            error_type = str(raw_type) if raw_type is not None else None
+    except (TypeError, ValueError):
+        pass
+    raise AppwriteException(message, response.status_code, error_type, text)
+
+
+def _perform_bounded_binary_client_call(
+    client: Client,
+    tool_name: str,
+    method: str,
+    path: str = "",
+    headers: dict[str, Any] | None = None,
+    params: dict[str, Any] | None = None,
+    response_type: str = "json",
+) -> bytes:
+    """Stream one SDK binary call into a bounded buffer for hosted HTTP."""
+    if method.lower() != "get" or response_type != "json":
+        raise RuntimeError(f"Unsupported bounded binary request for {tool_name}.")
+
+    request_headers = {
+        key: value
+        for key, value in {**client._global_headers, **(headers or {})}.items()
+        if value
+    }
+    # Prevent HTTPX from transparently inflating a compressed response into one
+    # oversized chunk before the decoded-byte limit can run.
+    request_headers["accept-encoding"] = "identity"
+    request_params = client.flatten(params or {})
+    endpoint = client._endpoint.rstrip("/")
+
+    with httpx.Client(
+        verify=not client._self_signed,
+        timeout=FETCH_TIMEOUT_SECONDS,
+        follow_redirects=True,
+    ) as http_client:
+        with http_client.stream(
+            method, endpoint + path, headers=request_headers, params=request_params
+        ) as response:
+            # Check before reading success or error bodies: HTTPX decodes
+            # ``iter_bytes()`` chunks, so either path could otherwise inflate a
+            # compressed response beyond the limit before we can count it.
+            content_encoding = response.headers.get("content-encoding", "identity")
+            if content_encoding.lower().strip() not in {"", "identity"}:
+                raise ValueError(
+                    "Hosted MCP cannot safely return a compressed binary response. "
+                    "Use an Appwrite SDK or REST API for this content."
+                )
+
+            if response.status_code >= 400:
+                _raise_bounded_response_error(response)
+
+            warning = response.headers.get("x-appwrite-warning")
+            if warning:
+                for item in warning.split(";"):
+                    print(f"Warning: {item}", file=sys.stderr)
+
+            declared = response.headers.get("content-length")
+            if declared:
+                try:
+                    content_length = int(declared)
+                except ValueError:
+                    content_length = None
+                if (
+                    content_length is not None
+                    and content_length > MAX_HOSTED_BINARY_RESPONSE_BYTES
+                ):
+                    raise HostedBinaryResponseTooLarge(
+                        tool_name,
+                        MAX_HOSTED_BINARY_RESPONSE_BYTES,
+                        content_length=content_length,
+                    )
+
+            body = bytearray()
+            for chunk in response.iter_bytes():
+                observed_bytes = len(body) + len(chunk)
+                if observed_bytes > MAX_HOSTED_BINARY_RESPONSE_BYTES:
+                    raise HostedBinaryResponseTooLarge(
+                        tool_name,
+                        MAX_HOSTED_BINARY_RESPONSE_BYTES,
+                        observed_bytes=observed_bytes,
+                    )
+                body.extend(chunk)
+            return bytes(body)
+
+
+def _bounded_binary_client_call(
+    client: Client,
+    tool_name: str,
+    method: str,
+    path: str = "",
+    headers: dict[str, Any] | None = None,
+    params: dict[str, Any] | None = None,
+    response_type: str = "json",
+) -> bytes:
+    try:
+        return _perform_bounded_binary_client_call(
+            client, tool_name, method, path, headers, params, response_type
+        )
+    except httpx.HTTPError as exc:
+        # Match the generated SDK contract so callers receive the existing
+        # Appwrite-formatted tool error instead of an internal HTTPX exception.
+        raise AppwriteException(str(exc)) from exc
+
+
 def execute_registered_tool(
     tools_manager: ToolManager,
     name: str,
@@ -843,13 +969,39 @@ def execute_registered_tool(
     # Re-bind the SDK method to a client authenticated for the current request.
     # An explicit client takes precedence (used by tests); otherwise it is resolved
     # from the request's OAuth access token.
+    hosted = client is None
     if client is None:
         client = resolve_client(target_project, organization_id)
     bound_method = getattr(service_cls(client), method_name)
+    bounded_binary = (
+        hosted and inspect.signature(bound_method).return_annotation is bytes
+    )
 
     parsed = _parse_tool_name(name)
     try:
-        result = bound_method(**prepared_arguments)
+        if bounded_binary:
+            original_call = client.call
+            setattr(
+                client,
+                "call",
+                lambda method, path="", headers=None, params=None, response_type="json": _bounded_binary_client_call(
+                    client,
+                    name,
+                    method,
+                    path,
+                    headers,
+                    params,
+                    response_type,
+                ),
+            )
+            try:
+                result = bound_method(**prepared_arguments)
+            finally:
+                setattr(client, "call", original_call)
+        else:
+            result = bound_method(**prepared_arguments)
+    except HostedBinaryResponseTooLarge:
+        raise
     except AppwriteException as exc:
         error_monitoring.capture_appwrite_exception(
             exc,
