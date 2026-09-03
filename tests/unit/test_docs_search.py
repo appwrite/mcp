@@ -5,10 +5,32 @@ from pathlib import Path
 
 import numpy as np
 
+from mcp_server_appwrite.docs_index import write_artifact
 from mcp_server_appwrite.docs_search import DOCS_MAX_LIMIT, DocsSearch, _clamp_limit
 
+PAGES = [
+    {
+        "path": "docs/products/databases",
+        "title": "Databases",
+        "description": "Work with databases.",
+        "content": "# Databases\nFull databases page content.",
+    },
+    {
+        "path": "docs/products/storage",
+        "title": "Storage",
+        "description": "Store files.",
+        "content": "# Storage\nFull storage page content.",
+    },
+    {
+        "path": "docs/products/auth",
+        "title": "Authentication",
+        "description": "Authenticate users.",
+        "content": "# Auth\nFull auth page content.",
+    },
+]
 
-def write_index(data_dir: Path) -> None:
+
+def write_index(data_dir: Path, pages: list[dict] | None = None) -> None:
     # Three pages; page 0 has two chunks. Dimension 3 keeps the test tiny.
     vectors = np.array(
         [
@@ -21,33 +43,11 @@ def write_index(data_dir: Path) -> None:
     )
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     vectors = vectors / norms
-    np.savez_compressed(
+    write_artifact(
         data_dir / "docs_index.npz",
+        {"model": "test", "dimension": 3, "pages": PAGES if pages is None else pages},
         vectors=vectors,
         chunk_page=np.array([0, 0, 1, 2], dtype=np.int32),
-    )
-    pages = [
-        {
-            "path": "docs/products/databases",
-            "title": "Databases",
-            "description": "Work with databases.",
-            "content": "# Databases\nFull databases page content.",
-        },
-        {
-            "path": "docs/products/storage",
-            "title": "Storage",
-            "description": "Store files.",
-            "content": "# Storage\nFull storage page content.",
-        },
-        {
-            "path": "docs/products/auth",
-            "title": "Authentication",
-            "description": "Authenticate users.",
-            "content": "# Auth\nFull auth page content.",
-        },
-    ]
-    (data_dir / "docs_index_meta.json").write_text(
-        json.dumps({"model": "test", "dimension": 3, "pages": pages})
     )
 
 
@@ -80,6 +80,20 @@ class DocsSearchTests(unittest.TestCase):
 
     def test_available_when_index_and_embedder_present(self):
         self.assertTrue(self.make_search().available)
+
+    def test_unavailable_when_artifact_has_no_metadata_member(self):
+        np.savez_compressed(
+            self.data_dir / "docs_index.npz",
+            vectors=np.eye(3, dtype=np.float32),
+            chunk_page=np.array([0, 1, 2], dtype=np.int32),
+        )
+
+        self.assertFalse(self.make_search().available)
+
+    def test_unavailable_when_chunk_map_points_past_page_list(self):
+        write_index(self.data_dir, pages=PAGES[:1])
+
+        self.assertFalse(self.make_search().available)
 
     def test_unavailable_without_embedder(self):
         search = DocsSearch(data_dir=self.data_dir, embedder=None)

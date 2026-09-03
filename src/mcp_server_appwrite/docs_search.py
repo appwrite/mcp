@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -29,8 +30,8 @@ from .constants import (
     DOCS_MIN_QUERY_LENGTH,
     DOCS_TOOL_NAME,
     EMBED_MODEL,
-    META_FILE,
-    VECTORS_FILE,
+    INDEX_FILE,
+    META_MEMBER,
 )
 
 ToolContent = types.TextContent | types.ImageContent | types.EmbeddedResource
@@ -102,21 +103,43 @@ class DocsSearch:
         return self._index_loaded and self._embedder is not None
 
     def _load_index(self) -> bool:
-        vectors_path = self._data_dir / VECTORS_FILE
-        meta_path = self._data_dir / META_FILE
-        if not vectors_path.exists() or not meta_path.exists():
+        path = self._data_dir / INDEX_FILE
+        if not path.exists():
             return False
 
         import numpy as np
 
-        # allow_pickle stays False: the artifact holds only numeric arrays.
-        with np.load(vectors_path) as data:
-            self._vectors = data["vectors"]
-            self._chunk_page = data["chunk_page"]
+        # allow_pickle stays False: the artifact holds numeric arrays plus one
+        # JSON member. Vectors and metadata ship in the same file, so they can
+        # never come from different builds.
+        with np.load(path) as data:
+            if META_MEMBER not in data:
+                print(
+                    "[appwrite-mcp] Docs index ignored: artifact has no metadata",
+                    file=sys.stderr,
+                )
+                return False
+            vectors = data["vectors"]
+            chunk_page = data["chunk_page"]
+            meta = json.loads(bytes(data[META_MEMBER]).decode("utf-8"))
 
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        self._pages = meta.get("pages", [])
-        return self._vectors is not None and len(self._pages) > 0
+        pages = meta.get("pages", [])
+        if (
+            len(pages) == 0
+            or chunk_page.size == 0
+            or int(chunk_page.max()) >= len(pages)
+        ):
+            print(
+                "[appwrite-mcp] Docs index ignored: chunk to page map does not fit "
+                "the page list",
+                file=sys.stderr,
+            )
+            return False
+
+        self._vectors = vectors
+        self._chunk_page = chunk_page
+        self._pages = pages
+        return True
 
     def get_tool(self) -> types.Tool:
         return types.Tool(
