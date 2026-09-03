@@ -19,6 +19,7 @@ import hashlib
 import io
 import json
 import os
+import tempfile
 import zipfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -38,6 +39,8 @@ Embedder = Callable[[list[str]], np.ndarray]
 # timestamp instead (the earliest one the zip format can express).
 _ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
 
+ARTIFACT_MODE = 0o644
+
 
 def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -56,9 +59,14 @@ def page_hash(title: str, description: str, content: str) -> str:
     return digest.hexdigest()
 
 
-def build_fingerprint(page_hashes: Iterable[str]) -> str:
-    """Identify one build by the ordered hashes of its pages."""
+def build_fingerprint(model: str, dimension: int, page_hashes: Iterable[str]) -> str:
+    """Identify one build by its embedding configuration and ordered page hashes.
+
+    Model and dimension are part of the stamp so vectors from one embedding
+    setup can never be served with metadata that describes another.
+    """
     digest = hashlib.sha256()
+    digest.update(f"{model}\0{dimension}\0".encode("utf-8"))
     for page_hash_value in page_hashes:
         digest.update(page_hash_value.encode("ascii"))
     return digest.hexdigest()
@@ -157,6 +165,16 @@ def diff_pages(previous: list[dict[str, Any]], pages: list[Page]) -> Changes:
     return changes
 
 
+def _temporary_path(data_dir: Path, name: str) -> Path:
+    """Unique sibling path so overlapping builds never write the same temp file."""
+    handle, path = tempfile.mkstemp(prefix=f"{name}.", suffix=".tmp", dir=data_dir)
+    os.close(handle)
+    # mkstemp creates private files; the artifact is committed and shipped, so
+    # give it ordinary world-readable permissions.
+    os.chmod(path, ARTIFACT_MODE)
+    return Path(path)
+
+
 def _hash_page(page: Page) -> str:
     return page_hash(page.title, page.description, page.content)
 
@@ -231,10 +249,12 @@ def build_index(
     # The two files cannot be replaced in one atomic step, so each carries the
     # same build fingerprint and the loader refuses a pair whose stamps differ.
     # Writing to the side and swapping keeps the mismatch window to two renames.
-    build = build_fingerprint(record["hash"] for record in page_records)
+    build = build_fingerprint(
+        model, dimension, (record["hash"] for record in page_records)
+    )
     data_dir.mkdir(parents=True, exist_ok=True)
-    vectors_tmp = data_dir / f"{VECTORS_FILE}.tmp"
-    meta_tmp = data_dir / f"{META_FILE}.tmp"
+    vectors_tmp = _temporary_path(data_dir, VECTORS_FILE)
+    meta_tmp = _temporary_path(data_dir, META_FILE)
     save_arrays(
         vectors_tmp,
         vectors=vectors,

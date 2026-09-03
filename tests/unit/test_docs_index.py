@@ -1,4 +1,5 @@
 import json
+import stat
 import tempfile
 import time
 import unittest
@@ -7,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from mcp_server_appwrite.docs_index import (
+    build_fingerprint,
     build_index,
     content_hash,
     diff_pages,
@@ -172,6 +174,12 @@ class BuildIndexTests(unittest.TestCase):
             ["docs_index.npz", "docs_index_meta.json"],
         )
 
+    def test_artifacts_are_world_readable(self):
+        self.build([page("docs/a", "# A\nbody")])
+
+        for file in self.data_dir.iterdir():
+            self.assertEqual(stat.S_IMODE(file.stat().st_mode), 0o644, file.name)
+
     def test_model_change_invalidates_cache(self):
         self.build([page("docs/a", "# A\nbody")])
 
@@ -185,6 +193,16 @@ class BuildIndexTests(unittest.TestCase):
 
         self.assertEqual(report.chunks_embedded, 1)
         self.assertTrue(report.changes.empty)
+
+
+class BuildFingerprintTests(unittest.TestCase):
+    def test_changes_with_model_dimension_or_pages(self):
+        base = build_fingerprint("m", 3, ["a", "b"])
+
+        self.assertEqual(base, build_fingerprint("m", 3, ["a", "b"]))
+        self.assertNotEqual(base, build_fingerprint("other", 3, ["a", "b"]))
+        self.assertNotEqual(base, build_fingerprint("m", 4, ["a", "b"]))
+        self.assertNotEqual(base, build_fingerprint("m", 3, ["b", "a"]))
 
 
 class DiffPagesTests(unittest.TestCase):
