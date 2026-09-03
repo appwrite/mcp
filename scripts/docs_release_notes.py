@@ -13,13 +13,16 @@ the committed diff, not from this script.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from mcp_server_appwrite.docs_source import DEFAULT_ORIGIN
 
 SECTIONS = (("added", "Added"), ("changed", "Updated"), ("removed", "Removed"))
+_MARKDOWN_SPECIAL = re.compile(r"([\\`*_\[\]<>#|])")
 
 
 def render(report: dict[str, Any], origin: str = DEFAULT_ORIGIN) -> str:
@@ -43,9 +46,16 @@ def render(report: dict[str, Any], origin: str = DEFAULT_ORIGIN) -> str:
         lines.append("")
         for page in pages:
             title = page.get("title") or page["path"]
-            lines.append(f"- [{title}]({origin}/{page['path']})")
+            lines.append(
+                f"- [{escape(title)}]({origin}/{quote(page['path'], safe='/')})"
+            )
         lines.append("")
     return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def escape(text: str) -> str:
+    """Neutralize Markdown syntax in page titles so links render as written."""
+    return _MARKDOWN_SPECIAL.sub(r"\\\1", text.replace("\n", " "))
 
 
 def main(argv: list[str]) -> int:
