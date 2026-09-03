@@ -48,3 +48,13 @@ removed pages, and can write the same report as JSON. Optional build env vars:
 | `DOCS_ORIGIN` | `https://appwrite.io` | Site to fetch the docs from (for example a staging deployment). |
 | `DOCS_EMBED_BATCH` | `100` | Embedding batch size. |
 | `DOCS_REPORT_FILE` | — | Write the JSON build report (page changes, chunks embedded vs reused) here. |
+| `DOCS_MIN_PAGES` | `400` | Abort when fewer pages are fetched, so a broken site or export cannot ship a gutted index. |
+
+## Daily refresh
+
+`.github/workflows/update-docs-index.yml` rebuilds the index every day. When the
+artifact is unchanged the job writes "No changes" to its summary and stops. When
+it changed, the job commits the artifact, renders the build report with
+`scripts/docs_release_notes.py` into release notes listing the added, updated,
+and removed pages with links, publishes a patch release with those notes, and
+dispatches the publish and production workflows.

@@ -24,6 +24,9 @@ Env vars:
     DOCS_EMBED_BATCH      embedding batch size (default 100).
     DOCS_REPORT_FILE      optional path to write the JSON build report (page changes,
                           chunks embedded vs reused) for the refresh workflow.
+    DOCS_MIN_PAGES        abort when fewer pages are fetched (default 400). Guards
+                          against shipping a gutted index when the site or its
+                          exports are broken.
 """
 
 from __future__ import annotations
@@ -41,6 +44,7 @@ from mcp_server_appwrite.docs_index import build_index
 from mcp_server_appwrite.docs_source import DEFAULT_ORIGIN, fetch_pages
 
 EMBED_DIMENSION = 1536
+DEFAULT_MIN_PAGES = 400
 
 
 def embed_texts(client: OpenAI, texts: list[str], batch_size: int) -> np.ndarray:
@@ -73,12 +77,17 @@ def main() -> int:
     origin = os.getenv("DOCS_ORIGIN", DEFAULT_ORIGIN).rstrip("/")
     batch_size = int(os.getenv("DOCS_EMBED_BATCH", "100"))
     report_file = os.getenv("DOCS_REPORT_FILE")
+    min_pages = int(os.getenv("DOCS_MIN_PAGES", str(DEFAULT_MIN_PAGES)))
     client = OpenAI()
 
     print(f"Fetching documentation from {origin} ...")
     pages, skipped = asyncio.run(fetch_pages(origin))
-    if not pages:
-        print("No documentation pages fetched; aborting", file=sys.stderr)
+    if len(pages) < min_pages:
+        print(
+            f"Only {len(pages)} documentation pages fetched (minimum {min_pages}); "
+            "refusing to build a gutted index",
+            file=sys.stderr,
+        )
         return 1
     print(f"Fetched {len(pages)} pages, skipped {len(skipped)} unpublished")
     for path in skipped:
