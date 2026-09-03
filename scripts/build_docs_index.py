@@ -1,8 +1,9 @@
 """Build the committed semantic-search index for the Appwrite documentation.
 
-This downloads the Appwrite docs from GitHub, chunks each page's markdown, embeds
-the chunks with OpenAI ``text-embedding-3-small``, and writes a small artifact
-that the running server loads at startup (see ``mcp_server_appwrite/docs_search.py``).
+This fetches the published docs from appwrite.io as Markdown (see
+``mcp_server_appwrite/docs_source.py``), chunks each page, embeds the chunks with
+OpenAI ``text-embedding-3-small``, and writes a small artifact that the running
+server loads at startup (see ``mcp_server_appwrite/docs_search.py``).
 
 Run this when the docs change and commit the refreshed artifact:
 
@@ -14,122 +15,29 @@ Outputs (committed into the repo, shipped in the image / wheel):
 
 Env vars:
     OPENAI_API_KEY        required.
-    DOCS_WEBSITE_REF      git ref of appwrite/website to index (default "main").
+    DOCS_ORIGIN           site to fetch docs from (default "https://appwrite.io").
     DOCS_EMBED_BATCH      embedding batch size (default 100).
 """
 
 from __future__ import annotations
 
-import io
+import asyncio
 import json
 import os
-import re
 import sys
-import tarfile
 from pathlib import Path
 
-import httpx
 import numpy as np
-import yaml
 from openai import OpenAI
+
+from mcp_server_appwrite.docs_source import DEFAULT_ORIGIN, chunk_markdown, fetch_pages
 
 EMBED_MODEL = "text-embedding-3-small"
 EMBED_DIMENSION = 1536
-GITHUB_OWNER = "appwrite"
-GITHUB_REPO = "website"
-DOCS_SUBDIR = "src/routes/docs"
-
-# Approximate Mastra's markdown chunking: header-aware sections packed to ~1500
-# chars with ~200 chars of overlap. Exact sizing is not load-bearing — retrieval
-# quality is dominated by the (identical) embedding model.
-CHUNK_SIZE = 1500
-CHUNK_OVERLAP = 200
 
 DATA_DIR = (
     Path(__file__).resolve().parent.parent / "src" / "mcp_server_appwrite" / "data"
 )
-
-
-def download_docs(ref: str) -> dict[str, str]:
-    """Download appwrite/website and return {webPath: raw .markdoc text}."""
-    url = f"https://codeload.github.com/{GITHUB_OWNER}/{GITHUB_REPO}/tar.gz/{ref}"
-    print(f"Downloading {GITHUB_OWNER}/{GITHUB_REPO}@{ref} ...")
-    response = httpx.get(url, follow_redirects=True, timeout=120.0)
-    response.raise_for_status()
-
-    pages: dict[str, str] = {}
-    with tarfile.open(fileobj=io.BytesIO(response.content), mode="r:gz") as tar:
-        for member in tar.getmembers():
-            if not member.isfile() or not member.name.endswith(".markdoc"):
-                continue
-            # member.name == "website-<ref>/src/routes/docs/.../+page.markdoc"
-            parts = member.name.split("/", 1)
-            if len(parts) != 2:
-                continue
-            repo_relative = parts[1]
-            if not repo_relative.startswith(DOCS_SUBDIR + "/"):
-                continue
-            fileobj = tar.extractfile(member)
-            if fileobj is None:
-                continue
-            text = fileobj.read().decode("utf-8", errors="replace")
-            inner = repo_relative[len(DOCS_SUBDIR) + 1 :]  # strip "src/routes/docs/"
-            web_path = ("docs/" + inner).replace("/+page.markdoc", "")
-            pages[web_path] = text
-
-    print(f"Found {len(pages)} .markdoc pages")
-    return pages
-
-
-def parse_front_matter(text: str) -> tuple[dict[str, str], str]:
-    """Split YAML front-matter from the markdown body."""
-    if text.startswith("---"):
-        match = re.match(r"^---\n(.*?)\n---\n?(.*)$", text, re.DOTALL)
-        if match:
-            try:
-                attributes = yaml.safe_load(match.group(1)) or {}
-            except yaml.YAMLError:
-                attributes = {}
-            if not isinstance(attributes, dict):
-                attributes = {}
-            return attributes, match.group(2)
-    return {}, text
-
-
-def chunk_markdown(text: str) -> list[str]:
-    """Header-aware markdown chunking approximating Mastra's markdown strategy."""
-    text = text.strip()
-    if not text:
-        return []
-
-    # Split into header-delimited sections, keeping the header with its body.
-    sections: list[str] = []
-    current: list[str] = []
-    for line in text.splitlines():
-        if re.match(r"^#{1,6}\s", line) and current:
-            sections.append("\n".join(current).strip())
-            current = [line]
-        else:
-            current.append(line)
-    if current:
-        sections.append("\n".join(current).strip())
-
-    chunks: list[str] = []
-    for section in sections:
-        if not section:
-            continue
-        if len(section) <= CHUNK_SIZE:
-            chunks.append(section)
-            continue
-        # Hard-split oversized sections with overlap.
-        start = 0
-        while start < len(section):
-            end = start + CHUNK_SIZE
-            chunks.append(section[start:end].strip())
-            if end >= len(section):
-                break
-            start = end - CHUNK_OVERLAP
-    return [chunk for chunk in chunks if chunk]
 
 
 def embed_texts(client: OpenAI, texts: list[str], batch_size: int) -> np.ndarray:
@@ -159,28 +67,34 @@ def main() -> int:
         print("OPENAI_API_KEY is not set", file=sys.stderr)
         return 1
 
-    ref = os.getenv("DOCS_WEBSITE_REF", "main")
+    origin = os.getenv("DOCS_ORIGIN", DEFAULT_ORIGIN).rstrip("/")
     batch_size = int(os.getenv("DOCS_EMBED_BATCH", "100"))
     client = OpenAI()
 
-    raw_pages = download_docs(ref)
+    print(f"Fetching documentation from {origin} ...")
+    fetched, skipped = asyncio.run(fetch_pages(origin))
+    if not fetched:
+        print("No documentation pages fetched; aborting", file=sys.stderr)
+        return 1
+    print(f"Fetched {len(fetched)} pages, skipped {len(skipped)} unpublished")
+    for path in skipped:
+        print(f"  skipped {path}")
 
     pages: list[dict[str, str]] = []
     chunk_texts: list[str] = []
     chunk_page: list[int] = []
 
-    for web_path, raw in sorted(raw_pages.items()):
-        attributes, body = parse_front_matter(raw)
-        chunks = chunk_markdown(body)
+    for page in sorted(fetched, key=lambda page: page.path):
+        chunks = chunk_markdown(page.content)
         if not chunks:
             continue
         page_index = len(pages)
         pages.append(
             {
-                "path": web_path,
-                "title": str(attributes.get("title", "")),
-                "description": str(attributes.get("description", "")),
-                "content": body.strip(),
+                "path": page.path,
+                "title": page.title,
+                "description": page.description,
+                "content": page.content,
             }
         )
         for chunk in chunks:

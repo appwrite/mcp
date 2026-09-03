@@ -27,10 +27,13 @@ Re-run when the docs change, then commit the refreshed artifact:
 OPENAI_API_KEY=sk-... uv run python scripts/build_docs_index.py
 ```
 
-The script pulls the docs from the `appwrite/website` repo, chunks each page,
-embeds the chunks, and writes the artifact to `data/`. Optional build env vars:
+The script fetches the docs as published on appwrite.io: it reads the page
+index at `/docs/llms.txt`, downloads each page's Markdown export
+(`/docs/<slug>.md`), chunks the pages, embeds the chunks, and writes the
+artifact to `data/`. Pages listed in the index but not published (feature-gated
+content answering 404) are skipped. Optional build env vars:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DOCS_WEBSITE_REF` | `main` | Git ref to pull docs from. |
+| `DOCS_ORIGIN` | `https://appwrite.io` | Site to fetch the docs from (for example a staging deployment). |
 | `DOCS_EMBED_BATCH` | `100` | Embedding batch size. |

@@ -35,8 +35,6 @@ dev = [
     "black==26.3.1",
     "ruff==0.15.18",
     "pyright==1.1.411",
-    # Only needed by scripts/build_docs_index.py to (re)build the docs index.
-    "pyyaml==6.0.3",
 ]
 
 [project.scripts]
