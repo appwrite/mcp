@@ -6,7 +6,12 @@ from pathlib import Path
 
 import numpy as np
 
-from mcp_server_appwrite.docs_index import build_index, content_hash, diff_pages
+from mcp_server_appwrite.docs_index import (
+    build_index,
+    content_hash,
+    diff_pages,
+    page_hash,
+)
 from mcp_server_appwrite.docs_source import Page
 
 MODEL = "test-model"
@@ -28,8 +33,8 @@ class CountingEmbedder:
         )
 
 
-def page(path: str, body: str, title: str | None = None) -> Page:
-    return Page(path=path, title=title or path, description="", content=body)
+def page(path: str, body: str, title: str | None = None, description: str = "") -> Page:
+    return Page(path=path, title=title or path, description=description, content=body)
 
 
 def checksums(data_dir: Path) -> dict[str, bytes]:
@@ -64,7 +69,7 @@ class BuildIndexTests(unittest.TestCase):
         self.assertFalse(report.changes.removed or report.changes.changed)
 
         meta = json.loads((self.data_dir / "docs_index_meta.json").read_text())
-        self.assertEqual(meta["pages"][0]["hash"], content_hash("# A\nbody"))
+        self.assertEqual(meta["pages"][0]["hash"], page_hash("docs/a", "", "# A\nbody"))
         with np.load(self.data_dir / "docs_index.npz") as data:
             self.assertEqual(
                 list(data["chunk_hash"]),
@@ -122,6 +127,39 @@ class BuildIndexTests(unittest.TestCase):
             [("docs/b", "Bee")],
         )
 
+    def test_metadata_only_edit_is_reported_without_re_embedding(self):
+        self.build([page("docs/a", "# A\nbody", title="Old title")])
+
+        report = self.build([page("docs/a", "# A\nbody", title="New title")])
+
+        self.assertEqual(report.chunks_embedded, 0)
+        self.assertEqual([item.path for item in report.changes.changed], ["docs/a"])
+
+    def test_dimension_change_invalidates_cache(self):
+        self.build([page("docs/a", "# A\nbody")])
+
+        class WideEmbedder(CountingEmbedder):
+            def __call__(self, texts: list[str]) -> np.ndarray:
+                return np.ones((len(texts), DIMENSION + 1), dtype=np.float32)
+
+        report = build_index(
+            [page("docs/a", "# A\nbody")],
+            data_dir=self.data_dir,
+            model=MODEL,
+            dimension=DIMENSION + 1,
+            embed=WideEmbedder(),
+        )
+
+        self.assertEqual(report.chunks_embedded, 1)
+
+    def test_no_temporary_files_are_left_behind(self):
+        self.build([page("docs/a", "# A\nbody")])
+
+        self.assertEqual(
+            sorted(file.name for file in self.data_dir.iterdir()),
+            ["docs_index.npz", "docs_index_meta.json"],
+        )
+
     def test_model_change_invalidates_cache(self):
         self.build([page("docs/a", "# A\nbody")])
 
@@ -138,17 +176,17 @@ class BuildIndexTests(unittest.TestCase):
 
 
 class DiffPagesTests(unittest.TestCase):
-    def test_previous_pages_without_hash_are_hashed_from_content(self):
-        previous = [{"path": "docs/a", "title": "A", "content": "same"}]
+    def test_previous_pages_without_hash_are_hashed_from_fields(self):
+        previous = [
+            {"path": "docs/a", "title": "A", "description": "", "content": "same"}
+        ]
 
-        self.assertTrue(diff_pages(previous, [page("docs/a", "same")]).empty)
-        self.assertEqual(
-            [
-                item.path
-                for item in diff_pages(previous, [page("docs/a", "different")]).changed
-            ],
-            ["docs/a"],
-        )
+        def changed(new: Page) -> list[str]:
+            return [item.path for item in diff_pages(previous, [new]).changed]
+
+        self.assertEqual(changed(page("docs/a", "same", title="A")), [])
+        self.assertEqual(changed(page("docs/a", "different", title="A")), ["docs/a"])
+        self.assertEqual(changed(page("docs/a", "same", title="Renamed")), ["docs/a"])
 
 
 if __name__ == "__main__":

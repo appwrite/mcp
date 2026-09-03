@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import zipfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -40,6 +41,19 @@ _ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
 
 def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def page_hash(title: str, description: str, content: str) -> str:
+    """Hash everything about a page that reaches search results.
+
+    Title and description are returned to clients alongside the body, so a
+    metadata-only edit must count as a change even though no chunk is re-embedded.
+    """
+    digest = hashlib.sha256()
+    for part in (title, description, content):
+        digest.update(part.encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def save_arrays(path: Path, **arrays: np.ndarray) -> None:
@@ -85,12 +99,13 @@ class BuildReport:
 
 
 def load_previous(
-    data_dir: Path, model: str
+    data_dir: Path, model: str, dimension: int
 ) -> tuple[list[dict[str, Any]], dict[str, np.ndarray]]:
     """Return the previous artifact's pages and its chunk-hash -> vector cache.
 
     Both are empty when no artifact exists. The vector cache is empty when the
-    previous artifact was built with a different model or predates chunk hashes.
+    previous artifact was built with a different model or dimension, or predates
+    chunk hashes.
     """
     meta_path = data_dir / META_FILE
     vectors_path = data_dir / VECTORS_FILE
@@ -100,7 +115,7 @@ def load_previous(
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     pages = list(meta.get("pages", []))
 
-    if meta.get("model") != model:
+    if meta.get("model") != model or meta.get("dimension") != dimension:
         return pages, {}
     with np.load(vectors_path) as data:
         if "chunk_hash" not in data:
@@ -112,13 +127,13 @@ def load_previous(
 
 
 def diff_pages(previous: list[dict[str, Any]], pages: list[Page]) -> Changes:
-    """Compare page content hashes between the previous artifact and the new pages.
+    """Compare page hashes between the previous artifact and the new pages.
 
-    Previous pages without a stored hash are hashed from their content, so the
+    Previous pages without a stored hash are hashed from their fields, so the
     first build after introducing hashes still reports accurately.
     """
     before = {
-        page["path"]: (page.get("hash") or content_hash(page.get("content", "")), page)
+        page["path"]: (page.get("hash") or _hash_record(page), page)
         for page in previous
     }
     after = {page.path: page for page in pages}
@@ -129,9 +144,21 @@ def diff_pages(previous: list[dict[str, Any]], pages: list[Page]) -> Changes:
     for path in sorted(before.keys() - after.keys()):
         changes.removed.append(PageSummary(path, str(before[path][1].get("title", ""))))
     for path in sorted(after.keys() & before.keys()):
-        if before[path][0] != content_hash(after[path].content):
+        if before[path][0] != _hash_page(after[path]):
             changes.changed.append(PageSummary(path, after[path].title))
     return changes
+
+
+def _hash_page(page: Page) -> str:
+    return page_hash(page.title, page.description, page.content)
+
+
+def _hash_record(record: dict[str, Any]) -> str:
+    return page_hash(
+        str(record.get("title", "")),
+        str(record.get("description", "")),
+        str(record.get("content", "")),
+    )
 
 
 def build_index(
@@ -147,7 +174,7 @@ def build_index(
     Pages are processed in path order and chunks in document order, so the
     written files are byte-identical when the documentation is unchanged.
     """
-    previous_pages, cache = load_previous(data_dir, model)
+    previous_pages, cache = load_previous(data_dir, model, dimension)
 
     page_records: list[dict[str, str]] = []
     chunk_texts: list[str] = []
@@ -164,7 +191,7 @@ def build_index(
                 "title": page.title,
                 "description": page.description,
                 "content": page.content,
-                "hash": content_hash(page.content),
+                "hash": _hash_page(page),
             }
         )
         for chunk in chunks:
@@ -193,20 +220,26 @@ def build_index(
         for row, index in enumerate(missing):
             vectors[index] = embedded[row]
 
+    # Write both files to the side and swap them in together so an interrupted
+    # build never leaves a new archive paired with stale metadata.
     data_dir.mkdir(parents=True, exist_ok=True)
+    vectors_tmp = data_dir / f"{VECTORS_FILE}.tmp"
+    meta_tmp = data_dir / f"{META_FILE}.tmp"
     save_arrays(
-        data_dir / VECTORS_FILE,
+        vectors_tmp,
         vectors=vectors,
         chunk_page=np.asarray(chunk_page, dtype=np.int32),
         chunk_hash=np.asarray(chunk_hashes, dtype="U64"),
     )
-    (data_dir / META_FILE).write_text(
+    meta_tmp.write_text(
         json.dumps(
             {"model": model, "dimension": dimension, "pages": page_records},
             ensure_ascii=False,
         ),
         encoding="utf-8",
     )
+    os.replace(vectors_tmp, data_dir / VECTORS_FILE)
+    os.replace(meta_tmp, data_dir / META_FILE)
 
     kept = [page for page in pages if chunk_markdown(page.content)]
     return BuildReport(
