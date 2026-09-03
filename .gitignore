@@ -17,3 +17,6 @@ server.json
 # Playwright MCP artifacts
 .playwright-mcp/
 .DS_Store
+
+# Exclusive lock taken by scripts/build_docs_index.py
+src/mcp_server_appwrite/data/.build.lock

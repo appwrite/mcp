@@ -30,8 +30,8 @@ from .constants import (
     DOCS_MIN_QUERY_LENGTH,
     DOCS_TOOL_NAME,
     EMBED_MODEL,
-    META_FILE,
-    VECTORS_FILE,
+    INDEX_FILE,
+    META_MEMBER,
 )
 
 ToolContent = types.TextContent | types.ImageContent | types.EmbeddedResource
@@ -103,32 +103,27 @@ class DocsSearch:
         return self._index_loaded and self._embedder is not None
 
     def _load_index(self) -> bool:
-        vectors_path = self._data_dir / VECTORS_FILE
-        meta_path = self._data_dir / META_FILE
-        if not vectors_path.exists() or not meta_path.exists():
+        path = self._data_dir / INDEX_FILE
+        if not path.exists():
             return False
 
         import numpy as np
 
-        # allow_pickle stays False: the artifact holds only numeric arrays.
-        with np.load(vectors_path) as data:
+        # allow_pickle stays False: the artifact holds numeric arrays plus one
+        # JSON member. Vectors and metadata ship in the same file, so they can
+        # never come from different builds.
+        with np.load(path) as data:
+            if META_MEMBER not in data:
+                print(
+                    "[appwrite-mcp] Docs index ignored: artifact has no metadata",
+                    file=sys.stderr,
+                )
+                return False
             vectors = data["vectors"]
             chunk_page = data["chunk_page"]
-            vectors_build = str(data["build"][0]) if "build" in data else None
+            meta = json.loads(bytes(data[META_MEMBER]).decode("utf-8"))
 
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
         pages = meta.get("pages", [])
-        meta_build = meta.get("build")
-
-        # The two files are written separately; a build stamp on each lets us
-        # refuse a pair where one was replaced and the other was not.
-        if vectors_build != meta_build:
-            print(
-                "[appwrite-mcp] Docs index ignored: vectors and metadata come from "
-                f"different builds ({vectors_build} vs {meta_build})",
-                file=sys.stderr,
-            )
-            return False
         if (
             len(pages) == 0
             or chunk_page.size == 0

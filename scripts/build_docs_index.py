@@ -5,16 +5,18 @@ This fetches the published docs from appwrite.io as Markdown (see
 OpenAI ``text-embedding-3-small``, and writes a small artifact that the running
 server loads at startup (see ``mcp_server_appwrite/docs_search.py``). Chunks that
 already exist in the committed artifact reuse their stored vectors, so the output
-is byte-identical when the documentation has not changed (see
+is byte-identical when the documentation has not changed, and the single artifact
+file is renamed into place so publication is atomic (see
 ``mcp_server_appwrite/docs_index.py``).
 
 Run this when the docs change and commit the refreshed artifact:
 
     OPENAI_API_KEY=sk-... uv run python scripts/build_docs_index.py
 
-Outputs (committed into the repo, shipped in the image / wheel):
-    src/mcp_server_appwrite/data/docs_index.npz       float32 vectors + chunk->page map + chunk hashes
-    src/mcp_server_appwrite/data/docs_index_meta.json page metadata (path/title/desc/content/hash)
+Output (committed into the repo, shipped in the image / wheel):
+    src/mcp_server_appwrite/data/docs_index.npz
+        float32 vectors, chunk->page map, chunk hashes, and page metadata
+        (path/title/desc/content/hash) as an embedded meta.json member.
 
 Env vars:
     OPENAI_API_KEY        required.

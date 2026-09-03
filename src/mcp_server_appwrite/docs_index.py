@@ -1,38 +1,48 @@
 """Assemble the committed docs index artifact deterministically.
 
 ``scripts/build_docs_index.py`` fetches and chunks the docs, then hands the chunks
-here. This module owns everything that makes consecutive builds comparable:
+here. This module owns everything that makes consecutive builds comparable and
+publication safe:
 
-* Every page carries a ``hash`` of its content in ``docs_index_meta.json`` and
-  every chunk vector carries the hash of its text in ``docs_index.npz``.
-* Chunks whose hash already exists in the previous artifact reuse the stored
-  vector instead of being embedded again. OpenAI embeddings are not bit-for-bit
-  reproducible, so without this every rebuild produced a different binary and a
-  spurious release even when no documentation changed.
+* The artifact is a single ``docs_index.npz`` holding the vectors, the chunk to
+  page map, the chunk hashes, and the page metadata as an embedded ``meta.json``
+  member. One file means one atomic rename to publish; there is no window where
+  vectors and metadata can disagree.
+* Every page carries a ``hash`` of its title, description, and body, and every
+  chunk vector carries the hash of its text. Chunks whose hash already exists in
+  the previous artifact reuse the stored vector instead of being embedded again.
+  OpenAI embeddings are not bit-for-bit reproducible, so without this every
+  rebuild produced a different binary and a spurious release even when no
+  documentation changed.
+* Zip entries carry a fixed timestamp so an unchanged documentation set yields a
+  byte-identical file.
+* Builds take an exclusive lock on the data directory so overlapping manual runs
+  serialize instead of racing.
 * Comparing the previous and new page hashes yields a change report (added,
   removed, changed pages) that the refresh workflow turns into release notes.
 """
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import io
 import json
 import os
 import tempfile
 import zipfile
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterator
 
 import numpy as np
 
-from .constants import META_FILE, VECTORS_FILE
+from .constants import INDEX_FILE, META_MEMBER
 from .docs_source import Page, chunk_markdown
 
 Embedder = Callable[[list[str]], np.ndarray]
 """Embeds a batch of texts into an ``(n, dimension)`` float32 matrix."""
-
 
 # ``np.savez_compressed`` stamps every zip entry with the current time, which alone
 # makes two otherwise identical builds differ. Entries are written with a fixed
@@ -40,6 +50,7 @@ Embedder = Callable[[list[str]], np.ndarray]
 _ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
 
 ARTIFACT_MODE = 0o644
+LOCK_FILE = ".build.lock"
 
 
 def content_hash(text: str) -> str:
@@ -59,28 +70,32 @@ def page_hash(title: str, description: str, content: str) -> str:
     return digest.hexdigest()
 
 
-def build_fingerprint(model: str, dimension: int, page_hashes: Iterable[str]) -> str:
-    """Identify one build by its embedding configuration and ordered page hashes.
-
-    Model and dimension are part of the stamp so vectors from one embedding
-    setup can never be served with metadata that describes another.
-    """
-    digest = hashlib.sha256()
-    digest.update(f"{model}\0{dimension}\0".encode("utf-8"))
-    for page_hash_value in page_hashes:
-        digest.update(page_hash_value.encode("ascii"))
-    return digest.hexdigest()
+def read_artifact(path: Path) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
+    """Return the embedded metadata and the arrays of one artifact."""
+    with np.load(path) as data:
+        raw_meta = data[META_MEMBER] if META_MEMBER in data else None
+        arrays = {name: data[name] for name in data.files if name != META_MEMBER}
+    meta = json.loads(bytes(raw_meta).decode("utf-8")) if raw_meta is not None else {}
+    return meta, arrays
 
 
-def save_arrays(path: Path, **arrays: np.ndarray) -> None:
-    """Write arrays in ``.npz`` layout with deterministic zip metadata."""
+def write_artifact(path: Path, meta: dict[str, Any], **arrays: np.ndarray) -> None:
+    """Write arrays plus embedded metadata in ``.npz`` layout with fixed zip metadata."""
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name, array in arrays.items():
             buffer = io.BytesIO()
             np.lib.format.write_array(buffer, np.ascontiguousarray(array))
-            info = zipfile.ZipInfo(f"{name}.npy", date_time=_ZIP_EPOCH)
-            info.compress_type = zipfile.ZIP_DEFLATED
-            archive.writestr(info, buffer.getvalue())
+            archive.writestr(_entry(f"{name}.npy"), buffer.getvalue())
+        archive.writestr(
+            _entry(META_MEMBER),
+            json.dumps(meta, ensure_ascii=False).encode("utf-8"),
+        )
+
+
+def _entry(name: str) -> zipfile.ZipInfo:
+    info = zipfile.ZipInfo(name, date_time=_ZIP_EPOCH)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    return info
 
 
 @dataclass(frozen=True)
@@ -123,22 +138,21 @@ def load_previous(
     previous artifact was built with a different model or dimension, or predates
     chunk hashes.
     """
-    meta_path = data_dir / META_FILE
-    vectors_path = data_dir / VECTORS_FILE
-    if not meta_path.exists() or not vectors_path.exists():
+    path = data_dir / INDEX_FILE
+    if not path.exists():
         return [], {}
 
-    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta, arrays = read_artifact(path)
     pages = list(meta.get("pages", []))
-
     if meta.get("model") != model or meta.get("dimension") != dimension:
         return pages, {}
-    with np.load(vectors_path) as data:
-        if "chunk_hash" not in data:
-            return pages, {}
-        hashes = data["chunk_hash"]
-        vectors = data["vectors"]
-    cache = {str(chunk_hash): vectors[index] for index, chunk_hash in enumerate(hashes)}
+    if "chunk_hash" not in arrays:
+        return pages, {}
+    vectors = arrays["vectors"]
+    cache = {
+        str(chunk_hash): vectors[index]
+        for index, chunk_hash in enumerate(arrays["chunk_hash"])
+    }
     return pages, cache
 
 
@@ -165,16 +179,6 @@ def diff_pages(previous: list[dict[str, Any]], pages: list[Page]) -> Changes:
     return changes
 
 
-def _temporary_path(data_dir: Path, name: str) -> Path:
-    """Unique sibling path so overlapping builds never write the same temp file."""
-    handle, path = tempfile.mkstemp(prefix=f"{name}.", suffix=".tmp", dir=data_dir)
-    os.close(handle)
-    # mkstemp creates private files; the artifact is committed and shipped, so
-    # give it ordinary world-readable permissions.
-    os.chmod(path, ARTIFACT_MODE)
-    return Path(path)
-
-
 def _hash_page(page: Page) -> str:
     return page_hash(page.title, page.description, page.content)
 
@@ -187,6 +191,18 @@ def _hash_record(record: dict[str, Any]) -> str:
     )
 
 
+@contextmanager
+def build_lock(data_dir: Path) -> Iterator[None]:
+    """Serialize builds writing to the same data directory."""
+    data_dir.mkdir(parents=True, exist_ok=True)
+    with open(data_dir / LOCK_FILE, "w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
 def build_index(
     pages: list[Page],
     *,
@@ -195,11 +211,25 @@ def build_index(
     dimension: int,
     embed: Embedder,
 ) -> BuildReport:
-    """Chunk, embed (reusing cached vectors), and write the artifact.
+    """Chunk, embed (reusing cached vectors), and publish the artifact.
 
     Pages are processed in path order and chunks in document order, so the
-    written files are byte-identical when the documentation is unchanged.
+    written file is byte-identical when the documentation is unchanged.
     """
+    with build_lock(data_dir):
+        return _build_locked(
+            pages, data_dir=data_dir, model=model, dimension=dimension, embed=embed
+        )
+
+
+def _build_locked(
+    pages: list[Page],
+    *,
+    data_dir: Path,
+    model: str,
+    dimension: int,
+    embed: Embedder,
+) -> BuildReport:
     previous_pages, cache = load_previous(data_dir, model, dimension)
 
     page_records: list[dict[str, str]] = []
@@ -228,54 +258,48 @@ def build_index(
     if not chunk_texts:
         raise ValueError("No chunks produced from the fetched pages")
 
-    missing = [
-        index
-        for index, chunk_hash in enumerate(chunk_hashes)
-        if chunk_hash not in cache
-    ]
-    vectors = np.zeros((len(chunk_texts), dimension), dtype=np.float32)
+    # Identical chunk texts (shared boilerplate across pages) embed once and share
+    # the vector; embedding them separately would give each a slightly different
+    # vector and make a fresh build differ from a cached rebuild.
+    missing: dict[str, str] = {}
     for index, chunk_hash in enumerate(chunk_hashes):
-        if chunk_hash in cache:
-            vectors[index] = cache[chunk_hash]
+        if chunk_hash not in cache and chunk_hash not in missing:
+            missing[chunk_hash] = chunk_texts[index]
     if missing:
-        embedded = embed([chunk_texts[index] for index in missing])
+        embedded = embed(list(missing.values()))
         if embedded.shape != (len(missing), dimension):
             raise ValueError(
-                f"Embedder returned shape {embedded.shape}, expected ({len(missing)}, {dimension})"
+                f"Embedder returned shape {embedded.shape}, "
+                f"expected ({len(missing)}, {dimension})"
             )
-        for row, index in enumerate(missing):
-            vectors[index] = embedded[row]
+        for row, chunk_hash in enumerate(missing):
+            cache[chunk_hash] = embedded[row]
 
-    # The two files cannot be replaced in one atomic step, so each carries the
-    # same build fingerprint and the loader refuses a pair whose stamps differ.
-    # Writing to the side and swapping keeps the mismatch window to two renames.
-    build = build_fingerprint(
-        model, dimension, (record["hash"] for record in page_records)
+    vectors = np.zeros((len(chunk_texts), dimension), dtype=np.float32)
+    for index, chunk_hash in enumerate(chunk_hashes):
+        vectors[index] = cache[chunk_hash]
+
+    # Write to a unique sibling file and rename it into place: a single rename
+    # publishes vectors and metadata together or not at all.
+    handle, tmp_name = tempfile.mkstemp(
+        prefix=f"{INDEX_FILE}.", suffix=".tmp", dir=data_dir
     )
-    data_dir.mkdir(parents=True, exist_ok=True)
-    vectors_tmp = _temporary_path(data_dir, VECTORS_FILE)
-    meta_tmp = _temporary_path(data_dir, META_FILE)
-    save_arrays(
-        vectors_tmp,
-        vectors=vectors,
-        chunk_page=np.asarray(chunk_page, dtype=np.int32),
-        chunk_hash=np.asarray(chunk_hashes, dtype="U64"),
-        build=np.asarray([build], dtype="U64"),
-    )
-    meta_tmp.write_text(
-        json.dumps(
-            {
-                "model": model,
-                "dimension": dimension,
-                "build": build,
-                "pages": page_records,
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-    os.replace(vectors_tmp, data_dir / VECTORS_FILE)
-    os.replace(meta_tmp, data_dir / META_FILE)
+    os.close(handle)
+    tmp = Path(tmp_name)
+    try:
+        write_artifact(
+            tmp,
+            {"model": model, "dimension": dimension, "pages": page_records},
+            vectors=vectors,
+            chunk_page=np.asarray(chunk_page, dtype=np.int32),
+            chunk_hash=np.asarray(chunk_hashes, dtype="U64"),
+        )
+        # mkstemp creates private files; the artifact is committed and shipped.
+        os.chmod(tmp, ARTIFACT_MODE)
+        os.replace(tmp, data_dir / INDEX_FILE)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
     kept = [page for page in pages if chunk_markdown(page.content)]
     return BuildReport(

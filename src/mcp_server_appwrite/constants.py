@@ -116,8 +116,8 @@ DOCS_DEFAULT_MIN_SCORE = 0.25
 DOCS_MIN_QUERY_LENGTH = 3
 
 DATA_DIR = Path(__file__).parent / "data"
-VECTORS_FILE = "docs_index.npz"
-META_FILE = "docs_index_meta.json"
+INDEX_FILE = "docs_index.npz"
+META_MEMBER = "meta.json"
 
 # --- context --------------------------------------------------------------
 

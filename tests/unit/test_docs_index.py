@@ -1,4 +1,3 @@
-import json
 import stat
 import tempfile
 import time
@@ -8,11 +7,11 @@ from pathlib import Path
 import numpy as np
 
 from mcp_server_appwrite.docs_index import (
-    build_fingerprint,
     build_index,
     content_hash,
     diff_pages,
     page_hash,
+    read_artifact,
 )
 from mcp_server_appwrite.docs_search import DocsSearch
 from mcp_server_appwrite.docs_source import Page
@@ -71,13 +70,12 @@ class BuildIndexTests(unittest.TestCase):
         )
         self.assertFalse(report.changes.removed or report.changes.changed)
 
-        meta = json.loads((self.data_dir / "docs_index_meta.json").read_text())
+        meta, arrays = read_artifact(self.data_dir / "docs_index.npz")
         self.assertEqual(meta["pages"][0]["hash"], page_hash("docs/a", "", "# A\nbody"))
-        with np.load(self.data_dir / "docs_index.npz") as data:
-            self.assertEqual(
-                list(data["chunk_hash"]),
-                [content_hash("# A\nbody"), content_hash("# B\nbody")],
-            )
+        self.assertEqual(
+            list(arrays["chunk_hash"]),
+            [content_hash("# A\nbody"), content_hash("# B\nbody")],
+        )
 
     def test_unchanged_docs_reuse_vectors_and_write_identical_bytes(self):
         pages = [page("docs/a", "# A\nbody"), page("docs/b", "# B\nbody")]
@@ -118,6 +116,17 @@ class BuildIndexTests(unittest.TestCase):
             self.assertEqual(data["vectors"][0][0], 1.0)
             self.assertEqual(data["vectors"][1][0], 2.0)
 
+    def test_identical_chunks_embed_once_and_share_a_vector(self):
+        report = self.build(
+            [page("docs/a", "# Same\nbody"), page("docs/b", "# Same\nbody")]
+        )
+
+        self.assertEqual(report.chunks, 2)
+        self.assertEqual(report.chunks_embedded, 1)
+        self.assertEqual(self.embedder.calls, [["# Same\nbody"]])
+        _, arrays = read_artifact(self.data_dir / "docs_index.npz")
+        np.testing.assert_array_equal(arrays["vectors"][0], arrays["vectors"][1])
+
     def test_removed_pages_are_reported(self):
         self.build(
             [page("docs/a", "# A\nbody"), page("docs/b", "# B\nbody", title="Bee")]
@@ -155,12 +164,9 @@ class BuildIndexTests(unittest.TestCase):
 
         self.assertEqual(report.chunks_embedded, 1)
 
-    def test_both_files_carry_the_same_build_stamp_the_loader_accepts(self):
+    def test_server_loads_the_artifact(self):
         self.build([page("docs/a", "# A\nbody")])
 
-        meta = json.loads((self.data_dir / "docs_index_meta.json").read_text())
-        with np.load(self.data_dir / "docs_index.npz") as data:
-            self.assertEqual(str(data["build"][0]), meta["build"])
         search = DocsSearch(
             data_dir=self.data_dir, embedder=lambda text: [1.0, 0.0, 0.0]
         )
@@ -171,14 +177,14 @@ class BuildIndexTests(unittest.TestCase):
 
         self.assertEqual(
             sorted(file.name for file in self.data_dir.iterdir()),
-            ["docs_index.npz", "docs_index_meta.json"],
+            [".build.lock", "docs_index.npz"],
         )
 
     def test_artifacts_are_world_readable(self):
         self.build([page("docs/a", "# A\nbody")])
 
-        for file in self.data_dir.iterdir():
-            self.assertEqual(stat.S_IMODE(file.stat().st_mode), 0o644, file.name)
+        mode = (self.data_dir / "docs_index.npz").stat().st_mode
+        self.assertEqual(stat.S_IMODE(mode), 0o644)
 
     def test_model_change_invalidates_cache(self):
         self.build([page("docs/a", "# A\nbody")])
@@ -193,16 +199,6 @@ class BuildIndexTests(unittest.TestCase):
 
         self.assertEqual(report.chunks_embedded, 1)
         self.assertTrue(report.changes.empty)
-
-
-class BuildFingerprintTests(unittest.TestCase):
-    def test_changes_with_model_dimension_or_pages(self):
-        base = build_fingerprint("m", 3, ["a", "b"])
-
-        self.assertEqual(base, build_fingerprint("m", 3, ["a", "b"]))
-        self.assertNotEqual(base, build_fingerprint("other", 3, ["a", "b"]))
-        self.assertNotEqual(base, build_fingerprint("m", 4, ["a", "b"]))
-        self.assertNotEqual(base, build_fingerprint("m", 3, ["b", "a"]))
 
 
 class DiffPagesTests(unittest.TestCase):

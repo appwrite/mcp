@@ -46,8 +46,7 @@ jobs:
       - name: Commit updated index
         id: commit
         run: |
-          git add src/mcp_server_appwrite/data/docs_index.npz \
-            src/mcp_server_appwrite/data/docs_index_meta.json
+          git add src/mcp_server_appwrite/data/docs_index.npz
           if git diff --cached --quiet; then
             echo "Documentation index is already up to date"
             echo "changed=false" >> "$GITHUB_OUTPUT"
