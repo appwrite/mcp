@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -111,12 +112,39 @@ class DocsSearch:
 
         # allow_pickle stays False: the artifact holds only numeric arrays.
         with np.load(vectors_path) as data:
-            self._vectors = data["vectors"]
-            self._chunk_page = data["chunk_page"]
+            vectors = data["vectors"]
+            chunk_page = data["chunk_page"]
+            vectors_build = str(data["build"][0]) if "build" in data else None
 
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        self._pages = meta.get("pages", [])
-        return self._vectors is not None and len(self._pages) > 0
+        pages = meta.get("pages", [])
+        meta_build = meta.get("build")
+
+        # The two files are written separately; a build stamp on each lets us
+        # refuse a pair where one was replaced and the other was not.
+        if vectors_build != meta_build:
+            print(
+                "[appwrite-mcp] Docs index ignored: vectors and metadata come from "
+                f"different builds ({vectors_build} vs {meta_build})",
+                file=sys.stderr,
+            )
+            return False
+        if (
+            len(pages) == 0
+            or chunk_page.size == 0
+            or int(chunk_page.max()) >= len(pages)
+        ):
+            print(
+                "[appwrite-mcp] Docs index ignored: chunk to page map does not fit "
+                "the page list",
+                file=sys.stderr,
+            )
+            return False
+
+        self._vectors = vectors
+        self._chunk_page = chunk_page
+        self._pages = pages
+        return True
 
     def get_tool(self) -> types.Tool:
         return types.Tool(

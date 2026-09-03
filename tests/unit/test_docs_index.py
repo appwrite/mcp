@@ -12,6 +12,7 @@ from mcp_server_appwrite.docs_index import (
     diff_pages,
     page_hash,
 )
+from mcp_server_appwrite.docs_search import DocsSearch
 from mcp_server_appwrite.docs_source import Page
 
 MODEL = "test-model"
@@ -151,6 +152,17 @@ class BuildIndexTests(unittest.TestCase):
         )
 
         self.assertEqual(report.chunks_embedded, 1)
+
+    def test_both_files_carry_the_same_build_stamp_the_loader_accepts(self):
+        self.build([page("docs/a", "# A\nbody")])
+
+        meta = json.loads((self.data_dir / "docs_index_meta.json").read_text())
+        with np.load(self.data_dir / "docs_index.npz") as data:
+            self.assertEqual(str(data["build"][0]), meta["build"])
+        search = DocsSearch(
+            data_dir=self.data_dir, embedder=lambda text: [1.0, 0.0, 0.0]
+        )
+        self.assertTrue(search.available)
 
     def test_no_temporary_files_are_left_behind(self):
         self.build([page("docs/a", "# A\nbody")])

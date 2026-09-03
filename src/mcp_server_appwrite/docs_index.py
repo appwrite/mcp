@@ -22,7 +22,7 @@ import os
 import zipfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 import numpy as np
 
@@ -53,6 +53,14 @@ def page_hash(title: str, description: str, content: str) -> str:
     for part in (title, description, content):
         digest.update(part.encode("utf-8"))
         digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def build_fingerprint(page_hashes: Iterable[str]) -> str:
+    """Identify one build by the ordered hashes of its pages."""
+    digest = hashlib.sha256()
+    for page_hash_value in page_hashes:
+        digest.update(page_hash_value.encode("ascii"))
     return digest.hexdigest()
 
 
@@ -220,8 +228,10 @@ def build_index(
         for row, index in enumerate(missing):
             vectors[index] = embedded[row]
 
-    # Write both files to the side and swap them in together so an interrupted
-    # build never leaves a new archive paired with stale metadata.
+    # The two files cannot be replaced in one atomic step, so each carries the
+    # same build fingerprint and the loader refuses a pair whose stamps differ.
+    # Writing to the side and swapping keeps the mismatch window to two renames.
+    build = build_fingerprint(record["hash"] for record in page_records)
     data_dir.mkdir(parents=True, exist_ok=True)
     vectors_tmp = data_dir / f"{VECTORS_FILE}.tmp"
     meta_tmp = data_dir / f"{META_FILE}.tmp"
@@ -230,10 +240,16 @@ def build_index(
         vectors=vectors,
         chunk_page=np.asarray(chunk_page, dtype=np.int32),
         chunk_hash=np.asarray(chunk_hashes, dtype="U64"),
+        build=np.asarray([build], dtype="U64"),
     )
     meta_tmp.write_text(
         json.dumps(
-            {"model": model, "dimension": dimension, "pages": page_records},
+            {
+                "model": model,
+                "dimension": dimension,
+                "build": build,
+                "pages": page_records,
+            },
             ensure_ascii=False,
         ),
         encoding="utf-8",

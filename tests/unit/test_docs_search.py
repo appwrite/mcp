@@ -8,7 +8,7 @@ import numpy as np
 from mcp_server_appwrite.docs_search import DOCS_MAX_LIMIT, DocsSearch, _clamp_limit
 
 
-def write_index(data_dir: Path) -> None:
+def write_index(data_dir: Path, build: str | None = "build-1") -> None:
     # Three pages; page 0 has two chunks. Dimension 3 keeps the test tiny.
     vectors = np.array(
         [
@@ -21,11 +21,13 @@ def write_index(data_dir: Path) -> None:
     )
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     vectors = vectors / norms
-    np.savez_compressed(
-        data_dir / "docs_index.npz",
-        vectors=vectors,
-        chunk_page=np.array([0, 0, 1, 2], dtype=np.int32),
-    )
+    arrays = {
+        "vectors": vectors,
+        "chunk_page": np.array([0, 0, 1, 2], dtype=np.int32),
+    }
+    if build is not None:
+        arrays["build"] = np.array([build], dtype="U64")
+    np.savez_compressed(data_dir / "docs_index.npz", **arrays)
     pages = [
         {
             "path": "docs/products/databases",
@@ -46,9 +48,10 @@ def write_index(data_dir: Path) -> None:
             "content": "# Auth\nFull auth page content.",
         },
     ]
-    (data_dir / "docs_index_meta.json").write_text(
-        json.dumps({"model": "test", "dimension": 3, "pages": pages})
-    )
+    meta = {"model": "test", "dimension": 3, "pages": pages}
+    if build is not None:
+        meta["build"] = build
+    (data_dir / "docs_index_meta.json").write_text(json.dumps(meta))
 
 
 QUERY_VECTORS = {
@@ -80,6 +83,38 @@ class DocsSearchTests(unittest.TestCase):
 
     def test_available_when_index_and_embedder_present(self):
         self.assertTrue(self.make_search().available)
+
+    def test_unavailable_when_vectors_and_metadata_builds_differ(self):
+        write_index(self.data_dir, build="build-2")
+        meta_path = self.data_dir / "docs_index_meta.json"
+        meta = json.loads(meta_path.read_text())
+        meta["build"] = "build-1"
+        meta_path.write_text(json.dumps(meta))
+
+        self.assertFalse(self.make_search().available)
+
+    def test_unavailable_when_only_one_file_carries_a_build_stamp(self):
+        write_index(self.data_dir, build=None)
+        meta_path = self.data_dir / "docs_index_meta.json"
+        meta = json.loads(meta_path.read_text())
+        meta["build"] = "build-1"
+        meta_path.write_text(json.dumps(meta))
+
+        self.assertFalse(self.make_search().available)
+
+    def test_legacy_index_without_build_stamps_still_loads(self):
+        write_index(self.data_dir, build=None)
+
+        self.assertTrue(self.make_search().available)
+
+    def test_unavailable_when_chunk_map_points_past_page_list(self):
+        write_index(self.data_dir)
+        meta_path = self.data_dir / "docs_index_meta.json"
+        meta = json.loads(meta_path.read_text())
+        meta["pages"] = meta["pages"][:1]
+        meta_path.write_text(json.dumps(meta))
+
+        self.assertFalse(self.make_search().available)
 
     def test_unavailable_without_embedder(self):
         search = DocsSearch(data_dir=self.data_dir, embedder=None)
