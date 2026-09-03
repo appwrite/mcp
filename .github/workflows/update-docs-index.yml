@@ -41,21 +41,38 @@ jobs:
       - name: Rebuild documentation index
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DOCS_REPORT_FILE: ${{ runner.temp }}/docs_report.json
         run: uv run --group dev python scripts/build_docs_index.py
+
+      - name: Summarize documentation changes
+        id: notes
+        env:
+          REPORT: ${{ runner.temp }}/docs_report.json
+          NOTES: ${{ runner.temp }}/docs_notes.md
+        run: |
+          uv run --group dev python scripts/docs_release_notes.py "$REPORT" "$NOTES"
+          echo "file=$NOTES" >> "$GITHUB_OUTPUT"
 
       - name: Commit updated index
         id: commit
+        env:
+          NOTES: ${{ steps.notes.outputs.file }}
         run: |
           git add src/mcp_server_appwrite/data/docs_index.npz
           if git diff --cached --quiet; then
             echo "Documentation index is already up to date"
             echo "changed=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Documentation index"
+              echo
+              echo "No changes since the last refresh. Release skipped."
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "chore: refresh documentation search index"
+          git commit -m "chore: refresh documentation search index" -m "$(cat "$NOTES")"
           git pull --rebase origin main
           git push origin HEAD:main
           echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -67,6 +84,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           COMMIT_SHA: ${{ steps.commit.outputs.commit_sha }}
+          NOTES: ${{ steps.notes.outputs.file }}
         run: |
           LATEST_TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
           if [[ ! "$LATEST_TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
@@ -78,8 +96,15 @@ jobs:
           gh release create "$TAG" \
             --target "$COMMIT_SHA" \
             --title "$TAG" \
-            --notes "- Refresh the embedded Appwrite documentation index."
+            --notes-file "$NOTES"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Documentation index"
+            echo
+            echo "Released [$TAG](https://github.com/${GITHUB_REPOSITORY}/releases/tag/$TAG)."
+            echo
+            cat "$NOTES"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Events created with GITHUB_TOKEN do not start other workflows, so dispatch
       # publishing and production explicitly for the newly created release tag.
