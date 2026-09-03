@@ -33,6 +33,7 @@ Source lives in `src/mcp_server_appwrite/`:
 | `context.py` | `appwrite_get_context` — workspace summary (project, services, account/org for OAuth). |
 | `docs_search.py` | In-process semantic docs search (`appwrite_search_docs`) over a prebuilt index. |
 | `docs_source.py` | Fetches the published docs (`/docs/llms.txt` + per-page `.md` exports on appwrite.io) and chunks them for the index build. |
+| `docs_index.py` | Writes the index artifact deterministically: content hashes, reuse of cached chunk vectors, and the added/changed/removed page report. |
 | `telemetry.py` | OpenTelemetry metrics layer (OTLP/HTTP). No-op unless an OTLP endpoint is configured and the transport is `http`. |
 | `data/` | Committed docs index artifact (`docs_index.npz`, `docs_index_meta.json`), shipped in the wheel/image. |
 

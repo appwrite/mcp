@@ -31,9 +31,17 @@ The script fetches the docs as published on appwrite.io: it reads the page
 index at `/docs/llms.txt`, downloads each page's Markdown export
 (`/docs/<slug>.md`), chunks the pages, embeds the chunks, and writes the
 artifact to `data/`. Pages listed in the index but not published (feature-gated
-content answering 404) are skipped. Optional build env vars:
+content answering 404) are skipped.
+
+Builds are deterministic: each page stores a content hash in the metadata and
+each chunk vector stores the hash of its text. Chunks already present in the
+committed artifact reuse their vectors, so an unchanged documentation set
+produces byte-identical files and no spurious commit or release. Only new or
+edited chunks are sent to OpenAI. The script prints the added, changed, and
+removed pages, and can write the same report as JSON. Optional build env vars:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `DOCS_ORIGIN` | `https://appwrite.io` | Site to fetch the docs from (for example a staging deployment). |
 | `DOCS_EMBED_BATCH` | `100` | Embedding batch size. |
+| `DOCS_REPORT_FILE` | — | Write the JSON build report (page changes, chunks embedded vs reused) here. |
