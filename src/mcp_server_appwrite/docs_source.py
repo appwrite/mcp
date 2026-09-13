@@ -15,6 +15,7 @@ content answers 404, and API reference pages answer with the HTML app shell.
 from __future__ import annotations
 
 import asyncio
+import math
 import random
 import re
 from dataclasses import dataclass
@@ -199,6 +200,8 @@ def retry_after_seconds(response: httpx.Response) -> float | None:
         if when.tzinfo is None:
             when = when.replace(tzinfo=timezone.utc)
         seconds = (when - datetime.now(timezone.utc)).total_seconds()
+    if not math.isfinite(seconds):
+        return None
     return min(max(seconds, 0.0), RETRY_AFTER_MAX)
 
 
