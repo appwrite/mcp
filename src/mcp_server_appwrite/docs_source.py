@@ -15,8 +15,11 @@ content answers 404, and API reference pages answer with the HTML app shell.
 from __future__ import annotations
 
 import asyncio
+import random
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 import httpx
 
@@ -27,9 +30,12 @@ REQUEST_TIMEOUT = 60.0
 
 # A full build issues one request per manifest entry (several hundred). Any
 # single transient failure would otherwise abort the whole build, so transport
-# errors and overload responses are retried with exponential backoff.
+# errors and overload responses are retried. A ``Retry-After`` header wins;
+# otherwise exponential backoff with full jitter keeps the concurrent fetches
+# from retrying in lockstep. ``RETRY_AFTER_MAX`` caps a hostile or absurd header.
 RETRY_ATTEMPTS = 4
 RETRY_BACKOFF = 0.5
+RETRY_AFTER_MAX = 30.0
 RETRYABLE_STATUSES = frozenset(
     {
         httpx.codes.TOO_MANY_REQUESTS,
@@ -175,6 +181,36 @@ def build_page(entry: Entry, markdown: str) -> Page | None:
     )
 
 
+def retry_after_seconds(response: httpx.Response) -> float | None:
+    """Delay requested by a ``Retry-After`` header, or ``None`` when absent or bad.
+
+    Accepts both forms from RFC 9110: delta-seconds and an HTTP-date.
+    """
+    value = response.headers.get("retry-after")
+    if not value:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            when = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        seconds = (when - datetime.now(timezone.utc)).total_seconds()
+    return min(max(seconds, 0.0), RETRY_AFTER_MAX)
+
+
+def retry_delay(attempt: int, response: httpx.Response | None) -> float:
+    """Seconds to wait before retrying ``attempt`` (1-based)."""
+    if response is not None:
+        requested = retry_after_seconds(response)
+        if requested is not None:
+            return requested
+    return random.uniform(0, RETRY_BACKOFF * 2 ** (attempt - 1))
+
+
 async def get_with_retry(client: httpx.AsyncClient, url: str) -> httpx.Response:
     """GET ``url``, retrying transport errors and overload responses.
 
@@ -182,6 +218,7 @@ async def get_with_retry(client: httpx.AsyncClient, url: str) -> httpx.Response:
     a retryable status is returned for the caller's ``raise_for_status``.
     """
     for attempt in range(1, RETRY_ATTEMPTS + 1):
+        response: httpx.Response | None = None
         try:
             response = await client.get(url)
         except httpx.TransportError:
@@ -192,7 +229,7 @@ async def get_with_retry(client: httpx.AsyncClient, url: str) -> httpx.Response:
                 return response
             if attempt == RETRY_ATTEMPTS:
                 return response
-        await asyncio.sleep(RETRY_BACKOFF * 2 ** (attempt - 1))
+        await asyncio.sleep(retry_delay(attempt, response))
     raise AssertionError("unreachable")
 
 
