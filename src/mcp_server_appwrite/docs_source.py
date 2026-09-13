@@ -25,6 +25,21 @@ MANIFEST_PATH = "/docs/llms.txt"
 DEFAULT_CONCURRENCY = 16
 REQUEST_TIMEOUT = 60.0
 
+# A full build issues one request per manifest entry (several hundred). Any
+# single transient failure would otherwise abort the whole build, so transport
+# errors and overload responses are retried with exponential backoff.
+RETRY_ATTEMPTS = 4
+RETRY_BACKOFF = 0.5
+RETRYABLE_STATUSES = frozenset(
+    {
+        httpx.codes.TOO_MANY_REQUESTS,
+        httpx.codes.INTERNAL_SERVER_ERROR,
+        httpx.codes.BAD_GATEWAY,
+        httpx.codes.SERVICE_UNAVAILABLE,
+        httpx.codes.GATEWAY_TIMEOUT,
+    }
+)
+
 # Header-aware sections packed to ~1500 chars with ~200 chars of overlap. Exact
 # sizing is not load-bearing; retrieval quality is dominated by the embedding
 # model.
@@ -160,8 +175,29 @@ def build_page(entry: Entry, markdown: str) -> Page | None:
     )
 
 
+async def get_with_retry(client: httpx.AsyncClient, url: str) -> httpx.Response:
+    """GET ``url``, retrying transport errors and overload responses.
+
+    The last attempt's failure propagates unchanged: a transport error is raised,
+    a retryable status is returned for the caller's ``raise_for_status``.
+    """
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            response = await client.get(url)
+        except httpx.TransportError:
+            if attempt == RETRY_ATTEMPTS:
+                raise
+        else:
+            if response.status_code not in RETRYABLE_STATUSES:
+                return response
+            if attempt == RETRY_ATTEMPTS:
+                return response
+        await asyncio.sleep(RETRY_BACKOFF * 2 ** (attempt - 1))
+    raise AssertionError("unreachable")
+
+
 async def fetch_manifest(client: httpx.AsyncClient, origin: str) -> list[Entry]:
-    response = await client.get(f"{origin}{MANIFEST_PATH}")
+    response = await get_with_retry(client, f"{origin}{MANIFEST_PATH}")
     response.raise_for_status()
     return parse_manifest(response.text)
 
@@ -170,7 +206,7 @@ async def fetch_page(
     client: httpx.AsyncClient, origin: str, entry: Entry
 ) -> Page | None:
     """Fetch one page; ``None`` when it is not published as Markdown or is empty."""
-    response = await client.get(f"{origin}/{entry.path}.md")
+    response = await get_with_retry(client, f"{origin}/{entry.path}.md")
     if response.status_code == httpx.codes.NOT_FOUND:
         return None
     response.raise_for_status()
