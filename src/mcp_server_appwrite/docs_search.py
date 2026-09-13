@@ -144,6 +144,11 @@ class DocsSearch:
     def get_tool(self) -> types.Tool:
         return types.Tool(
             name=DOCS_TOOL_NAME,
+            annotations=types.ToolAnnotations(
+                read_only_hint=True,
+                open_world_hint=True,
+                destructive_hint=False,
+            ),
             description=(
                 "Search the Appwrite documentation with a natural-language query and "
                 "return the most relevant documentation pages with their full content. "

@@ -145,6 +145,11 @@ class Operator:
         tools = [
             types.Tool(
                 name="appwrite_get_context",
+                annotations=types.ToolAnnotations(
+                    read_only_hint=True,
+                    open_world_hint=True,
+                    destructive_hint=False,
+                ),
                 description=(
                     "Get an adaptive Appwrite account/project context summary, including "
                     "available projects and per-project service counts where the current "
@@ -186,6 +191,11 @@ class Operator:
             ),
             types.Tool(
                 name="appwrite_search_tools",
+                annotations=types.ToolAnnotations(
+                    read_only_hint=True,
+                    open_world_hint=False,
+                    destructive_hint=False,
+                ),
                 description=(
                     "Search the hidden Appwrite tool catalog by natural language query. "
                     "Matches include parameter schemas (name, type, required/optional, "
@@ -227,6 +237,11 @@ class Operator:
             ),
             types.Tool(
                 name="appwrite_call_tool",
+                annotations=types.ToolAnnotations(
+                    read_only_hint=False,
+                    open_world_hint=True,
+                    destructive_hint=True,
+                ),
                 description=(
                     "Call a hidden Appwrite tool by name. Put Appwrite parameters inside `arguments`. "
                     "Mutating tools require confirm_write=true. Hidden Appwrite parameters accept "
