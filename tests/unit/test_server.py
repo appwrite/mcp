@@ -537,6 +537,113 @@ class ServerHelperTests(unittest.TestCase):
         with patch.dict(server_module.SERVICE_CLASSES, {"functions": FunctionsService}):
             asyncio.run(run_check())
 
+    def test_call_tool_returns_sdk_input_validation_for_unencoded_queries(self):
+        client = build_introspection_client()
+        manager = register_services(client, profile=API_KEY_PROFILE)
+        server = build_mcp_server(build_operator(manager, client), transport="stdio")
+        entry = server.get_request_handler("tools/call")
+        self.assertIsNotNone(entry)
+
+        async def run_check():
+            ctx = Mock()
+            ctx.protocol_version = "2026-07-28"
+            ctx.meta = None
+            ctx.session.client_params = None
+            for queries in (
+                [{"method": "limit", "values": [1]}],
+                [
+                    '{"method":"limit","values":[1]}',
+                    {"method": "offset", "values": [1]},
+                ],
+                {"method": "limit", "values": [1]},
+                '{"method":"limit","values":[1]}',
+                [1],
+            ):
+                with self.subTest(queries=queries):
+                    params = types.CallToolRequestParams(
+                        name="appwrite_call_tool",
+                        arguments={
+                            "tool_name": "tables_db_list_rows",
+                            "arguments": {
+                                "database_id": "database-id",
+                                "table_id": "table-id",
+                                "queries": queries,
+                            },
+                        },
+                    )
+                    result = await entry.handler(ctx, params)
+
+                    self.assertTrue(result.is_error)
+                    self.assertIn("type=sdk_input_validation", result.content[0].text)
+                    self.assertIn("queries", result.content[0].text)
+                    self.assertIn("string", result.content[0].text)
+
+        with (
+            patch(
+                "requests.sessions.Session.request",
+                side_effect=AssertionError(
+                    "Invalid inputs must not send HTTP requests"
+                ),
+            ) as request,
+            patch.object(server_module.error_monitoring, "_enabled", True),
+            patch("sentry_sdk.capture_exception") as capture,
+        ):
+            asyncio.run(run_check())
+
+        request.assert_not_called()
+        capture.assert_not_called()
+
+    def test_call_tool_preserves_encoded_queries(self):
+        client = build_introspection_client()
+        manager = register_services(client, profile=API_KEY_PROFILE)
+        server = build_mcp_server(build_operator(manager, client), transport="stdio")
+        entry = server.get_request_handler("tools/call")
+        self.assertIsNotNone(entry)
+        query = '{"method":"equal","attribute":"name","values":["Zoë"]}'
+        received_queries = []
+
+        class TablesDbService:
+            def __init__(self, client):
+                pass
+
+            def list_rows(self, database_id, table_id, queries=None):
+                received_queries.append(queries)
+                return {"total": 0, "rows": []}
+
+        async def run_check():
+            ctx = Mock()
+            ctx.protocol_version = "2026-07-28"
+            ctx.meta = None
+            ctx.session.client_params = None
+            for arguments, expected in (
+                ({"queries": [query]}, [query]),
+                ({"queries": []}, []),
+                ({"queries": None}, None),
+                ({}, None),
+            ):
+                with self.subTest(arguments=arguments):
+                    params = types.CallToolRequestParams(
+                        name="appwrite_call_tool",
+                        arguments={
+                            "tool_name": "tables_db_list_rows",
+                            "arguments": {
+                                "database_id": "database-id",
+                                "table_id": "table-id",
+                                **arguments,
+                            },
+                        },
+                    )
+                    result = await entry.handler(ctx, params)
+
+                    self.assertFalse(result.is_error)
+                    self.assertEqual(received_queries[-1], expected)
+                    self.assertEqual(
+                        json.loads(result.content[0].text), {"total": 0, "rows": []}
+                    )
+
+        with patch.dict(server_module.SERVICE_CLASSES, {"tables_db": TablesDbService}):
+            asyncio.run(run_check())
+
     def test_format_tool_result_serializes_json(self):
         result = _format_tool_result(
             "tables_db_list_rows", {"total": 1, "rows": []}, {}
