@@ -4,7 +4,7 @@ Running your own Appwrite instance? Run the MCP server locally over `stdio` and
 authenticate with a project API key instead of OAuth.
 
 The local API-key catalog is intentionally smaller than the hosted OAuth catalog:
-it exposes 647 project-key-compatible methods across 26 services. DocumentsDB,
+it exposes 663 project-key-compatible methods across 26 services. DocumentsDB,
 VectorsDB, and text embeddings are available, but console control-plane services
 such as organizations, domains, projects, billing, migrations, dedicated
 databases, usage administration, VCS administration, and WAF administration are

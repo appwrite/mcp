@@ -330,6 +330,31 @@ class ServerHelperTests(unittest.TestCase):
         self.assertEqual(_coerce_argument("code", "ch", Browser), "ch")
         self.assertEqual(_coerce_argument("code", Browser.GOOGLE_CHROME, Browser), "ch")
 
+    def test_prepare_arguments_zero_argument_tool_rejects_extra_arguments(self):
+        tool_info = {
+            "parameter_types": {},
+            "definition": types.Tool(
+                name="example_get",
+                description="Get an example.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": False,
+                },
+            ),
+        }
+
+        self.assertEqual(_prepare_arguments(tool_info, {}), {})
+        for key in ("example_id", "exampleId", "unexpected"):
+            with self.subTest(key=key):
+                with self.assertRaises(ValueError) as caught:
+                    _prepare_arguments(tool_info, {key: "example-123"})
+                self.assertEqual(
+                    str(caught.exception),
+                    f"Unsupported arguments for example_get: {key}. Allowed arguments: none.",
+                )
+
     def test_prepare_arguments_accepts_camel_case_aliases(self):
         tool_info = {
             "parameter_types": {
@@ -898,15 +923,27 @@ class ServerHelperTests(unittest.TestCase):
             {service.service_name for service in manager_a.services},
             set(SERVICE_CLASSES),
         )
-        self.assertEqual(len(manager_a.services), 39)
-        self.assertEqual(len(manager_a.get_all_tools()), 994)
+        self.assertEqual(len(manager_a.services), 40)
+        self.assertEqual(len(manager_a.get_all_tools()), 1007)
 
-    def test_console_sdk_0_6_surface(self):
+    def test_console_sdk_0_7_surface(self):
         manager = register_services(object(), profile=OAUTH_PROFILE)
         tools = manager.tools_registry
 
         self.assertIn("avatars_get_photo", tools)
         self.assertIn("project_update_o_auth2_hugging_face", tools)
+        self.assertIn("growth_create_conversation", tools)
+        self.assertIn("organization_create_project_key", tools)
+        self.assertIn("tables_db_create_cutover", tools)
+        for removed_tool in (
+            "project_get_usage",
+            "projects_list_dev_keys",
+            "tables_db_cutover_migration",
+            "account_list_logs",
+            "teams_list_logs",
+            "users_list_logs",
+        ):
+            self.assertNotIn(removed_tool, tools)
 
         site_scopes = tools["sites_create"]["definition"].input_schema["properties"][
             "scopes"
@@ -966,7 +1003,7 @@ class ServerHelperTests(unittest.TestCase):
         tool_names = {tool.name for tool in manager.get_all_tools()}
 
         self.assertEqual(len(manager.services), 26)
-        self.assertEqual(len(tool_names), 652)
+        self.assertEqual(len(tool_names), 663)
         self.assertIn("avatars_get_photo", tool_names)
         self.assertIn("project_update_o_auth2_hugging_face", tool_names)
         self.assertIn("documents_db_list", tool_names)
@@ -975,7 +1012,17 @@ class ServerHelperTests(unittest.TestCase):
         self.assertNotIn("domains", service_names)
         self.assertNotIn("organizations", service_names)
         self.assertNotIn("documents_db_list_operations", tool_names)
-        self.assertNotIn("tables_db_cutover_migration", tool_names)
+        self.assertNotIn("tables_db_create_cutover", tool_names)
+        self.assertNotIn("growth", service_names)
+        for method in (
+            "create_ephemeral_project_key",
+            "create_project_key",
+            "delete_project_key",
+            "get_project_key",
+            "list_project_keys",
+            "update_project_key",
+        ):
+            self.assertNotIn(f"organization_{method}", tool_names)
         self.assertNotIn("affiliates", service_names)
         self.assertNotIn("account_list_invoices", tool_names)
 
