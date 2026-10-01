@@ -95,20 +95,28 @@ API_KEY_EXCLUDED_METHODS: dict[str, frozenset[str]] = {
     ),
     "functions": frozenset({"get_template", "list_templates"}),
     "oauth2": frozenset({"logout", "logout_post"}),
+    "organization": frozenset(
+        {
+            "create_ephemeral_project_key",
+            "create_project_key",
+            "delete_project_key",
+            "get_project_key",
+            "list_project_keys",
+            "update_project_key",
+        }
+    ),
     "presences": frozenset({"get_usage"}),
-    "project": frozenset({"get_usage"}),
     "sites": frozenset({"get_template", "list_templates"}),
     "tables_db": frozenset(
         {
             "create_migration",
-            "cutover_migration",
+            "create_cutover",
             "delete_migration",
             "get_migration",
             "list_migrations",
             "list_operations",
         }
     ),
-    "teams": frozenset({"list_logs"}),
     "users": frozenset({"get_usage"}),
     "vectors_db": frozenset(
         {

@@ -790,9 +790,6 @@ def _validate_argument_keys(
         )
 
     expected_names = _expected_argument_names(tool_info)
-    if not expected_names:
-        return
-
     unexpected_names = sorted(name for name in arguments if name not in expected_names)
     if not unexpected_names:
         return
@@ -812,7 +809,7 @@ def _validate_argument_keys(
                 hints.append(f"{name} -> {id_candidates[0]}")
 
     hint_text = f" Suggestions: {', '.join(hints)}." if hints else ""
-    allowed_preview = ", ".join(sorted(expected_names))
+    allowed_preview = ", ".join(sorted(expected_names)) or "none"
     raise ValueError(
         f"Unsupported arguments for {tool_name}: {', '.join(unexpected_names)}. "
         f"Allowed arguments: {allowed_preview}.{hint_text}"
