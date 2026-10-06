@@ -923,8 +923,8 @@ class ServerHelperTests(unittest.TestCase):
             {service.service_name for service in manager_a.services},
             set(SERVICE_CLASSES),
         )
-        self.assertEqual(len(manager_a.services), 40)
-        self.assertEqual(len(manager_a.get_all_tools()), 1007)
+        self.assertEqual(len(manager_a.services), 41)
+        self.assertEqual(len(manager_a.get_all_tools()), 1016)
 
     def test_console_sdk_0_7_surface(self):
         manager = register_services(object(), profile=OAUTH_PROFILE)
@@ -935,6 +935,8 @@ class ServerHelperTests(unittest.TestCase):
         self.assertIn("growth_create_conversation", tools)
         self.assertIn("organization_create_project_key", tools)
         self.assertIn("tables_db_create_cutover", tools)
+        self.assertIn("analytics_list_metrics", tools)
+        self.assertIn("avatars_update_photo", tools)
         for removed_tool in (
             "project_get_usage",
             "projects_list_dev_keys",
@@ -984,6 +986,35 @@ class ServerHelperTests(unittest.TestCase):
         ]
         self.assertIn("bun-1.4", build_runtime["enum"])
 
+    def test_console_sdk_accepts_null_billing_fields(self):
+        # Cloud returns null for these fields; earlier SDKs rejected the
+        # responses (Sentry MCP-1G/1S/1F/1P/1N/1W).
+        from appwrite_console.models.dedicated_database_restoration import (
+            DedicatedDatabaseRestoration,
+        )
+        from appwrite_console.models.invoice import Invoice
+        from appwrite_console.models.organization import Organization
+        from appwrite_console.models.payment_method import PaymentMethod
+        from pydantic import TypeAdapter
+
+        cases = {
+            Organization: ("paymentMethodId",),
+            PaymentMethod: ("mandateId", "state", "lastError"),
+            Invoice: ("clientSecret", "lastError"),
+            DedicatedDatabaseRestoration: ("targetTime",),
+        }
+        for model, aliases in cases.items():
+            fields = {
+                field.alias or name: field for name, field in model.model_fields.items()
+            }
+            for alias in aliases:
+                with self.subTest(model=model.__name__, field=alias):
+                    field = fields[alias]
+                    self.assertFalse(field.is_required())
+                    self.assertIsNone(
+                        TypeAdapter(field.annotation).validate_python(None)
+                    )
+
     def test_advisor_tools_are_project_scoped(self):
         manager = register_services(object(), profile=OAUTH_PROFILE)
         advisor_tools = {
@@ -1013,6 +1044,9 @@ class ServerHelperTests(unittest.TestCase):
         self.assertNotIn("organizations", service_names)
         self.assertNotIn("documents_db_list_operations", tool_names)
         self.assertNotIn("tables_db_create_cutover", tool_names)
+        self.assertNotIn("avatars_update_photo", tool_names)
+        self.assertNotIn("avatars_delete_photo", tool_names)
+        self.assertNotIn("analytics", service_names)
         self.assertNotIn("growth", service_names)
         for method in (
             "create_ephemeral_project_key",

@@ -83,6 +83,7 @@ API_KEY_EXCLUDED_METHODS: dict[str, frozenset[str]] = {
         }
     ),
     "apps": frozenset({"delete_installation"}),
+    "avatars": frozenset({"delete_photo", "update_photo"}),
     "documents_db": frozenset(
         {
             "create_documents",

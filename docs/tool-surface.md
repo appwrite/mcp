@@ -20,7 +20,7 @@ flowchart LR
 
     subgraph CAT[Internal catalog — authentication-aware]
         direction LR
-        K[OAuth: 40 services / 1007 tools<br/>API key: 26 services / 663 tools]
+        K[OAuth: 41 services / 1016 tools<br/>API key: 26 services / 663 tools]
     end
 
     CT -->|large output| R[(MCP resource<br/>preview + URI)]
@@ -47,8 +47,8 @@ flowchart LR
   `context=organization`, or `context=project`. Hosted calls enforce the required
   top-level `organization_id` or `project_id` before making a request.
 - **Access** is still gated per-route by the scopes granted to the OAuth token.
-- **Hosted OAuth** registers all 40 services and 1007 methods shipped by
-  `appwrite-console` 0.7.0. This adds console control-plane services including
+- **Hosted OAuth** registers all 41 services and 1016 methods shipped by
+  `appwrite-console` 0.8.1. This adds console control-plane services including
   projects, organizations, domains, migrations, dedicated databases, usage, VCS,
   vectors, WAF, notifications, and regions.
 - **API-key stdio** deliberately registers only the 663 project-key-compatible
