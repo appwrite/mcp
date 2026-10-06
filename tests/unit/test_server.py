@@ -1381,6 +1381,37 @@ class ServerHelperTests(unittest.TestCase):
         client.call.assert_called_once()
         self.assertIsInstance(result[0], types.EmbeddedResource)
 
+    def test_execute_registered_tool_returns_selected_attributes_untyped(self):
+        # A select query returns partial documents that the SDK's full models
+        # reject (Sentry MCP-12/MCP-13).
+        manager = register_services(object(), profile=OAUTH_PROFILE)
+        partial = {
+            "total": 1,
+            "deployments": [{"$id": "deployment", "type": "cli", "status": "ready"}],
+        }
+        select = json.dumps({"method": "select", "values": ["type", "status"]})
+        client = build_introspection_client()
+        client.call = Mock(return_value=partial)
+
+        result = execute_registered_tool(
+            manager,
+            "functions_list_deployments",
+            {"function_id": "function", "queries": [select]},
+            client=client,
+        )
+
+        self.assertIsInstance(result[0], types.TextContent)
+        self.assertEqual(json.loads(result[0].text), partial)
+
+        with patch.object(server_module.error_monitoring, "capture_appwrite_exception"):
+            with self.assertRaises(RuntimeError):
+                execute_registered_tool(
+                    manager,
+                    "functions_list_deployments",
+                    {"function_id": "function"},
+                    client=client,
+                )
+
     def test_execute_registered_tool_captures_publishable_appwrite_error(self):
         tool = types.Tool(
             name="users_list",

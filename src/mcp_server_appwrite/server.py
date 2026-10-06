@@ -831,6 +831,26 @@ def _prepare_arguments(tool_info: dict, arguments: dict[str, Any]) -> dict[str, 
     return prepared_arguments
 
 
+def _selects_attributes(arguments: dict[str, Any]) -> bool:
+    """Whether the call narrows its response with a ``select`` query."""
+    queries = arguments.get("queries")
+    if not isinstance(queries, list):
+        return False
+    for query in queries:
+        if isinstance(query, str):
+            try:
+                query = json.loads(query)
+            except ValueError:
+                continue
+        if isinstance(query, dict) and query.get("method") == "select":
+            return True
+    return False
+
+
+def _untyped_response(response: Any, model: Any = None) -> Any:
+    return response
+
+
 def _raise_bounded_response_error(response: httpx.Response) -> None:
     """Translate an upstream streaming error into the SDK's public exception."""
     body = bytearray()
@@ -977,7 +997,12 @@ def execute_registered_tool(
     hosted = client is None
     if client is None:
         client = resolve_client(target_project, organization_id)
-    bound_method = getattr(service_cls(client), method_name)
+    service = service_cls(client)
+    if _selects_attributes(prepared_arguments):
+        # A select query returns only the chosen attributes, which the SDK's
+        # full response models reject, so the payload is passed through untyped.
+        setattr(service, "_parse_response", _untyped_response)
+    bound_method = getattr(service, method_name)
     bounded_binary = (
         hosted and inspect.signature(bound_method).return_annotation is bytes
     )
