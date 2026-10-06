@@ -39,15 +39,15 @@ wheels = [
 
 [[package]]
 name = "appwrite-console"
-version = "0.7.1"
+version = "0.8.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2f/0a/d1f4506b3dc54ecb55382aee503d249ebe58e9cf99b44167d5f640b3ecfd/appwrite_console-0.7.1.tar.gz", hash = "sha256:b62706c1497a47070797ecfb70fb3f8910706db9c54ad770a1eda79a962ee287", size = 320527, upload-time = "2026-10-01T19:17:01.769Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/02/b2/76bbf397aca3e8caaf52bd254dac54b85214fffd6d1a1d4dd40d353247dd/appwrite_console-0.8.1.tar.gz", hash = "sha256:1fbb764bb0c9e802f079019e375fe96f5a28e51553a4bce94246e7f18bf8cce5", size = 326599, upload-time = "2026-10-06T10:55:59.571Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/99/23/ae465cbc2f7a3e22a42793e4a77a52c0f2b26543fdc1eb01f81411b92fc1/appwrite_console-0.7.1-py3-none-any.whl", hash = "sha256:5b8b53a25dbc8b97080f006d5f71436738b6f312f519b8bc3c030a445e63423c", size = 554926, upload-time = "2026-10-01T19:17:00.369Z" },
+    { url = "https://files.pythonhosted.org/packages/65/c4/8001bfadd6f5af3fced6421a4b8651fe7b496cafd1fbe01777830d455c36/appwrite_console-0.8.1-py3-none-any.whl", hash = "sha256:c71ad412f932dffe0d244b78ed20368999be3ac6961719e8bd30069b56857768", size = 565106, upload-time = "2026-10-06T10:55:57.918Z" },
 ]
 
 [[package]]
@@ -694,7 +694,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anyio", specifier = ">=4.0.0" },
-    { name = "appwrite-console", specifier = ">=0.7.1,<0.8" },
+    { name = "appwrite-console", specifier = ">=0.8.1,<0.9" },
     { name = "argon2-cffi", marker = "extra == 'integration'", specifier = ">=23.1.0" },
     { name = "bcrypt", marker = "extra == 'integration'", specifier = ">=4.1.2" },
     { name = "docstring-parser", specifier = ">=0.16" },
