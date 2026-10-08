@@ -1033,8 +1033,10 @@ class ServerHelperTests(unittest.TestCase):
         service_names = {service.service_name for service in manager.services}
         tool_names = {tool.name for tool in manager.get_all_tools()}
 
-        self.assertEqual(len(manager.services), 26)
-        self.assertEqual(len(tool_names), 663)
+        self.assertEqual(len(manager.services), 27)
+        self.assertEqual(len(tool_names), 676)
+        self.assertIn("waf_list_rules", tool_names)
+        self.assertIn("waf_create_deny_rule", tool_names)
         self.assertIn("avatars_get_photo", tool_names)
         self.assertIn("project_update_o_auth2_hugging_face", tool_names)
         self.assertIn("documents_db_list", tool_names)

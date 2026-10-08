@@ -1014,14 +1014,16 @@ def execute_registered_tool(
             setattr(
                 client,
                 "call",
-                lambda method, path="", headers=None, params=None, response_type="json": _bounded_binary_client_call(
-                    client,
-                    name,
-                    method,
-                    path,
-                    headers,
-                    params,
-                    response_type,
+                lambda method, path="", headers=None, params=None, response_type="json": (
+                    _bounded_binary_client_call(
+                        client,
+                        name,
+                        method,
+                        path,
+                        headers,
+                        params,
+                        response_type,
+                    )
                 ),
             )
             try:
@@ -1681,13 +1683,15 @@ def build_operator(
 
     return Operator(
         tools_manager,
-        lambda tool_name, tool_arguments, target_project=None, organization_id=None: execute_registered_tool(
-            tools_manager,
-            tool_name,
-            tool_arguments,
-            client=client,
-            target_project=target_project,
-            organization_id=organization_id,
+        lambda tool_name, tool_arguments, target_project=None, organization_id=None: (
+            execute_registered_tool(
+                tools_manager,
+                tool_name,
+                tool_arguments,
+                client=client,
+                target_project=target_project,
+                organization_id=organization_id,
+            )
         ),
         context_provider=lambda arguments: _get_context_for_request(arguments, client),
         docs_search=docs_search,
