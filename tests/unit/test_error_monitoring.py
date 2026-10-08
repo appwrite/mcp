@@ -70,16 +70,55 @@ class ErrorMonitoringTests(unittest.TestCase):
         capture.assert_not_called()
 
     def test_wrapped_sdk_validation_errors_are_captured(self):
+        error_monitoring._enabled = True
+
         class Payload(BaseModel):
             required: str
 
         try:
             Payload.model_validate({})
         except ValidationError as exc:
+            error = AppwriteException("invalid response", type="sdk_input_validation")
+            error.__cause__ = exc
             wrapped = RuntimeError("wrapped")
-            wrapped.__cause__ = exc
+            wrapped.__cause__ = error
 
-        self.assertTrue(error_monitoring._should_capture(wrapped))
+        with patch("sentry_sdk.capture_exception") as capture:
+            captured = error_monitoring.capture_exception(wrapped)
+
+        self.assertTrue(captured)
+        capture.assert_called_once_with(wrapped)
+
+    def test_sdk_input_validation_is_not_captured(self):
+        error_monitoring._enabled = True
+
+        for wrapped in (False, True):
+            with self.subTest(wrapped=wrapped):
+                error = AppwriteException(
+                    "invalid filters", type="sdk_input_validation"
+                )
+                failure = RuntimeError("wrapped") if wrapped else error
+                if wrapped:
+                    failure.__cause__ = error
+                with patch("sentry_sdk.capture_exception") as capture:
+                    captured = error_monitoring.capture_exception(failure)
+
+                self.assertFalse(captured)
+                capture.assert_not_called()
+
+    def test_sdk_input_validation_does_not_hide_unexpected_failures(self):
+        error_monitoring._enabled = True
+        for error in (
+            AppwriteException("network down"),
+            AppwriteException("upstream failed", 503, "sdk_input_validation"),
+            AppwriteException("invalid response", 0, "sdk_input_validation", {}),
+        ):
+            with self.subTest(error=error):
+                with patch("sentry_sdk.capture_exception") as capture:
+                    captured = error_monitoring.capture_exception(error)
+
+                self.assertTrue(captured)
+                capture.assert_called_once_with(error)
 
     def test_client_disconnects_are_not_captured(self):
         error_monitoring._enabled = True

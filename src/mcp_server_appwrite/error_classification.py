@@ -17,6 +17,7 @@ ErrorCategory = Literal[
     "write_confirmation",
     "appwrite_4xx",
     "appwrite_5xx",
+    "sdk_input_validation",
     "sdk_validation",
     "response_too_large",
     "internal",
@@ -27,6 +28,7 @@ ERROR_CATEGORIES: frozenset[str] = frozenset(
         "write_confirmation",
         "appwrite_4xx",
         "appwrite_5xx",
+        "sdk_input_validation",
         "sdk_validation",
         "response_too_large",
         "internal",
@@ -83,6 +85,12 @@ def classify_tool_error(exc: BaseException) -> ErrorCategory:
     )
     if appwrite_error is not None:
         code = _appwrite_status_code(appwrite_error)
+        if (
+            code == 0
+            and appwrite_error.type == "sdk_input_validation"
+            and appwrite_error.response is None
+        ):
+            return "sdk_input_validation"
         if code is not None and 400 <= code < 500:
             return "appwrite_4xx"
         if code is not None and 500 <= code < 600:

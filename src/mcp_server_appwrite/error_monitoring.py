@@ -171,7 +171,7 @@ def _should_capture(exc: BaseException) -> bool:
         return False
 
     category = classify_tool_error(exc)
-    if category in {"write_confirmation", "appwrite_4xx"}:
+    if category in {"write_confirmation", "appwrite_4xx", "sdk_input_validation"}:
         return False
     # Pydantic validation errors are ValueError subclasses, but SDK response
     # validation is actionable model drift and must remain visible.
