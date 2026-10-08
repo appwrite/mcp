@@ -46,6 +46,7 @@ API_KEY_SERVICES: frozenset[str] = frozenset(
         "tokens",
         "users",
         "vectors_db",
+        "waf",
         "webhooks",
     }
 )
