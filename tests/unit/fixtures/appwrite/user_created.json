@@ -1,0 +1,28 @@
+{
+  "$id": "user_jane",
+  "$createdAt": "2026-10-09T10:10:00.000+00:00",
+  "$updatedAt": "2026-10-09T10:10:00.000+00:00",
+  "name": "Jane Doe",
+  "registration": "2026-10-09T10:10:00.000+00:00",
+  "status": true,
+  "labels": [
+    "vip"
+  ],
+  "passwordUpdate": "",
+  "email": "jane@example.com",
+  "phone": "+14155550100",
+  "emailVerification": false,
+  "phoneVerification": false,
+  "mfa": false,
+  "prefs": {
+    "theme": "dark"
+  },
+  "targets": [
+    {
+      "$id": "t1",
+      "identifier": "jane@example.com",
+      "providerType": "email"
+    }
+  ],
+  "accessedAt": ""
+}
