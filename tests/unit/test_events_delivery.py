@@ -21,6 +21,7 @@ import unittest
 import httpx
 
 from mcp_server_appwrite.events import delivery, egress
+from mcp_server_appwrite.events.errors import CallbackFailure
 
 URL = "https://hooks.example.com/mcp"
 SUBSCRIPTION = "sub_0123456789abcdef"
@@ -121,7 +122,7 @@ class VerificationTest(unittest.IsolatedAsyncioTestCase):
             dispatcher = delivery.Dispatcher(client, clock=self.clock)
             await dispatcher.verify(self.callback)
 
-    async def assert_reason(self, handler, reason: delivery.Reason) -> None:
+    async def assert_reason(self, handler, reason: CallbackFailure) -> None:
         with self.assertRaises(delivery.CallbackError) as raised:
             await self.run_verify(handler)
         self.assertEqual(raised.exception.reason, reason)
@@ -160,7 +161,7 @@ class VerificationTest(unittest.IsolatedAsyncioTestCase):
     async def test_mismatched_challenge_fails(self) -> None:
         await self.assert_reason(
             lambda request: httpx.Response(200, json={"challenge": "wrong"}),
-            delivery.Reason.CHALLENGE_FAILED,
+            CallbackFailure.CHALLENGE_FAILED,
         )
 
     async def test_malformed_bodies_fail(self) -> None:
@@ -170,7 +171,7 @@ class VerificationTest(unittest.IsolatedAsyncioTestCase):
                     lambda request, content=content: httpx.Response(
                         200, content=content
                     ),
-                    delivery.Reason.CHALLENGE_FAILED,
+                    CallbackFailure.CHALLENGE_FAILED,
                 )
 
     async def test_non_2xx_echo_fails(self) -> None:
@@ -181,23 +182,23 @@ class VerificationTest(unittest.IsolatedAsyncioTestCase):
 
             return handler
 
-        await self.assert_reason(echo(404), delivery.Reason.HTTP_4XX)
-        await self.assert_reason(echo(503), delivery.Reason.HTTP_5XX)
+        await self.assert_reason(echo(404), CallbackFailure.HTTP_4XX)
+        await self.assert_reason(echo(503), CallbackFailure.HTTP_5XX)
 
     async def test_redirect_is_not_followed(self) -> None:
         recorder = Recorder(
             httpx.Response(307, headers={"Location": "https://169.254.169.254/"})
         )
-        await self.assert_reason(recorder, delivery.Reason.CHALLENGE_FAILED)
+        await self.assert_reason(recorder, CallbackFailure.CHALLENGE_FAILED)
         self.assertEqual(len(recorder.requests), 1)
 
     async def test_transport_failures_are_categorized(self) -> None:
         await self.assert_reason(
-            Recorder(httpx.ReadTimeout("slow")), delivery.Reason.TIMEOUT
+            Recorder(httpx.ReadTimeout("slow")), CallbackFailure.TIMEOUT
         )
         await self.assert_reason(
             Recorder(httpx.ConnectError("refused")),
-            delivery.Reason.CONNECTION_REFUSED,
+            CallbackFailure.CONNECTION_REFUSED,
         )
 
     async def test_forbidden_destination_is_connection_refused(self) -> None:
@@ -205,7 +206,7 @@ class VerificationTest(unittest.IsolatedAsyncioTestCase):
             "http://hooks.example.com/", SUBSCRIPTION, (SECRET,)
         )
         recorder = Recorder(httpx.Response(200))
-        await self.assert_reason(recorder, delivery.Reason.CONNECTION_REFUSED)
+        await self.assert_reason(recorder, CallbackFailure.CONNECTION_REFUSED)
         self.assertEqual(recorder.requests, [])
 
 
@@ -241,7 +242,7 @@ class RetryScheduleTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             result,
             delivery.Result(
-                delivery.Outcome.ABANDONED, 4, 500, delivery.Reason.HTTP_5XX
+                delivery.Outcome.ABANDONED, 4, 500, CallbackFailure.HTTP_5XX
             ),
         )
         self.assertEqual(len(recorder.requests), 4)

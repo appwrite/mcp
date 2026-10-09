@@ -1,0 +1,15 @@
+{
+  "$id": "file_invoice",
+  "bucketId": "uploads",
+  "$createdAt": "2026-10-09T10:05:00.000+00:00",
+  "$updatedAt": "2026-10-09T10:05:00.000+00:00",
+  "$permissions": [],
+  "name": "jane-doe-passport.pdf",
+  "signature": "5d41402abc4b2a76b9719d911017c592",
+  "mimeType": "application/pdf",
+  "sizeOriginal": 248113,
+  "chunksTotal": 1,
+  "chunksUploaded": 1,
+  "encryption": true,
+  "compression": "none"
+}

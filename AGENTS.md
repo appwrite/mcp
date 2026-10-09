@@ -34,6 +34,7 @@ Source lives in `src/mcp_server_appwrite/`:
 | `docs_search.py` | In-process semantic docs search (`appwrite_search_docs`) over a prebuilt index. |
 | `docs_source.py` | Fetches the published docs (`/docs/llms.txt` + per-page `.md` exports on appwrite.io) and chunks them for the index build. |
 | `docs_index.py` | Writes the index artifact deterministically and atomically: page and chunk hashes, reuse of cached chunk vectors, build lock, and the added/changed/removed page report. |
+| `events/` | MCP Events (behind `flags.EVENTS`, HTTP only): `catalog.py` (event catalog), `protocol.py` (capability + `events/list`), `envelope.py` (sealed subscription state), `egress.py` + `delivery.py` (SSRF-safe signed delivery), `projection.py` + `ingress.py` (Appwrite webhook ingress at `/appwrite/webhooks/{id}`). See [docs/events.md](docs/events.md). |
 | `telemetry.py` | OpenTelemetry metrics layer (OTLP/HTTP). No-op unless an OTLP endpoint is configured and the transport is `http`. |
 | `data/` | Committed docs index artifact (`docs_index.npz`: vectors, chunk map, chunk hashes, embedded `meta.json`), shipped in the wheel/image. |
 

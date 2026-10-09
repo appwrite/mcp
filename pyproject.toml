@@ -41,6 +41,7 @@ dev = [
 # tests/e2e: the hosted server driven over real HTTP; no credentials needed.
 e2e = [
     "jsonschema>=4.26",
+    "standardwebhooks>=1.1.0",
 ]
 
 [project.scripts]
