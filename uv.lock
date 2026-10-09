@@ -700,6 +700,9 @@ dev = [
     { name = "pyright" },
     { name = "ruff" },
 ]
+e2e = [
+    { name = "jsonschema" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -731,6 +734,7 @@ dev = [
     { name = "pyright", specifier = "==1.1.411" },
     { name = "ruff", specifier = "==0.15.18" },
 ]
+e2e = [{ name = "jsonschema", specifier = ">=4.26" }]
 
 [[package]]
 name = "mcp-types"
