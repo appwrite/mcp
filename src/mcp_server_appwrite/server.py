@@ -37,7 +37,6 @@ from dotenv import find_dotenv, load_dotenv
 from mcp import MCPError
 from mcp.server import NotificationOptions, Server, ServerRequestContext
 from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server.models import InitializationOptions
 from mcp.server.subscriptions import InMemorySubscriptionBus, ListenHandler
 from mcp.types import CLIENT_INFO_META_KEY, INVALID_PARAMS
 
@@ -1777,17 +1776,13 @@ async def run_stdio() -> None:
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
         _log_startup("MCP transport: stdio")
         _log_startup("Appwrite MCP server ready")
+        # Derive the initialize result from the server itself so stdio reports
+        # the same identity, instructions and icons as the HTTP transport, and
+        # leaves out the empty ``experimental`` capability like mcp>=2.3 does.
         await server.run(
             read_stream,
             write_stream,
-            InitializationOptions(
-                server_name="appwrite",
-                server_version=SERVER_VERSION,
-                capabilities=server.get_capabilities(
-                    notification_options=NotificationOptions(),
-                    experimental_capabilities={},
-                ),
-            ),
+            server.create_initialization_options(NotificationOptions()),
         )
 
 
