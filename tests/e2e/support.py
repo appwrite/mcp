@@ -8,15 +8,21 @@ the request ``_meta``, asserting on the wire rather than on SDK models (the SDK
 client drops capabilities it does not model, such as ``events``).
 
 The one stub is the OAuth token verifier: Cloud OAuth is not reachable from CI,
-so a fixed bearer token is accepted in place of an Appwrite access token, the
+so a few fixed bearer tokens (:data:`SUBJECTS`) are accepted in place of
+Appwrite access tokens, with the claims the real verifier produces. This is the
 same seam the unit tests of ``http_app`` use. Everything behind it (routing,
 auth middleware, the MCP session manager, the low-level server and its
 middleware) is the production code path.
 
-The parties around the server are real processes on localhost too:
+The parties around the server are real servers on localhost too:
 
+* :class:`Cloud` plays the Appwrite REST API the server calls with the
+  caller's token (``APPWRITE_ENDPOINT``): resource reads and ``/v1/webhooks``,
+  with Appwrite-shaped responses, scopes, plan limits and injectable failures.
 * :class:`Appwrite` plays Appwrite's webhooks worker: it signs and posts
-  deliveries exactly as ``src/Appwrite/Platform/Workers/Webhooks.php`` does.
+  deliveries exactly as ``src/Appwrite/Platform/Workers/Webhooks.php`` does,
+  either for a given webhook or, with :meth:`Appwrite.fire`, for every
+  webhook stored in :class:`Cloud` that listens to the event.
 * :class:`Receiver` plays ChatGPT's webhook endpoint: an HTTPS server with a
   self-signed certificate that checks every delivery with the official
   ``standardwebhooks`` library and echoes verification challenges.
@@ -33,6 +39,7 @@ import hmac
 import itertools
 import json
 import os
+import re
 import secrets
 import socket
 import ssl
@@ -46,7 +53,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any
 from unittest import mock
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import uvicorn
@@ -66,9 +73,25 @@ from mcp_server_appwrite import auth
 from mcp_server_appwrite.http_app import build_app
 
 TOKEN = "e2e-access-token"
-"""The bearer token the stubbed verifier accepts."""
+"""The bearer token the stubbed verifier accepts, for :data:`SUBJECT`."""
+
+OTHER_TOKEN = "e2e-other-access-token"
+"""A token for a second user, :data:`OTHER_SUBJECT`."""
+
+SUBJECTLESS_TOKEN = "e2e-subjectless-access-token"
+"""A token that names no user (no ``sub``), like a client-credentials token."""
 
 CLIENT_ID = "e2e-client"
+ISSUER = "https://cloud.appwrite.io/v1/oauth2/console"
+SUBJECT = "66b1c2d3e4f5a6b7c8d9"
+OTHER_SUBJECT = "77c2d3e4f5a6b7c8d9e0"
+
+SUBJECTS: dict[str, str | None] = {
+    TOKEN: SUBJECT,
+    OTHER_TOKEN: OTHER_SUBJECT,
+    SUBJECTLESS_TOKEN: None,
+}
+"""Every token the stubbed verifier accepts, and the user it names."""
 
 PROTOCOL_VERSION = "2026-07-28"
 LEGACY_PROTOCOL_VERSION = "2025-11-25"
@@ -80,6 +103,7 @@ serve, deliberately not the address the server listens on."""
 STARTUP_SECONDS = 15.0
 
 CONTROLLED = (
+    "APPWRITE_ENDPOINT",
     "MCP_EVENTS",
     "MCP_EVENTS_SEALING_KEYS",
     "MCP_PUBLIC_URL",
@@ -94,9 +118,18 @@ CONTROLLED = (
 
 
 async def _verify_token(_verifier: Any, token: str) -> AccessToken | None:
-    if token != TOKEN:
+    """What ``AppwriteTokenVerifier`` returns for a valid Cloud token: the
+    console project in ``project_id`` and the issuer, user and client that
+    make up the events principal."""
+    if token not in SUBJECTS:
         return None
-    return AccessToken(token=token, client_id=CLIENT_ID, scopes=[])
+    subject = SUBJECTS[token]
+    claims: dict[str, Any] = {"iss": ISSUER, "project_id": "console"}
+    if subject is not None:
+        claims["sub"] = subject
+    return AccessToken(
+        token=token, client_id=CLIENT_ID, scopes=[], subject=subject, claims=claims
+    )
 
 
 class Server:
@@ -621,6 +654,7 @@ class Webhook:
     user: str
     password: str
     name: str = "MCP events"
+    enabled: bool = True
 
 
 def fired(event: str) -> list[str]:
@@ -709,3 +743,442 @@ class Appwrite:
         return self._http.request(
             method, urlsplit(webhook.url).path, content=body, headers=request_headers
         )
+
+    def fire(
+        self,
+        cloud: Cloud,
+        project: str,
+        event: str,
+        payload: Mapping[str, Any] | bytes,
+    ) -> list[httpx.Response]:
+        """What Appwrite does when ``event`` happens in ``project``: one
+        delivery to every enabled webhook stored in ``cloud`` whose events
+        include one of the forms Appwrite generates for it."""
+        forms = set(fired(event))
+        return [
+            self.deliver(webhook, event, payload)
+            for webhook in cloud.webhooks(project)
+            if webhook.enabled and forms & set(webhook.events)
+        ]
+
+
+SCOPES = frozenset(
+    {
+        "functions.read",
+        "sites.read",
+        "tables.read",
+        "buckets.read",
+        "users.read",
+        "webhooks.read",
+        "webhooks.write",
+    }
+)
+"""Every Appwrite scope the events methods need."""
+
+CUSTOM_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,35}")
+
+AUTH_PASSWORD_MAX = 2048
+"""What appwrite/appwrite#14293 must allow for ``authPassword`` (today 256)."""
+
+
+@dataclass
+class Project:
+    """One Appwrite project in :class:`Cloud`."""
+
+    id: str
+    functions: set[str] = field(default_factory=set)
+    sites: set[str] = field(default_factory=set)
+    tables: set[tuple[str, str]] = field(default_factory=set)
+    """``(database id, table id)`` pairs."""
+    buckets: set[str] = field(default_factory=set)
+    webhook_limit: int | None = None
+    """Webhooks the plan allows (Free: 2); ``None`` for unlimited."""
+    webhooks: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """Stored webhook documents, write-only fields included."""
+
+
+@dataclass
+class Failure:
+    """An injected Appwrite error for the next ``times`` matching requests."""
+
+    method: str
+    path: re.Pattern[str]
+    status: int
+    type: str
+    times: int
+
+
+class _Refusal(Exception):
+    def __init__(self, status: int, type: str, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.type = type
+        self.message = message
+
+
+def _stamp() -> str:
+    """Now, in Appwrite's response format (``2026-10-09T10:00:00.250+00:00``)."""
+    return datetime.datetime.now(datetime.UTC).isoformat(timespec="milliseconds")
+
+
+class Cloud:
+    """The Appwrite REST API at ``http://127.0.0.1:<port>/v1``, as the server
+    reaches it with a caller's OAuth token.
+
+    Only what ``events/subscribe`` and ``events/unsubscribe`` call is served:
+    the console project lookup ``resolve_client`` makes for regions, the
+    resource reads that authorize a subscription, and ``/v1/webhooks``. Each
+    request is checked the way Appwrite checks it: an unknown project is
+    ``404 project_not_found``, a token without access to the project is
+    ``401 user_unauthorized``, a missing scope is
+    ``401 general_unauthorized_scope``. Webhooks follow the current API: the
+    password is write-only, the secret is returned only by create and by the
+    secret update, an update keeps the password unless it sends one, and a
+    project at its plan limit refuses a create with
+    ``403 additional_resource_not_allowed``.
+    """
+
+    VERSION = "1.8.0"
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._grants: dict[str, tuple[frozenset[str], frozenset[str]]] = {}
+        self._projects: dict[str, Project] = {}
+        self._failures: list[Failure] = []
+        self.requests: list[tuple[str, str, str | None]] = []
+        """``(method, path, bearer token)`` of every request, in order."""
+        cloud = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def _serve(self) -> None:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+                body = self.rfile.read(length) if length else b""
+                headers = {name.lower(): value for name, value in self.headers.items()}
+                status, payload = cloud._handle(self.command, self.path, headers, body)
+                content = b"" if payload is None else json.dumps(payload).encode()
+                self.send_response(status)
+                # Appwrite answers 204 with an HTML content type, which the
+                # Python SDK returns as raw bytes.
+                kind = (
+                    "text/html; charset=UTF-8"
+                    if payload is None
+                    else "application/json"
+                )
+                self.send_header("Content-Type", kind)
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+
+            do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = _serve
+
+            def log_message(self, format: str, *args: Any) -> None:
+                pass
+
+        self._server = _QuietServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        self.endpoint = f"http://127.0.0.1:{self._server.server_address[1]}/v1"
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+    def add(self, project: Project) -> Project:
+        with self._lock:
+            self._projects[project.id] = project
+        return project
+
+    def grant(
+        self, token: str, projects: Iterable[str], scopes: Iterable[str] = SCOPES
+    ) -> None:
+        """Let ``token`` reach ``projects`` with ``scopes``."""
+        with self._lock:
+            self._grants[token] = (frozenset(projects), frozenset(scopes))
+
+    def fail(
+        self,
+        method: str,
+        path: str,
+        status: int = 500,
+        type: str = "general_server_error",
+        *,
+        times: int = 1,
+    ) -> None:
+        """Answer the next ``times`` requests matching ``method`` and the
+        ``path`` regular expression with an Appwrite error."""
+        with self._lock:
+            self._failures.append(
+                Failure(method, re.compile(path), status, type, times)
+            )
+
+    def store(self, project: str, document: Mapping[str, Any]) -> None:
+        """Put a webhook straight into the project, as a person in the Console
+        (or an earlier subscribe) would have left it."""
+        stamp = _stamp()
+        with self._lock:
+            self._projects[project].webhooks[document["$id"]] = {
+                "$createdAt": stamp,
+                "$updatedAt": stamp,
+                "events": [],
+                "tls": True,
+                "authUsername": "",
+                "httpPass": "",
+                "signatureKey": secrets.token_hex(64),
+                "enabled": True,
+                "logs": "",
+                "attempts": 0,
+                **document,
+            }
+
+    def documents(self, project: str) -> dict[str, dict[str, Any]]:
+        """The stored webhook documents, write-only fields included."""
+        with self._lock:
+            return {
+                id: dict(document)
+                for id, document in self._projects[project].webhooks.items()
+            }
+
+    def webhooks(self, project: str) -> list[Webhook]:
+        """The project's webhooks as Appwrite's worker reads them."""
+        return [
+            Webhook(
+                id=id,
+                url=document["url"],
+                secret=document["signatureKey"],
+                events=tuple(document["events"]),
+                project=project,
+                user=document["authUsername"],
+                password=document["httpPass"],
+                name=document["name"],
+                enabled=document["enabled"],
+            )
+            for id, document in self.documents(project).items()
+        ]
+
+    def calls(self, method: str, path: str) -> int:
+        """How many requests matched ``method`` and the ``path`` expression."""
+        pattern = re.compile(path)
+        with self._lock:
+            return sum(
+                1
+                for (made, requested, _) in self.requests
+                if made == method and pattern.fullmatch(requested)
+            )
+
+    def _handle(
+        self, method: str, target: str, headers: Mapping[str, str], body: bytes
+    ) -> tuple[int, Any]:
+        parts = urlsplit(target)
+        path = parts.path
+        query = parse_qs(parts.query)
+        authorization = headers.get("authorization", "")
+        token = authorization[7:] if authorization.startswith("Bearer ") else None
+        with self._lock:
+            self.requests.append((method, path, token))
+            try:
+                for failure in self._failures:
+                    if failure.method == method and failure.path.fullmatch(path):
+                        failure.times -= 1
+                        if failure.times <= 0:
+                            self._failures.remove(failure)
+                        raise _Refusal(failure.status, failure.type, "Injected")
+                payload = json.loads(body) if body else {}
+                return self._route(method, path, query, headers, token, payload)
+            except _Refusal as refusal:
+                return refusal.status, {
+                    "message": refusal.message,
+                    "code": refusal.status,
+                    "type": refusal.type,
+                    "version": self.VERSION,
+                }
+
+    def _route(
+        self,
+        method: str,
+        path: str,
+        query: Mapping[str, list[str]],
+        headers: Mapping[str, str],
+        token: str | None,
+        payload: Mapping[str, Any],
+    ) -> tuple[int, Any]:
+        grant = self._grants.get(token or "")
+        region = re.fullmatch(r"/v1/projects/([^/]+)", path)
+        if method == "GET" and region:
+            if grant is None or region.group(1) not in grant[0]:
+                raise _Refusal(404, "project_not_found", "Project not found")
+            return 200, {"$id": region.group(1), "region": "default"}
+
+        project = self._projects.get(headers.get("x-appwrite-project", ""))
+        if project is None:
+            raise _Refusal(404, "project_not_found", "Project not found")
+        if grant is None or project.id not in grant[0]:
+            raise _Refusal(
+                401, "user_unauthorized", "The current user is not authorized"
+            )
+        scopes = grant[1]
+
+        def need(scope: str) -> None:
+            if scope not in scopes:
+                raise _Refusal(
+                    401,
+                    "general_unauthorized_scope",
+                    f'jane@example.com (role: owner) missing scopes (["{scope}"])',
+                )
+
+        if match := re.fullmatch(r"/v1/functions/([^/]+)", path):
+            need("functions.read")
+            if match.group(1) not in project.functions:
+                raise _Refusal(404, "function_not_found", "Function not found")
+            return 200, {"$id": match.group(1)}
+        if match := re.fullmatch(r"/v1/sites/([^/]+)", path):
+            need("sites.read")
+            if match.group(1) not in project.sites:
+                raise _Refusal(404, "site_not_found", "Site not found")
+            return 200, {"$id": match.group(1)}
+        if match := re.fullmatch(r"/v1/tablesdb/([^/]+)/tables/([^/]+)", path):
+            need("tables.read")
+            database, table = match.groups()
+            if database not in {db for db, _ in project.tables}:
+                raise _Refusal(404, "database_not_found", "Database not found")
+            if (database, table) not in project.tables:
+                raise _Refusal(404, "table_not_found", "Table not found")
+            return 200, {"$id": table, "databaseId": database}
+        if match := re.fullmatch(r"/v1/storage/buckets/([^/]+)", path):
+            need("buckets.read")
+            if match.group(1) not in project.buckets:
+                raise _Refusal(404, "storage_bucket_not_found", "Bucket not found")
+            return 200, {"$id": match.group(1)}
+        if path == "/v1/users" and method == "GET":
+            need("users.read")
+            return 200, {"total": 0, "users": []}
+        if path == "/v1/webhooks":
+            if method == "GET":
+                need("webhooks.read")
+                return 200, self._list(project, query)
+            need("webhooks.write")
+            return 201, self._create(project, payload)
+        if match := re.fullmatch(r"/v1/webhooks/([^/]+)(/secret)?", path):
+            id, secret = match.groups()
+            document = project.webhooks.get(id)
+            need("webhooks.read" if method == "GET" else "webhooks.write")
+            if document is None:
+                raise _Refusal(404, "webhook_not_found", "Webhook not found")
+            if method == "GET" and not secret:
+                return 200, _model(id, document)
+            if method == "PUT" and not secret:
+                return 200, self._update(document, payload, id)
+            if method == "PATCH" and secret:
+                document["signatureKey"] = payload.get("secret") or secrets.token_hex(
+                    64
+                )
+                document["$updatedAt"] = _stamp()
+                return 200, _model(id, document, secret=True)
+            if method == "DELETE" and not secret:
+                del project.webhooks[id]
+                return 204, None
+        raise _Refusal(404, "general_route_not_found", f"No route for {path}")
+
+    def _list(self, project: Project, query: Mapping[str, list[str]]) -> Any:
+        limit, offset = 25, 0
+        for key, values in query.items():
+            if key.startswith("queries["):
+                parsed = json.loads(values[0])
+                if parsed["method"] == "limit":
+                    limit = parsed["values"][0]
+                elif parsed["method"] == "offset":
+                    offset = parsed["values"][0]
+        documents = list(project.webhooks.items())
+        page = documents[offset : offset + limit]
+        return {
+            "total": len(documents),
+            "webhooks": [_model(id, document) for id, document in page],
+        }
+
+    def _create(self, project: Project, payload: Mapping[str, Any]) -> Any:
+        id = payload.get("webhookId", "")
+        if not CUSTOM_ID.fullmatch(id):
+            raise _Refusal(400, "general_argument_invalid", "Invalid webhookId")
+        if id in project.webhooks:
+            raise _Refusal(409, "webhook_already_exists", "Webhook already exists")
+        if (
+            project.webhook_limit is not None
+            and len(project.webhooks) >= project.webhook_limit
+        ):
+            raise _Refusal(
+                403,
+                "additional_resource_not_allowed",
+                "The maximum number of webhooks allowed for the selected plan "
+                "has reached. Upgrade to increase the limit.",
+            )
+        secret = payload.get("secret") or secrets.token_hex(64)
+        _check(payload, secret)
+        stamp = _stamp()
+        document = {
+            "$createdAt": stamp,
+            "$updatedAt": stamp,
+            "name": payload["name"],
+            "url": payload["url"],
+            "events": list(payload["events"]),
+            "tls": payload.get("tls", False),
+            "authUsername": payload.get("authUsername", ""),
+            "httpPass": payload.get("authPassword", ""),
+            "signatureKey": secret,
+            "enabled": payload.get("enabled", True),
+            "logs": "",
+            "attempts": 0,
+        }
+        project.webhooks[id] = document
+        return _model(id, document, secret=True)
+
+    def _update(
+        self, document: dict[str, Any], payload: Mapping[str, Any], id: str
+    ) -> Any:
+        _check(payload, None)
+        same = payload["url"] == document["url"] and (
+            payload.get("tls", False) or not document["tls"]
+        )
+        password = payload.get("authPassword")
+        if password is not None or not same:
+            document["httpPass"] = password or ""
+        enabled = payload.get("enabled", True)
+        document.update(
+            name=payload["name"],
+            url=payload["url"],
+            events=list(payload["events"]),
+            tls=payload.get("tls", False),
+            authUsername=payload.get("authUsername", ""),
+            enabled=enabled,
+        )
+        if enabled:
+            document["attempts"] = 0
+        document["$updatedAt"] = _stamp()
+        return _model(id, document)
+
+
+def _check(payload: Mapping[str, Any], secret: str | None) -> None:
+    """Appwrite's parameter validators for a webhook write."""
+    if len(payload.get("name", "")) > 128:
+        raise _Refusal(400, "general_argument_invalid", "Invalid name")
+    if len(payload.get("authPassword") or "") > AUTH_PASSWORD_MAX:
+        raise _Refusal(400, "general_argument_invalid", "Invalid authPassword")
+    if secret is not None and not 8 <= len(secret) <= 256:
+        raise _Refusal(400, "general_argument_invalid", "Invalid secret")
+
+
+def _model(id: str, document: Mapping[str, Any], *, secret: bool = False) -> Any:
+    """The Webhook response model: the password is never returned, the
+    signing key only by create and the secret update."""
+    return {
+        "$id": id,
+        "$createdAt": document["$createdAt"],
+        "$updatedAt": document["$updatedAt"],
+        "name": document["name"],
+        "url": document["url"],
+        "events": document["events"],
+        "tls": document["tls"],
+        "authUsername": document["authUsername"],
+        "authPassword": "",
+        "secret": document["signatureKey"] if secret else "",
+        "enabled": document["enabled"],
+        "logs": document["logs"],
+        "attempts": document["attempts"],
+    }
