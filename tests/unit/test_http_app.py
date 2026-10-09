@@ -6,6 +6,7 @@ import os
 import unittest
 from unittest import mock
 
+from mcp.server.auth.provider import AccessToken
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from starlette.testclient import TestClient
@@ -335,6 +336,49 @@ class WellKnownMetadataEndpointTests(unittest.TestCase):
         )
         media_type = response.headers["content-type"].split(";", 1)[0].strip()
         self.assertEqual(media_type, "text/plain")
+
+
+class ModernHttpEntryTests(unittest.TestCase):
+    """The real hosted app on the stateless 2026-07-28 HTTP entry, with the
+    bearer check satisfied by a stub verifier."""
+
+    HEADERS = {
+        "Authorization": "Bearer test-token",
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+        "MCP-Protocol-Version": "2026-07-28",
+    }
+
+    def setUp(self):
+        from mcp_server_appwrite import server as server_module
+
+        original_transport = server_module._UPLOAD_TRANSPORT
+        self.addCleanup(setattr, server_module, "_UPLOAD_TRANSPORT", original_transport)
+
+        async def verify_token(_verifier, token):
+            return AccessToken(token=token, client_id="test-client", scopes=[])
+
+        patcher = mock.patch.object(
+            auth.AppwriteTokenVerifier, "verify_token", verify_token
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_cancelled_notification_is_acknowledged_with_202(self):
+        # Clients still POST notifications such as ``notifications/cancelled``
+        # on this entry; they must be acknowledged, not rejected with a 400.
+        body = {
+            "jsonrpc": "2.0",
+            "method": "notifications/cancelled",
+            "params": {"requestId": 1, "reason": "user aborted"},
+        }
+
+        with TestClient(build_app()) as client:
+            for path in ("/", "/mcp"):
+                with self.subTest(path=path):
+                    response = client.post(path, json=body, headers=self.HEADERS)
+                    self.assertEqual(response.status_code, 202, response.text)
+                    self.assertEqual(response.content, b"")
 
 
 class ConsoleOverrideTests(unittest.TestCase):
