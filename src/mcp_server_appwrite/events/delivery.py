@@ -45,6 +45,7 @@ import anyio
 import httpx
 
 from .egress import DestinationError, Egress
+from .errors import CallbackFailure
 
 SECRET_PREFIX = "whsec_"
 SECRET_MIN_BYTES = 24
@@ -69,21 +70,11 @@ MAX_BODY_BYTES = 256 * 1024
 FINAL_STATUSES = frozenset({410, 413})
 
 
-class Reason(StrEnum):
-    """Failure categories shared by ``data.reason`` and ``lastError``."""
-
-    CHALLENGE_FAILED = "challenge_failed"
-    TIMEOUT = "timeout"
-    CONNECTION_REFUSED = "connection_refused"
-    TLS_ERROR = "tls_error"
-    HTTP_4XX = "http_4xx"
-    HTTP_5XX = "http_5xx"
-
-
 class CallbackError(Exception):
-    """The callback endpoint failed verification; ``reason`` is a :class:`Reason`."""
+    """The callback endpoint failed verification for ``reason``, the
+    ``data.reason`` of the CallbackEndpointError the subscribe handler raises."""
 
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: CallbackFailure) -> None:
         super().__init__(f"Callback endpoint verification failed: {reason}")
         self.reason = reason
 
@@ -216,23 +207,23 @@ class Result:
     outcome: Outcome
     attempts: int
     status: int | None = None
-    reason: Reason | None = None
+    reason: CallbackFailure | None = None
 
 
-def classify(error: BaseException) -> Reason:
+def classify(error: BaseException) -> CallbackFailure:
     """Map a transport failure to its reported category."""
     if isinstance(error, (TimeoutError, httpx.TimeoutException)):
-        return Reason.TIMEOUT
+        return CallbackFailure.TIMEOUT
     cause: BaseException | None = error
     while cause is not None:
         if isinstance(cause, ssl.SSLError):
-            return Reason.TLS_ERROR
+            return CallbackFailure.TLS_ERROR
         cause = cause.__cause__ or cause.__context__
-    return Reason.CONNECTION_REFUSED
+    return CallbackFailure.CONNECTION_REFUSED
 
 
-def status_reason(status: int) -> Reason:
-    return Reason.HTTP_5XX if status >= 500 else Reason.HTTP_4XX
+def status_reason(status: int) -> CallbackFailure:
+    return CallbackFailure.HTTP_5XX if status >= 500 else CallbackFailure.HTTP_4XX
 
 
 # Failures raised by Egress.post; anything else is a bug and propagates.
@@ -288,9 +279,9 @@ class Dispatcher:
         if response.status >= 400:
             raise CallbackError(status_reason(response.status))
         if not 200 <= response.status < 300:
-            raise CallbackError(Reason.CHALLENGE_FAILED)
+            raise CallbackError(CallbackFailure.CHALLENGE_FAILED)
         if not hmac.compare_digest(_echo(response.body), challenge.encode()):
-            raise CallbackError(Reason.CHALLENGE_FAILED)
+            raise CallbackError(CallbackFailure.CHALLENGE_FAILED)
 
     async def deliver(self, callback: Callback, event: Event) -> Result:
         """Deliver ``event``, retrying per the policy, and report the outcome."""
@@ -299,7 +290,7 @@ class Dispatcher:
             raise PayloadTooLargeError(
                 f"Event body is {len(body)} bytes; the limit is {MAX_BODY_BYTES}"
             )
-        reason: Reason | None = None
+        reason: CallbackFailure | None = None
         status: int | None = None
         for attempt in range(1, self._policy.attempts + 1):
             if attempt > 1:
@@ -310,7 +301,7 @@ class Dispatcher:
                 )
             except DestinationError:
                 return Result(
-                    Outcome.REJECTED, attempt, reason=Reason.CONNECTION_REFUSED
+                    Outcome.REJECTED, attempt, reason=CallbackFailure.CONNECTION_REFUSED
                 )
             except TRANSPORT_ERRORS as error:
                 reason, status = classify(error), None
