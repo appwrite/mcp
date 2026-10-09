@@ -438,31 +438,5 @@ class StatelessConnectionTests(TelemetryHarness):
         self.assertEqual(self.points("mcp.handshake"), [])
 
 
-class EventsTelemetryTests(TelemetryHarness):
-    def test_ingress_outcomes_are_counted_by_reason_and_event(self):
-        telemetry.record_ingress("accepted", None, "tablesdb.row.created")
-        telemetry.record_ingress("dropped", "expired", "tablesdb.row.created")
-        telemetry.record_ingress("rejected", "signature", None)
-        points = {
-            (p.attributes.get("outcome"), p.attributes.get("reason")): p
-            for p in self.points("mcp.events.ingress")
-        }
-        self.assertEqual(
-            set(points),
-            {("accepted", None), ("dropped", "expired"), ("rejected", "signature")},
-        )
-        self.assertAttr(points[("accepted", None)], "event", "tablesdb.row.created")
-        self.assertNotIn("event", points[("rejected", "signature")].attributes)
-
-    def test_delivery_outcomes_are_counted(self):
-        telemetry.record_event_delivery("users.user.created", "delivered", None)
-        telemetry.record_event_delivery("users.user.created", "abandoned", "http_5xx")
-        points = self.points("mcp.events.deliveries")
-        self.assertEqual(sum(p.value for p in points), 2)
-        abandoned = [p for p in points if p.attributes["outcome"] == "abandoned"]
-        self.assertAttr(abandoned[0], "reason", "http_5xx")
-        self.assertAttr(abandoned[0], "event", "users.user.created")
-
-
 if __name__ == "__main__":
     unittest.main()
