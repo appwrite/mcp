@@ -1494,6 +1494,15 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
             ]
         )
 
+    def tool_input_schema(name: str) -> dict[str, Any] | None:
+        # Mcp-Param-* header validation on the 2026-07-28 HTTP entry needs the
+        # called tool's schema. Without this lookup the SDK runs our tools/list
+        # handler on every tools/call, double-counting tools/list in telemetry.
+        for tool in operator.get_public_tools():
+            if tool.name == name:
+                return tool.input_schema
+        return None
+
     return Server(
         "Appwrite MCP Server",
         version=SERVER_VERSION,
@@ -1506,6 +1515,7 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
         on_list_resource_templates=handle_list_resource_templates,
         on_read_resource=handle_read_resource,
         on_subscriptions_listen=subscriptions,
+        get_tool_input_schema=tool_input_schema,
     )
 
 

@@ -380,6 +380,40 @@ class ModernHttpEntryTests(unittest.TestCase):
                     self.assertEqual(response.status_code, 202, response.text)
                     self.assertEqual(response.content, b"")
 
+    def test_tool_call_does_not_run_an_internal_tools_list(self):
+        # Mcp-Param-* header validation needs the called tool's input schema.
+        # Without a direct lookup the SDK runs our tools/list handler for every
+        # tools/call, which double-counts tools/list in telemetry.
+        body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "appwrite_search_tools",
+                "arguments": {"query": "create row", "limit": 1},
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                },
+            },
+        }
+        headers = {
+            **self.HEADERS,
+            "Mcp-Method": "tools/call",
+            "Mcp-Name": "appwrite_search_tools",
+        }
+
+        with (
+            mock.patch.object(telemetry, "record_message") as record_message,
+            TestClient(build_app()) as client,
+        ):
+            response = client.post("/", json=body, headers=headers)
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertNotIn('"isError":true', response.text)
+        methods = [call.args[0] for call in record_message.call_args_list]
+        self.assertEqual(methods, ["tools/call"])
+
 
 class ConsoleOverrideTests(unittest.TestCase):
     """The MCP_CONSOLE_URL tester flag: discovery rewrites plus the local
