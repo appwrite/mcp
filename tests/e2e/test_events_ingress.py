@@ -7,11 +7,13 @@ egress deliver to an HTTPS receiver (:class:`support.Receiver`) that verifies
 every request with the official ``standardwebhooks`` library. Counters are read
 from the OTLP metrics the server exports (:class:`support.Collector`).
 
-Until ``events/subscribe`` exists (PR 5 of #127), each test creates the webhook
-the way subscribe will: the subscription sealed with the server's sealing keys
-into ``authPassword``, the signing key derived from them as the webhook
-``secret``, the event's Appwrite patterns as its events. Replace
-:meth:`IngressFlow.subscribe` with a real ``events/subscribe`` call then.
+The full loop through ``events/subscribe`` (webhook written by the server,
+fired by Appwrite) is in ``test_events_subscribe.py``. The flows here build the
+webhook by hand, exactly as subscribe writes it (the subscription sealed into
+``authPassword``, the derived signing key as ``secret``, the event's Appwrite
+patterns as its events), because they need states subscribe never produces:
+expired or retired-key envelopes, events outside the catalog, two client
+secrets at once, and envelopes copied or tampered with.
 
 The servers under test use the production egress with two test settings,
 injected through ``build_app(ingress=...)``: loopback callbacks are allowed and
@@ -55,6 +57,7 @@ from mcp_server_appwrite.events.envelope import (
     Subscription,
 )
 from mcp_server_appwrite.events.ingress import Ingress
+from mcp_server_appwrite.events.webhooks import USERNAME
 
 FIXTURES = Path(__file__).parent / "fixtures" / "appwrite"
 PROJECT = "6630f1a2b3c4d5e6f7a8"
@@ -156,7 +159,7 @@ class IngressFlow(unittest.TestCase):
         target: Receiver | None = None,
         also_check: tuple[str, ...] = (),
     ) -> tuple[Webhook, str, tuple[str, ...]]:
-        """Create the webhook PR 5's ``events/subscribe`` will create. Returns
+        """Create the webhook ``events/subscribe`` would create. Returns
         it with the callback URL and the subscription's secrets. The receiver
         checks each delivery against the secrets, then ``also_check``."""
         secrets = secrets or (whsec(),)
@@ -181,7 +184,7 @@ class IngressFlow(unittest.TestCase):
             secret=keyring.signing_key(subscription.id),
             events=events,
             project=PROJECT,
-            user="mcp",
+            user=USERNAME,
             password=keyring.seal(subscription),
         )
         return webhook, callback, secrets

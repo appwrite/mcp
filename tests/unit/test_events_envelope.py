@@ -2,14 +2,14 @@
 
 Sealing, opening, tampering (401), project and webhook binding, key rotation
 across server restarts and expiry are covered end to end through the ingress in
-``tests/e2e/test_events_ingress.py`` (PR 4 of #127). What stays here:
+``tests/e2e/test_events_ingress.py``. Subscription ids (deterministic, bound to
+the principal, independent of argument order, valid Appwrite custom ids) and
+the derived webhook secret are covered through ``events/subscribe`` in
+``tests/e2e/test_events_subscribe.py``. What stays here:
 
 * The Appwrite signature against a vector computed by PHP, the way Appwrite's
   webhooks worker does it. The e2e harness signs deliveries with its own
   implementation of the same formula, so only this vector ties both to PHP.
-* Subscription id determinism and its Appwrite custom-id charset. Nothing
-  derives an id from a subscribe request until ``events/subscribe`` (PR 5),
-  whose e2e flow should replace these tests.
 * The envelope size budget that appwrite/appwrite#14293 must accommodate:
   worst-case inputs that no realistic flow would send.
 """
@@ -20,14 +20,11 @@ import unittest
 
 from mcp_server_appwrite.events.envelope import (
     ENVELOPE_BUDGET,
-    SUBSCRIPTION_ID_MAX,
     EnvelopeTooLarge,
     Keyring,
     Principal,
     Subscription,
     appwrite_signature,
-    subscription_id,
-    valid_subscription_id,
     verify_appwrite_signature,
 )
 
@@ -57,84 +54,6 @@ PRINCIPAL = Principal(
     subject="66b1c2d3e4f5a6b7c8d9",
     client="chatgpt-connector",
 ).digest
-
-
-class SubscriptionIdTests(unittest.TestCase):
-    def test_deterministic(self):
-        first = subscription_id(PRINCIPAL, "https://a.test/x", "users.user.created", {})
-        second = subscription_id(
-            PRINCIPAL, "https://a.test/x", "users.user.created", {}
-        )
-        self.assertEqual(first, second)
-
-    def test_argument_order_does_not_matter(self):
-        forward = subscription_id(
-            PRINCIPAL,
-            "https://a.test/x",
-            "tablesdb.row.created",
-            {"project_id": "p", "database_id": "d", "table_id": "t"},
-        )
-        backward = subscription_id(
-            PRINCIPAL,
-            "https://a.test/x",
-            "tablesdb.row.created",
-            {"table_id": "t", "database_id": "d", "project_id": "p"},
-        )
-        self.assertEqual(forward, backward)
-
-    def test_every_input_changes_the_id(self):
-        base = ("principal", "https://a.test/x", "users.user.created", {"a": "1"})
-        variants = (
-            ("other", *base[1:]),
-            (base[0], "https://a.test/y", *base[2:]),
-            (*base[:2], "storage.file.created", base[3]),
-            (*base[:3], {"a": "2"}),
-        )
-        original = subscription_id(*base)
-        for variant in variants:
-            with self.subTest(variant=variant):
-                self.assertNotEqual(subscription_id(*variant), original)
-
-    def test_is_a_valid_appwrite_custom_id(self):
-        # Mirrors utopia-php/database Key + Appwrite CustomId: at most 36 chars
-        # of [A-Za-z0-9._-], not starting with "_", "." or "-".
-        for index in range(200):
-            value = subscription_id(f"principal-{index}", "https://a.test", "e", {})
-            with self.subTest(value=value):
-                self.assertLessEqual(len(value), SUBSCRIPTION_ID_MAX)
-                self.assertRegex(value, r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-                self.assertTrue(valid_subscription_id(value))
-
-    def test_rejects_foreign_ids(self):
-        for value in (
-            "unique()",
-            "_sub",
-            "sub_short",
-            "x" * 36,
-            "sub_" + "g" * 31 + "!",
-        ):
-            with self.subTest(value=value):
-                self.assertFalse(valid_subscription_id(value))
-
-    def test_principal_digest_is_stable_and_short(self):
-        again = Principal(
-            issuer="https://cloud.appwrite.io/v1/oauth2/console",
-            subject="66b1c2d3e4f5a6b7c8d9",
-            client="chatgpt-connector",
-        ).digest
-        other = Principal(
-            issuer="https://cloud.appwrite.io/v1/oauth2/console",
-            subject="66b1c2d3e4f5a6b7c8d9",
-            client="another-client",
-        ).digest
-        self.assertEqual(PRINCIPAL, again)
-        self.assertNotEqual(PRINCIPAL, other)
-        self.assertEqual(len(PRINCIPAL), 22)
-
-    def test_signing_key_fits_the_appwrite_webhook_secret(self):
-        # Appwrite's webhook `secret` param is Text(256, 8).
-        signing = ring(("k1", key(1))).signing_key("sub_" + "0" * 32)
-        self.assertRegex(signing, r"^[0-9a-f]{64}$")
 
 
 class AppwriteSignatureTests(unittest.TestCase):

@@ -4,13 +4,14 @@ Against a real local HTTPS receiver, the ingress e2e flows (#134) cover: SNI and
 ``Host`` keep the hostname while the socket dials the checked address,
 redirects are not followed, loopback is refused without the test-only flag, an
 untrusted certificate is a ``tls_error``, the total timeout, and the
-per-host concurrency limit. What stays here cannot be produced end to end:
+per-host concurrency limit. The subscribe e2e flows cover callback URL shapes
+(scheme, credentials, missing host, private and metadata addresses). What stays
+here cannot be produced end to end:
 
 * The blocklist across IPv4, IPv6, IPv4-mapped, NAT64, 6to4 and Teredo forms:
   a test machine cannot route to most of these addresses.
 * Mixed public and private DNS answers and DNS rebinding: they need a resolver
   that answers differently between check and connect.
-* URL shapes the subscribe path (PR 5) will reject before any delivery.
 * The response body cap: delivery discards response bodies, so it is
   invisible on the wire.
 """
@@ -126,29 +127,6 @@ class PermittedTest(unittest.TestCase):
                 self.assertFalse(
                     egress.permitted(ipaddress.ip_address(text), allow_loopback=True)
                 )
-
-
-class ValidateUrlTest(unittest.TestCase):
-    def test_accepts_https(self) -> None:
-        url = egress.validate_url("https://hooks.example.com/a?b=c")
-        self.assertEqual(url.host, "hooks.example.com")
-
-    def test_rejects_other_schemes_and_shapes(self) -> None:
-        for url in [
-            "http://hooks.example.com/",
-            "ftp://hooks.example.com/",
-            "file:///etc/passwd",
-            "https:///path",
-            "https://user:pass@hooks.example.com/",
-            "not a url",
-        ]:
-            with self.subTest(url=url):
-                with self.assertRaises(egress.DestinationError):
-                    egress.validate_url(url)
-
-    def test_http_only_with_explicit_loopback_flag(self) -> None:
-        url = egress.validate_url("http://127.0.0.1:8080/", allow_loopback=True)
-        self.assertEqual(url.scheme, "http")
 
 
 class ConnectTargetTest(unittest.IsolatedAsyncioTestCase):
