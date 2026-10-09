@@ -429,8 +429,17 @@ def appwrite_signature(url: str, body: bytes, key: str) -> str:
 
     ``url`` is the webhook's configured URL (our ingress URL as registered), not
     the URL the request arrived on, which a proxy may have rewritten."""
-    digest = hmac.new(key.encode("utf-8"), url.encode("utf-8") + body, hashlib.sha1)
+    digest = appwrite_hmac(url, key)
+    digest.update(body)
     return base64.b64encode(digest.digest()).decode("ascii")
+
+
+def appwrite_hmac(url: str, key: str) -> hmac.HMAC:
+    """The HMAC-SHA1 behind :func:`appwrite_signature`, already fed ``url``.
+
+    Feed it the body as it streams in, so the ingress can check a delivery
+    without buffering all of it."""
+    return hmac.new(key.encode("utf-8"), url.encode("utf-8"), hashlib.sha1)
 
 
 def verify_appwrite_signature(url: str, body: bytes, signature: str, key: str) -> bool:

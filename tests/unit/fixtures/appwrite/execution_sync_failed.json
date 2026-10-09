@@ -1,0 +1,33 @@
+{
+  "$id": "68e7a1b2c3d4e5f6a7b8",
+  "$createdAt": "2026-10-09T09:38:26.634+00:00",
+  "$updatedAt": "2026-10-09T09:38:27.101+00:00",
+  "$permissions": [
+    "read(\"user:6630f1a2\")"
+  ],
+  "resourceId": "fn_billing",
+  "resourceType": "functions",
+  "deploymentId": "68e79f00aa11bb22cc33",
+  "trigger": "http",
+  "status": "failed",
+  "requestMethod": "POST",
+  "requestPath": "/charge?card=4242424242424242",
+  "requestHeaders": [
+    {
+      "name": "authorization",
+      "value": "Bearer sk_live_secret"
+    }
+  ],
+  "responseStatusCode": 500,
+  "responseBody": "{\"error\":\"customer jane@example.com declined\"}",
+  "responseHeaders": [
+    {
+      "name": "content-type",
+      "value": "application/json"
+    }
+  ],
+  "logs": "charging jane@example.com",
+  "errors": "Traceback (most recent call last): KeyError: 'amount'",
+  "duration": 0.412,
+  "scheduledAt": null
+}

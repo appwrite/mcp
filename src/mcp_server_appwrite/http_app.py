@@ -14,6 +14,9 @@ Builds a single-tenant Starlette ASGI app for the served Appwrite project:
   authorization server's discovery document verbatim.
 * ``/healthz`` — liveness probe.
 * ``/.well-known/openai-apps-challenge`` — public domain verification token.
+* ``/appwrite/webhooks/{id}`` — MCP Events ingress for Appwrite webhooks, only
+  with the events flag on. Unauthenticated by bearer token: the Appwrite
+  signature authenticates it (see :mod:`.events.ingress`).
 
 Auth uses the SDK primitives (``BearerAuthBackend`` + ``AuthContextMiddleware``) so the
 validated token is reachable from tool handlers via ``get_access_token()``.
@@ -63,6 +66,8 @@ from .auth import (
     resource_metadata_url,
 )
 from .constants import CORS_HEADERS, SERVER_VERSION
+from .events import protocol as events_protocol
+from .events.ingress import Ingress
 from .server import (
     build_catalog_tools_manager,
     build_mcp_server,
@@ -456,7 +461,9 @@ async def favicon_ico_endpoint(request: Request) -> RedirectResponse:
     return RedirectResponse("/favicon.svg", status_code=307)
 
 
-def build_app() -> Starlette:
+def build_app(ingress: Ingress | None = None) -> Starlette:
+    """The hosted app. ``ingress`` replaces the events ingress built from the
+    environment; it is mounted only when events are enabled."""
     error_monitoring.init_error_monitoring("http", SERVER_VERSION)
     telemetry.init_telemetry("http", SERVER_VERSION)
     tools_manager = build_catalog_tools_manager()
@@ -476,9 +483,17 @@ def build_app() -> Starlette:
 
     mcp_endpoint = RequireBearer(MCPIdentityMiddleware(handle_mcp))
 
+    if events_protocol.enabled("http"):
+        ingress = ingress or Ingress.from_env()
+    else:
+        ingress = None
+
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):
-        async with session_manager.run():
+        async with contextlib.AsyncExitStack() as stack:
+            await stack.enter_async_context(session_manager.run())
+            if ingress is not None:
+                await stack.enter_async_context(ingress.run())
             _log(f"Appwrite MCP (Streamable HTTP) ready — v{SERVER_VERSION}")
             yield
 
@@ -523,6 +538,7 @@ def build_app() -> Starlette:
         Route("/favicon.svg", endpoint=favicon_svg_endpoint, methods=["GET"]),
         Route("/favicon.ico", endpoint=favicon_ico_endpoint, methods=["GET"]),
         Route("/healthz", endpoint=health_endpoint, methods=["GET"]),
+        *([ingress.route] if ingress is not None else []),
         Route(
             "/",
             endpoint=mcp_endpoint,
