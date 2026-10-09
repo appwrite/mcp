@@ -85,11 +85,14 @@ token exchange against the real authorization server.
 ### `--events` — MCP Events (in progress)
 
 Turns on [MCP Events](events.md): `server/discover` (and legacy `initialize`)
-advertise the events capability, the server answers `events/list` with the
-event catalog, and the Appwrite webhook ingress is mounted at
-`/appwrite/webhooks/{id}`. It is off by default while the feature is built
-([#127](https://github.com/appwrite/mcp/issues/127)); `events/subscribe` is not
-available yet. Any of `1`, `true`, `yes` or `on` enables it. With the flag on,
+advertise the events capability, the server answers `events/list`,
+`events/subscribe` and `events/unsubscribe`, and the Appwrite webhook ingress
+is mounted at `/appwrite/webhooks/{id}`. It is a testing flag, off by default
+and in production, while the feature is built
+([#127](https://github.com/appwrite/mcp/issues/127)): subscriptions cannot work
+on Appwrite Cloud until
+[appwrite/appwrite#14293](https://github.com/appwrite/appwrite/issues/14293)
+ships. Any of `1`, `true`, `yes` or `on` enables it. With the flag on,
 `MCP_EVENTS_SEALING_KEYS` is required and the server refuses to start without
 it.
 
@@ -128,5 +131,6 @@ curl -s -X POST http://localhost:8000/appwrite/webhooks/sub_0123456789abcdef0123
 # {"status":"rejected","reason":"credentials"}
 ```
 
-With the flag off, neither capability appears, `events/list` returns `-32601`
-(method not found) and the ingress route returns `404`.
+With the flag off, neither capability appears, `events/list`,
+`events/subscribe` and `events/unsubscribe` return `-32601` (method not found)
+and the ingress route returns `404`.
