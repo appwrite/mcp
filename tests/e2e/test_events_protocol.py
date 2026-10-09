@@ -5,8 +5,10 @@ reads the catalog. The published schemas are checked with ``jsonschema`` as a
 client would use them, so the wire is the contract under test.
 """
 
+import base64
 import unittest
 
+import httpx
 from jsonschema import Draft202012Validator
 from support import Server
 
@@ -38,6 +40,9 @@ VALID_ARGUMENTS = {
     "users.user.created": {"project_id": "p1"},
 }
 
+# With the flag on, the server mounts the ingress, which needs sealing keys.
+SEALING_KEYS = "k1:" + base64.b64encode(bytes(range(32))).decode()
+
 # Content and PII that Appwrite models carry and an event must never declare.
 FORBIDDEN_PAYLOAD_FIELDS = {"email", "phone", "name", "prefs", "data", "body", "logs"}
 
@@ -45,7 +50,7 @@ FORBIDDEN_PAYLOAD_FIELDS = {"email", "phone", "name", "prefs", "data", "body", "
 class EventsEnabledFlow(unittest.TestCase):
     """A client discovers events on a server with the flag on."""
 
-    environment = {"MCP_EVENTS": "1"}
+    environment = {"MCP_EVENTS": "1", "MCP_EVENTS_SEALING_KEYS": SEALING_KEYS}
 
     def test_client_discovers_and_lists_events(self):
         with Server(self.environment) as server, server.client() as client:
@@ -172,6 +177,12 @@ class EventsDisabledFlow(unittest.TestCase):
 
                 _, message = client.call("events/list")
                 self.assertEqual(message["error"]["code"], -32601)
+
+                # The Appwrite webhook ingress is not mounted either.
+                response = httpx.post(
+                    f"{server.url}/appwrite/webhooks/sub_0123456789abcdef0123456789abcdef"
+                )
+                self.assertEqual(response.status_code, 404)
 
 
 if __name__ == "__main__":

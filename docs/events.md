@@ -191,6 +191,13 @@ from CI. The suite needs no credentials and runs on every PR:
 uv run --group e2e python -m unittest discover -s tests/e2e -v
 ```
 
+The ingress flows also play the parties around the server on localhost:
+Appwrite's webhooks worker signs and posts recorded-shape bodies
+(`tests/e2e/fixtures/appwrite/`) to the real ingress, and deliveries go through
+the real dispatcher and egress to an HTTPS receiver that checks each one with
+the official `standardwebhooks` library. Counters are read from the server's
+real OTLP export.
+
 A live end-to-end run against Cloud staging (real OAuth tokens, real Appwrite
 webhooks) is planned once
 [appwrite/appwrite#14293](https://github.com/appwrite/appwrite/issues/14293)
