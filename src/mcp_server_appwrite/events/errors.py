@@ -27,13 +27,15 @@ from enum import StrEnum
 
 from mcp import MCPError
 
-# Malformed arguments, callback URL or secret: the JSON-RPC code, unchanged by
-# SEP-3415. Re-exported so callers take every events code from this module.
-from mcp.types import INVALID_PARAMS
+# Malformed arguments, callback URL or secret, and failures on our side (such
+# as Appwrite answering 5xx): the JSON-RPC codes, unchanged by SEP-3415.
+# Re-exported so callers take every events code from this module.
+from mcp.types import INTERNAL_ERROR, INVALID_PARAMS
 
 __all__ = [
     "CALLBACK_ENDPOINT",
     "FORBIDDEN",
+    "INTERNAL_ERROR",
     "INVALID_PARAMS",
     "NOT_FOUND",
     "RESOURCE_EXHAUSTED",
@@ -101,3 +103,14 @@ class EventsError(MCPError):
     @classmethod
     def callback_endpoint(cls, message: str, *, reason: CallbackFailure) -> EventsError:
         return cls(CALLBACK_ENDPOINT, message, {"reason": reason.value})
+
+    @classmethod
+    def internal(cls, message: str) -> EventsError:
+        return cls(INTERNAL_ERROR, message)
+
+    @property
+    def expected(self) -> bool:
+        """Whether the caller caused this error (bad input, no access, a quota,
+        an unreachable callback) rather than a failure on our side. Only
+        unexpected errors are reported to Sentry."""
+        return self.code != INTERNAL_ERROR

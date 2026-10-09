@@ -294,6 +294,14 @@ def _build_instruments(meter: Any, transport: str, version: str) -> None:
         unit="{event}",
         description="MCP event deliveries to subscriber callbacks by outcome.",
     )
+    _instruments["events_subscriptions"] = meter.create_counter(
+        "mcp.events.subscriptions",
+        unit="{subscription}",
+        description=(
+            "events/subscribe and events/unsubscribe outcomes, and expired "
+            "subscription webhooks cleaned up, by operation and event."
+        ),
+    )
 
     _instruments["token_usage"] = meter.create_counter(
         "mcp.token.usage",
@@ -713,6 +721,19 @@ def record_ingress(outcome: str, reason: str | None, event: str | None) -> None:
         "events_ingress",
         1,
         {"outcome": outcome, "reason": reason, "event": event},
+    )
+
+
+def record_subscription(
+    operation: str, outcome: str, event: str | None, reason: str | None = None
+) -> None:
+    """One subscription operation: ``subscribe`` (created, refreshed, error),
+    ``unsubscribe`` (removed, absent, error) or ``cleanup`` (removed). ``event``
+    is a catalog event name, or ``None`` when the request named none."""
+    _safe_add(
+        "events_subscriptions",
+        1,
+        {"operation": operation, "outcome": outcome, "event": event, "reason": reason},
     )
 
 

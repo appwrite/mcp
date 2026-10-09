@@ -75,6 +75,8 @@ from .context import (
 from .docs_search import DocsSearch
 from .error_classification import HostedBinaryResponseTooLarge, is_response_parse_error
 from .events import protocol as events
+from .events.ingress import Ingress
+from .events.subscriptions import Subscriptions
 from .operator import Operator, _parse_tool_name
 from .service import Service
 from .tool_manager import ToolManager
@@ -1265,7 +1267,12 @@ def build_instructions(transport: str = "http", *, docs_enabled: bool = True) ->
     )
 
 
-def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
+def build_mcp_server(
+    operator: Operator, *, transport: str = "http", ingress: Ingress | None = None
+) -> Server:
+    """The low-level MCP server. With events enabled, ``events/subscribe``
+    writes webhooks that point at ``ingress`` (built from the environment when
+    not given) and verifies callbacks through its egress."""
     _configure_uploads(transport)
     instructions = build_instructions(
         transport, docs_enabled=bool(getattr(operator, "docs_enabled", False))
@@ -1518,7 +1525,11 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
         get_tool_input_schema=tool_input_schema,
     )
     if events.enabled(transport):
-        events.register(server)
+        events.register(
+            server,
+            Subscriptions(ingress or Ingress.from_env(), resolve_client),
+            lambda ctx: _mcp_request_context(ctx).tags,
+        )
     return server
 
 

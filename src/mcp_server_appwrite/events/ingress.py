@@ -202,6 +202,18 @@ class Ingress:
         return cls(Keyring.from_env(), Egress(), base=public_base_url())
 
     @property
+    def keyring(self) -> Keyring:
+        return self._keyring
+
+    @property
+    def egress(self) -> Egress:
+        return self._egress
+
+    @property
+    def dispatcher(self) -> Dispatcher:
+        return self._dispatcher
+
+    @property
     def route(self) -> Route:
         return Route(PATH, endpoint=self.handle, methods=["POST"])
 
