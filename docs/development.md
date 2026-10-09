@@ -37,6 +37,11 @@ docker compose up --build
 > To enable hosted HTTP error monitoring locally, set `SENTRY_DSN`. You can also
 > set `SENTRY_ENVIRONMENT`; Compose defaults it to `development`.
 
+> MCP Events seals each subscription into its Appwrite webhook with the keys in
+> `MCP_EVENTS_SEALING_KEYS` (`<id>:<base64 32 bytes>`, comma separated, first one
+> active). Generate a key with `openssl rand -base64 32`. To rotate, put a new key
+> first and remove the old one once the longest subscription TTL (24h) has passed.
+
 **`uv` directly — HTTP:**
 
 ```bash
