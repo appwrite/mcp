@@ -63,6 +63,7 @@ preview + resource URI.
 # Install uv, then sync deps
 uv sync                      # runtime deps
 uv sync --group dev          # + black, ruff (lint/format)
+uv sync --group e2e          # + e2e-test deps
 uv sync --extra integration  # + integration-test deps
 
 # Run hosted HTTP transport
@@ -82,7 +83,7 @@ docker compose up --build    # compose.yaml; endpoint at http://localhost:8000/
 
 Run these locally before opening a PR. They mirror the `CI` workflow
 (`.github/workflows/ci.yml`), which runs on every pull request and on pushes to
-`main`. **All four jobs must pass.**
+`main`. **All five jobs must pass.**
 
 1. **Lint** (`lint` job)
    ```bash
@@ -112,13 +113,24 @@ Run these locally before opening a PR. They mirror the `CI` workflow
    ```
    Fast, no external services or credentials required.
 
-5. **Docker build** (`docker` job)
+5. **E2E tests** (`e2e` job)
+   ```bash
+   uv sync --group e2e
+   uv run --group e2e python -m unittest discover -s tests/e2e -v
+   ```
+   Boots the real hosted HTTP app on a random localhost port and drives it over
+   real HTTP the way an MCP client does. No credentials: only the OAuth token
+   verifier is stubbed. Runs on every PR, forks included. Prefer adding
+   assertions to an existing flow over adding unit tests; add a unit test only
+   for what no e2e flow can reach, and say why in its module docstring.
+
+6. **Docker build** (`docker` job)
    ```bash
    docker build -t appwrite-mcp:ci .
    ```
    The hosted HTTP image must build cleanly.
 
-6. **Integration tests** (`integration` job) — *CI runs these only for pushes and
+7. **Integration tests** (`integration` job) — *CI runs these only for pushes and
    for PRs from branches on the same repo (not forks).* They create and delete
    **real** Appwrite resources, so they need live credentials and are skipped
    when absent:
@@ -171,5 +183,7 @@ uv run python scripts/render_server_json.py 0.8.8
   tool definitions.
 - Match existing style: black formatting, ruff-clean imports, type hints, module
   docstrings explaining intent (see `auth.py`, `http_app.py`, `docs_search.py`).
-- Add unit tests under `tests/unit/` for any non-trivial logic; add integration
-  coverage under `tests/integration/` when touching real API behavior.
+- Cover hosted-server behavior with end-to-end flows under `tests/e2e/` (shared
+  harness in `tests/e2e/support.py`). Add unit tests under `tests/unit/` only for
+  what no e2e flow can reach. Add integration coverage under
+  `tests/integration/` when touching real Appwrite API behavior.
