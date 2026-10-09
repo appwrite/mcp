@@ -671,6 +671,7 @@ source = { editable = "." }
 dependencies = [
     { name = "anyio" },
     { name = "appwrite-console" },
+    { name = "cryptography" },
     { name = "docstring-parser" },
     { name = "httpx" },
     { name = "mcp", extra = ["cli"] },
@@ -710,6 +711,7 @@ requires-dist = [
     { name = "appwrite-console", specifier = ">=0.10.0,<0.11" },
     { name = "argon2-cffi", marker = "extra == 'integration'", specifier = ">=23.1.0" },
     { name = "bcrypt", marker = "extra == 'integration'", specifier = ">=4.1.2" },
+    { name = "cryptography", specifier = ">=44.0.0" },
     { name = "docstring-parser", specifier = ">=0.16" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "mcp", extras = ["cli"], specifier = ">=2.3,<3" },
