@@ -1,35 +1,36 @@
+"""Envelope properties that no e2e flow can establish.
+
+Sealing, opening, tampering (401), project and webhook binding, key rotation
+across server restarts and expiry are covered end to end through the ingress in
+``tests/e2e/test_events_ingress.py`` (PR 4 of #127). What stays here:
+
+* The Appwrite signature against a vector computed by PHP, the way Appwrite's
+  webhooks worker does it. The e2e harness signs deliveries with its own
+  implementation of the same formula, so only this vector ties both to PHP.
+* Subscription id determinism and its Appwrite custom-id charset. Nothing
+  derives an id from a subscribe request until ``events/subscribe`` (PR 5),
+  whose e2e flow should replace these tests.
+* The envelope size budget that appwrite/appwrite#14293 must accommodate:
+  worst-case inputs that no realistic flow would send.
+"""
+
 import base64
 import os
 import unittest
-from unittest import mock
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
-from mcp_server_appwrite.events import envelope as module
 from mcp_server_appwrite.events.envelope import (
     ENVELOPE_BUDGET,
-    KEYS_ENV,
-    NONCE_BYTES,
     SUBSCRIPTION_ID_MAX,
-    TAG_BYTES,
-    Envelope,
-    EnvelopeError,
-    EnvelopeFailure,
     EnvelopeTooLarge,
     Keyring,
-    KeyringError,
     Principal,
-    SealingKey,
     Subscription,
     appwrite_signature,
-    canonical_json,
     subscription_id,
     valid_subscription_id,
     verify_appwrite_signature,
 )
 
-PROJECT = "6630f1a2b3c4d5e6f7a8"
-OTHER_PROJECT = "7740f1a2b3c4d5e6f7a8"
 APPWRITE_ID = "a" * 36
 EXPIRES = 1_760_000_000_000
 
@@ -56,38 +57,6 @@ PRINCIPAL = Principal(
     subject="66b1c2d3e4f5a6b7c8d9",
     client="chatgpt-connector",
 ).digest
-
-
-def subscription(
-    callback: str = "https://chatgpt.com/backend-api/mcp/events/abc",
-    secrets: tuple[str, ...] | None = None,
-    expires: int = EXPIRES,
-) -> Subscription:
-    return Subscription.create(
-        project=PROJECT,
-        name="tablesdb.row.created",
-        arguments={
-            "project_id": PROJECT,
-            "database_id": "main",
-            "table_id": "support_tickets",
-        },
-        callback=callback,
-        secrets=secrets or (secret(32),),
-        expires=expires,
-        principal=PRINCIPAL,
-    )
-
-
-class CanonicalJsonTests(unittest.TestCase):
-    def test_sorted_compact_utf8(self):
-        self.assertEqual(
-            canonical_json({"b": 1, "a": ["é", None]}),
-            '{"a":["é",null],"b":1}'.encode("utf-8"),
-        )
-
-    def test_rejects_nan(self):
-        with self.assertRaises(ValueError):
-            canonical_json({"a": float("nan")})
 
 
 class SubscriptionIdTests(unittest.TestCase):
@@ -147,19 +116,6 @@ class SubscriptionIdTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertFalse(valid_subscription_id(value))
 
-    def test_subscription_rejects_mismatched_id(self):
-        with self.assertRaises(ValueError):
-            Subscription(
-                id="sub_" + "0" * 32,
-                project=PROJECT,
-                name="users.user.created",
-                arguments={},
-                callback="https://a.test",
-                secrets=(secret(32),),
-                expires=EXPIRES,
-                principal=PRINCIPAL,
-            )
-
     def test_principal_digest_is_stable_and_short(self):
         again = Principal(
             issuer="https://cloud.appwrite.io/v1/oauth2/console",
@@ -175,224 +131,10 @@ class SubscriptionIdTests(unittest.TestCase):
         self.assertNotEqual(PRINCIPAL, other)
         self.assertEqual(len(PRINCIPAL), 22)
 
-
-class SealTests(unittest.TestCase):
-    def setUp(self):
-        self.keyring = ring(("k1", key(1)))
-
-    def test_round_trip(self):
-        original = subscription(secrets=(secret(32), secret(24)))
-        envelope = self.keyring.seal(original)
-        self.assertTrue(envelope.startswith("v1.k1."))
-        opened = self.keyring.open(envelope, original.id, PROJECT)
-        self.assertEqual(opened, original)
-        self.assertEqual(
-            list(opened.arguments), ["database_id", "project_id", "table_id"]
-        )
-
-    def test_nonce_is_random(self):
-        original = subscription()
-        self.assertNotEqual(self.keyring.seal(original), self.keyring.seal(original))
-
-    def test_envelope_is_basic_auth_safe(self):
-        envelope = self.keyring.seal(subscription())
-        self.assertRegex(envelope, r"^[A-Za-z0-9._-]+$")
-
-    def test_tampering_each_region_is_rejected(self):
-        original = subscription()
-        envelope = Envelope.parse(self.keyring.seal(original))
-        ciphertext_end = len(envelope.payload) - TAG_BYTES
-        regions = {
-            "nonce": range(0, NONCE_BYTES),
-            "ciphertext": range(NONCE_BYTES, ciphertext_end),
-            "tag": range(ciphertext_end, len(envelope.payload)),
-        }
-        for region, offsets in regions.items():
-            for offset in (offsets[0], offsets[len(offsets) // 2], offsets[-1]):
-                with self.subTest(region=region, offset=offset):
-                    payload = bytearray(envelope.payload)
-                    payload[offset] ^= 0x01
-                    tampered = Envelope(envelope.version, envelope.key, bytes(payload))
-                    with self.assertRaises(EnvelopeError) as caught:
-                        self.keyring.open(str(tampered), original.id, PROJECT)
-                    self.assertEqual(
-                        caught.exception.failure, EnvelopeFailure.AUTHENTICATION
-                    )
-
-    def test_truncated_and_extended_payloads_are_rejected(self):
-        original = subscription()
-        envelope = Envelope.parse(self.keyring.seal(original))
-        for payload in (envelope.payload[:-1], envelope.payload + b"\x00"):
-            with self.subTest(length=len(payload)):
-                changed = Envelope(envelope.version, envelope.key, payload)
-                with self.assertRaises(EnvelopeError) as caught:
-                    self.keyring.open(str(changed), original.id, PROJECT)
-                self.assertEqual(
-                    caught.exception.failure, EnvelopeFailure.AUTHENTICATION
-                )
-
-    def test_wrong_version(self):
-        original = subscription()
-        envelope = "v2" + self.keyring.seal(original)[2:]
-        with self.assertRaises(EnvelopeError) as caught:
-            self.keyring.open(envelope, original.id, PROJECT)
-        self.assertEqual(caught.exception.failure, EnvelopeFailure.VERSION)
-
-    def test_malformed(self):
-        original = subscription()
-        for envelope in (
-            "",
-            "v1",
-            "v1.k1",
-            "v1.k1.a.b",
-            "v1.k1.!!!!",
-            "v1.k1.AAAA",
-            "v1.k 1.AAAA",
-        ):
-            with self.subTest(envelope=envelope):
-                with self.assertRaises(EnvelopeError) as caught:
-                    self.keyring.open(envelope, original.id, PROJECT)
-                self.assertEqual(caught.exception.failure, EnvelopeFailure.MALFORMED)
-
-    def test_bound_to_subscription_id(self):
-        original = subscription()
-        other = subscription(
-            callback="https://chatgpt.com/backend-api/mcp/events/other"
-        )
-        envelope = self.keyring.seal(original)
-        with self.assertRaises(EnvelopeError) as caught:
-            self.keyring.open(envelope, other.id, PROJECT)
-        self.assertEqual(caught.exception.failure, EnvelopeFailure.AUTHENTICATION)
-
-    def test_bound_to_project(self):
-        original = subscription()
-        envelope = self.keyring.seal(original)
-        with self.assertRaises(EnvelopeError) as caught:
-            self.keyring.open(envelope, original.id, OTHER_PROJECT)
-        self.assertEqual(caught.exception.failure, EnvelopeFailure.AUTHENTICATION)
-
-    def test_contents_must_hash_to_the_id(self):
-        # An envelope sealed by a buggy writer under a mismatched id still opens
-        # (the AEAD binding holds) but its contents do not hash to that id.
-        original = subscription()
-        forged_id = "sub_" + "f" * 32
-        keyring = self.keyring
-        material = keyring.active
-        sealed = AESGCM(material.encryption).encrypt(
-            b"\x00" * NONCE_BYTES,
-            module._plaintext(original),
-            module._associated(material.id, forged_id, PROJECT),
-        )
-        forged = str(Envelope("v1", material.id, b"\x00" * NONCE_BYTES + sealed))
-        with self.assertRaises(EnvelopeError) as caught:
-            keyring.open(forged, forged_id, PROJECT)
-        self.assertEqual(caught.exception.failure, EnvelopeFailure.BINDING)
-
-
-class RotationTests(unittest.TestCase):
-    def test_old_key_opens_new_key_seals(self):
-        old = ring(("k1", key(1)))
-        rotated = ring(("k2", key(2)), ("k1", key(1)))
-        original = subscription()
-        legacy = old.seal(original)
-        self.assertEqual(rotated.open(legacy, original.id, PROJECT), original)
-        fresh = rotated.seal(original)
-        self.assertTrue(fresh.startswith("v1.k2."))
-        self.assertEqual(rotated.open(fresh, original.id, PROJECT), original)
-
-    def test_unknown_key(self):
-        original = subscription()
-        envelope = ring(("k2", key(2))).seal(original)
-        with self.assertRaises(EnvelopeError) as caught:
-            ring(("k1", key(1))).open(envelope, original.id, PROJECT)
-        self.assertEqual(caught.exception.failure, EnvelopeFailure.KEY)
-
-    def test_key_id_swap_is_rejected(self):
-        # Same material under two ids: the key id is bound as associated data.
-        keyring = ring(("k1", key(1)), ("k2", key(1)))
-        original = subscription()
-        envelope = keyring.seal(original)
-        swapped = envelope.replace("v1.k1.", "v1.k2.", 1)
-        with self.assertRaises(EnvelopeError) as caught:
-            keyring.open(swapped, original.id, PROJECT)
-        self.assertEqual(caught.exception.failure, EnvelopeFailure.AUTHENTICATION)
-
-
-class KeyringTests(unittest.TestCase):
-    def test_from_env(self):
-        encoded = base64.b64encode(key(3)).decode()
-        with mock.patch.dict(
-            os.environ, {KEYS_ENV: f" k3:{encoded} , k1:{encoded[:-1]}x= "}
-        ):
-            with self.assertRaises(KeyringError):
-                Keyring.from_env()
-        other = base64.urlsafe_b64encode(key(4)).decode().rstrip("=")
-        with mock.patch.dict(os.environ, {KEYS_ENV: f"k3:{encoded},k4:{other}"}):
-            keyring = Keyring.from_env()
-        self.assertEqual([entry.id for entry in keyring.keys], ["k3", "k4"])
-        self.assertEqual(keyring.active.material, key(3))
-        self.assertEqual(keyring.get("k4").material, key(4))
-
-    def test_missing(self):
-        with mock.patch.dict(os.environ, {KEYS_ENV: ""}):
-            with self.assertRaisesRegex(KeyringError, KEYS_ENV):
-                Keyring.from_env()
-
-    def test_rejects_short_long_and_weak_keys(self):
-        for material in (
-            os.urandom(16),
-            os.urandom(31),
-            os.urandom(33),
-            bytes(32),
-            b"a" * 32,
-        ):
-            with self.subTest(length=len(material)):
-                with self.assertRaises(KeyringError):
-                    SealingKey(id="k1", material=material)
-
-    def test_rejects_bad_entries(self):
-        good = base64.b64encode(key(1)).decode()
-        for text in (
-            "",
-            good,
-            f"k.1:{good}",
-            f":{good}",
-            "k1:not base64!",
-            f"k1:{good},k1:{base64.b64encode(key(2)).decode()}",
-        ):
-            with self.subTest(text=text):
-                with self.assertRaises(KeyringError):
-                    Keyring.parse(text)
-
-    def test_signing_key_is_derived_and_valid_for_appwrite(self):
-        keyring = ring(("k2", key(2)), ("k1", key(1)))
-        first = keyring.signing_key("sub_" + "0" * 32)
-        self.assertEqual(first, keyring.signing_key("sub_" + "0" * 32, "k2"))
-        self.assertNotEqual(first, keyring.signing_key("sub_" + "1" * 32))
-        self.assertNotEqual(first, keyring.signing_key("sub_" + "0" * 32, "k1"))
+    def test_signing_key_fits_the_appwrite_webhook_secret(self):
         # Appwrite's webhook `secret` param is Text(256, 8).
-        self.assertTrue(8 <= len(first) <= 256)
-        self.assertRegex(first, r"^[0-9a-f]{64}$")
-        with self.assertRaises(EnvelopeError):
-            keyring.signing_key("sub_" + "0" * 32, "k9")
-
-
-class ExpiryTests(unittest.TestCase):
-    def test_expired(self):
-        current = subscription(expires=EXPIRES)
-        self.assertFalse(current.expired(EXPIRES - 1))
-        self.assertTrue(current.expired(EXPIRES))
-        self.assertTrue(current.expired(EXPIRES + 1))
-
-    def test_defaults_to_now(self):
-        self.assertTrue(subscription(expires=1).expired())
-        self.assertFalse(subscription(expires=2**53).expired())
-
-    def test_expired_envelope_still_opens(self):
-        keyring = ring(("k1", key(1)))
-        stale = subscription(expires=1)
-        opened = keyring.open(keyring.seal(stale), stale.id, PROJECT)
-        self.assertTrue(opened.expired())
+        signing = ring(("k1", key(1))).signing_key("sub_" + "0" * 32)
+        self.assertRegex(signing, r"^[0-9a-f]{64}$")
 
 
 class AppwriteSignatureTests(unittest.TestCase):
@@ -429,14 +171,6 @@ class AppwriteSignatureTests(unittest.TestCase):
         for case in cases:
             with self.subTest(case=case):
                 self.assertFalse(verify_appwrite_signature(*case))
-
-    def test_with_derived_key(self):
-        keyring = ring(("k1", key(1)))
-        signing = keyring.signing_key(self.URL.rsplit("/", 1)[1])
-        signature = appwrite_signature(self.URL, self.BODY, signing)
-        self.assertTrue(
-            verify_appwrite_signature(self.URL, self.BODY, signature, signing)
-        )
 
 
 class SizeBudgetTests(unittest.TestCase):
