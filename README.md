@@ -320,6 +320,8 @@ for per-client setup.
 - [How Cloud authentication works](docs/authentication.md) — the OAuth 2.1 flow.
 - [Documentation search](docs/documentation-search.md) — the in-process
   `appwrite_search_docs` tool and how to rebuild its index.
+- [Events](docs/events.md) — MCP Events: webhook subscriptions to changes in
+  your Appwrite project (in progress, behind a flag).
 - [Self-hosted Appwrite](docs/self-hosted.md) — run the server locally with a
   project API key.
 - [Local development](docs/development.md) — running, testing, and debugging the
