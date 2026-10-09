@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import contextlib
 import io
 import json
 import os
@@ -224,6 +225,38 @@ class ServerHelperTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_stdio_initialize_matches_server_metadata(self):
+        captured = []
+
+        async def capture_run(_server, _read, _write, options, *args, **kwargs):
+            captured.append(options)
+
+        @contextlib.asynccontextmanager
+        async def fake_stdio_server():
+            yield (Mock(), Mock())
+
+        with (
+            patch.object(server_module, "load_appwrite_config", return_value=Mock()),
+            patch.object(server_module, "build_client", return_value=Mock()),
+            patch.object(server_module, "register_services", return_value=Mock()),
+            patch.object(server_module, "validate_services"),
+            patch.object(server_module, "build_operator", return_value=Mock()),
+            patch.object(server_module.Server, "run", capture_run),
+            patch("mcp.server.stdio.stdio_server", fake_stdio_server),
+        ):
+            asyncio.run(server_module.run_stdio())
+
+        (options,) = captured
+        reference = build_mcp_server(Mock(), transport="stdio")
+        self.assertEqual(options.server_name, reference.name)
+        self.assertEqual(options.instructions, reference.instructions)
+        self.assertEqual(options.website_url, server_module.SERVER_WEBSITE_URL)
+        self.assertIsNotNone(options.icons)
+        # mcp>=2.3 omits an unconfigured ``experimental`` capability; stdio must
+        # not reintroduce an empty one.
+        self.assertIsNone(options.capabilities.experimental)
+        self.assertIsNotNone(options.capabilities.tools)
 
     def test_http_tool_execution_does_not_block_event_loop(self):
         class BlockingOperator:

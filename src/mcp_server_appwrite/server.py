@@ -37,7 +37,6 @@ from dotenv import find_dotenv, load_dotenv
 from mcp import MCPError
 from mcp.server import NotificationOptions, Server, ServerRequestContext
 from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server.models import InitializationOptions
 from mcp.server.subscriptions import InMemorySubscriptionBus, ListenHandler
 from mcp.types import CLIENT_INFO_META_KEY, INVALID_PARAMS
 
@@ -1494,6 +1493,15 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
             ]
         )
 
+    def tool_input_schema(name: str) -> dict[str, Any] | None:
+        # Mcp-Param-* header validation on the 2026-07-28 HTTP entry needs the
+        # called tool's schema. Without this lookup the SDK runs our tools/list
+        # handler on every tools/call, double-counting tools/list in telemetry.
+        for tool in operator.get_public_tools():
+            if tool.name == name:
+                return tool.input_schema
+        return None
+
     return Server(
         "Appwrite MCP Server",
         version=SERVER_VERSION,
@@ -1506,6 +1514,7 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
         on_list_resource_templates=handle_list_resource_templates,
         on_read_resource=handle_read_resource,
         on_subscriptions_listen=subscriptions,
+        get_tool_input_schema=tool_input_schema,
     )
 
 
@@ -1767,17 +1776,13 @@ async def run_stdio() -> None:
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
         _log_startup("MCP transport: stdio")
         _log_startup("Appwrite MCP server ready")
+        # Derive the initialize result from the server itself so stdio reports
+        # the same identity, instructions and icons as the HTTP transport, and
+        # leaves out the empty ``experimental`` capability like mcp>=2.3 does.
         await server.run(
             read_stream,
             write_stream,
-            InitializationOptions(
-                server_name="appwrite",
-                server_version=SERVER_VERSION,
-                capabilities=server.get_capabilities(
-                    notification_options=NotificationOptions(),
-                    experimental_capabilities={},
-                ),
-            ),
+            server.create_initialization_options(NotificationOptions()),
         )
 
 
