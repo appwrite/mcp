@@ -36,6 +36,10 @@ dev = [
     "ruff==0.15.18",
     "pyright==1.1.411",
 ]
+# tests/e2e: the hosted server driven over real HTTP; no credentials needed.
+e2e = [
+    "jsonschema>=4.26",
+]
 
 [project.scripts]
 mcp-server-appwrite = "mcp_server_appwrite.__main__:main"

@@ -75,3 +75,20 @@ they are kept behind constants in
 | ResourceExhausted | `-32013` | `limit`, `max` |
 | Unsupported | `-32014` | |
 | CallbackEndpointError | `-32015` | `reason`: `challenge_failed`, `timeout`, `connection_refused`, `tls_error`, `http_4xx`, `http_5xx` |
+
+## Testing
+
+Events are tested end to end in `tests/e2e/`: the real hosted app runs under
+uvicorn on a random localhost port, and the tests talk to it over HTTP exactly
+like ChatGPT does (`MCP-Protocol-Version: 2026-07-28`, `Mcp-Method`, `_meta`).
+Only the OAuth token verifier is stubbed, because Cloud OAuth is not reachable
+from CI. The suite needs no credentials and runs on every PR:
+
+```bash
+uv run --group e2e python -m unittest discover -s tests/e2e -v
+```
+
+A live end-to-end run against Cloud staging (real OAuth tokens, real Appwrite
+webhooks) is planned once
+[appwrite/appwrite#14293](https://github.com/appwrite/appwrite/issues/14293)
+ships; until then the server's surroundings are played locally.
