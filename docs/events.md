@@ -99,8 +99,10 @@ For each delivery the ingress:
    sealed the envelope (see key rotation below). The body is hashed as it
    streams in; up to 2 MiB of it is kept. The route is public and the
    signature covers the whole body, so the read itself is bounded: a request
-   without a signature is refused before the body is read, and a body past
-   16 MiB or one still arriving after 10 seconds is not read on.
+   without a signature is refused before the body is read, a body past
+   16 MiB or one still arriving after 10 seconds is not read on, and a process
+   reads at most 32 bodies at once (`READS`; a request waits for a slot within
+   the same 10 seconds).
 3. Opens the envelope for this server (`MCP_PUBLIC_URL`), the project in
    `X-Appwrite-Webhook-Project-Id` and the subscription id in the path (see
    [Envelope](#envelope)), and checks its lease expiry.
@@ -212,7 +214,7 @@ request that fails authentication gets `401`.
 | Status filter does not match (`waiting`, `ready` for a `failed` filter) | `200` dropped `status` | no |
 | Body is not a JSON object | `200` dropped `malformed` | no |
 | Body over 2 MiB (signature still checked) | `200` dropped `too_large` | no |
-| Body over 16 MiB or slower than 10 s (signature never checked) | `200` dropped `unread` | no |
+| Body over 16 MiB, or slot wait and body slower than 10 s (signature never checked) | `200` dropped `unread` | no |
 | Delivery backlog full (process or subscription) | `200` dropped `backlog_full` | no |
 | No Basic auth, or the password is not an envelope | `401` `credentials` | no |
 | Signature missing or wrong | `401` `signature` | no |

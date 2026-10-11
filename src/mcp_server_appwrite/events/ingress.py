@@ -17,7 +17,7 @@ For each delivery:
    only the envelope's: replicas refreshing the same subscription during a
    rolling key rotation can interleave their writes and leave an envelope
    sealed with one key next to a secret derived from the other. The body is
-   hashed as it streams in.
+   hashed as it streams in, by at most :data:`READS` requests at once.
 3. Open the envelope for this server (``MCP_PUBLIC_URL``), the project in
    ``X-Appwrite-Webhook-Project-Id`` and the subscription id in the path. The
    expected binding comes only from configuration and routing, never from the
@@ -118,6 +118,15 @@ READ_TIMEOUT_SECONDS = 10.0
 """How long the whole body may take to arrive. Appwrite's worker gives up
 after 15 seconds and sends bodies in one go, so only a stalled or deliberately
 slow client hits this; it is dropped (``unread``) like an oversized body."""
+
+READS = 32
+"""Bodies one process reads at once. Reads come before the signature check, so
+anyone who knows a subscription id and a key id can start one; this bounds the
+memory (``READS`` × :data:`BODY_LIMIT_BYTES`), hashing and sockets they can
+hold. A request waits for a slot within its read timeout. Every read ends by
+its own deadline, so a waiting request gets a slot before its deadline unless
+its body is itself slow; a stalled forger can delay deliveries, not starve
+them."""
 
 BACKLOG = 1024
 """Deliveries one process keeps in flight, retries and backoff included. A
@@ -221,10 +230,12 @@ class Ingress:
         base: str,
         backlog: int = BACKLOG,
         subscription_backlog: int = SUBSCRIPTION_BACKLOG,
+        reads: int = READS,
         read_timeout: float = READ_TIMEOUT_SECONDS,
     ) -> None:
-        if backlog < 1 or subscription_backlog < 1:
-            raise ValueError("backlogs must be at least 1")
+        if backlog < 1 or subscription_backlog < 1 or reads < 1:
+            raise ValueError("backlogs and reads must be at least 1")
+        self._reads = anyio.CapacityLimiter(reads)
         self._read_timeout = read_timeout
         self._keyring = keyring
         self._egress = egress
@@ -270,10 +281,11 @@ class Ingress:
         """Stream the body, hashing all of it under each of ``keys`` and
         keeping at most :data:`BODY_LIMIT_BYTES`.
 
-        ``None`` when the body is longer than :data:`READ_LIMIT_BYTES` or
-        takes longer than the read timeout to arrive: the route is public and
-        the signature can only be checked once the whole body is in, so the
-        read itself must be bounded."""
+        ``None`` when the body is longer than :data:`READ_LIMIT_BYTES`, or
+        when waiting for one of the :data:`READS` slots and reading take longer
+        than the read timeout: the route is public and the signature can only
+        be checked once the whole body is in, so the read itself must be
+        bounded, in size, time and number."""
         declared = request.headers.get("content-length", "")
         if declared.isdigit() and int(declared) > READ_LIMIT_BYTES:
             return None
@@ -283,17 +295,18 @@ class Ingress:
         complete = True
         total = 0
         with anyio.move_on_after(self._read_timeout) as scope:
-            async for chunk in request.stream():
-                total += len(chunk)
-                if total > READ_LIMIT_BYTES:
-                    return None
-                for digest in digests:
-                    digest.update(chunk)
-                if complete and len(content) + len(chunk) > BODY_LIMIT_BYTES:
-                    complete = False
-                    content.clear()
-                elif complete:
-                    content.extend(chunk)
+            async with self._reads:
+                async for chunk in request.stream():
+                    total += len(chunk)
+                    if total > READ_LIMIT_BYTES:
+                        return None
+                    for digest in digests:
+                        digest.update(chunk)
+                    if complete and len(content) + len(chunk) > BODY_LIMIT_BYTES:
+                        complete = False
+                        content.clear()
+                    elif complete:
+                        content.extend(chunk)
         if scope.cancelled_caught:
             return None
         signatures = tuple(

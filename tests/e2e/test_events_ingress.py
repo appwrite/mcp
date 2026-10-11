@@ -28,6 +28,7 @@ import subprocess
 import sys
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -925,10 +926,13 @@ class DeliveryFlow(IngressFlow):
         # The route is public and the signature covers the whole body, so a
         # body past 16 MiB, or one that stalls past the read timeout, is not
         # read on: it is acknowledged as `unread` and nothing is delivered.
+        # Reads also take one of a fixed number of slots (one here).
         before = collector().count(INGRESS, outcome="dropped", reason="unread")
         webhook, callback, _ = self.subscribe(*ROWS)
         huge = {**fixture("row_created"), "body": "x" * (16 * 1024 * 1024)}
-        with Server(events_on(self.keys), lambda: injected(read_timeout=0.5)) as server:
+        with Server(
+            events_on(self.keys), lambda: injected(read_timeout=0.5, reads=1)
+        ) as server:
             appwrite = Appwrite(server)
             # Declared too long, even when correctly signed.
             self.dropped(appwrite.deliver(webhook, ROW_EVENT, huge), "unread")
@@ -953,19 +957,31 @@ class DeliveryFlow(IngressFlow):
                 time.sleep(1.5)
                 yield b'"row_8f2a"}'
 
-            for label, body in (("endless", endless), ("stalled", stalled)):
-                with self.subTest(body=label):
-                    response = httpx.post(
-                        url, content=body(), headers=headers, timeout=30
-                    )
-                    self.dropped(response, "unread")
-            # The server still serves real deliveries.
+            def forge(body) -> httpx.Response:
+                return httpx.post(url, content=body(), headers=headers, timeout=30)
+
+            self.dropped(forge(endless), "unread")
+            # A stalled forgery holds the only read slot until its deadline. A
+            # real delivery sent meanwhile waits for the slot, then succeeds.
+            with ThreadPoolExecutor(1) as pool:
+                forged = pool.submit(forge, stalled)
+                time.sleep(0.1)
+                started = time.monotonic()
+                event_id = self.accepted(
+                    appwrite.deliver(webhook, ROW_EVENT, fixture("row_created"))
+                )
+                self.assertGreater(time.monotonic() - started, 0.3)
+                self.dropped(forged.result(), "unread")
+            self.delivered(callback, event_id)
+            # The server still serves real deliveries at once.
+            started = time.monotonic()
             event_id = self.accepted(
                 appwrite.deliver(webhook, ROW_EVENT, fixture("row_created"))
             )
-            self.delivered(callback, event_id)
+            self.assertLess(time.monotonic() - started, 0.3)
+            self.delivered(callback, event_id, count=2)
             appwrite.close()
-        self.nothing_more((callback, 1))
+        self.nothing_more((callback, 2))
         self.assertEqual(
             collector().count(INGRESS, outcome="dropped", reason="unread"),
             before + 3,
