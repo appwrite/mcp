@@ -30,6 +30,7 @@ import httpx
 from jsonschema import Draft202012Validator
 from support import (
     CLIENT_ID,
+    GRANTED,
     ISSUER,
     OTHER_SUBJECT,
     OTHER_TOKEN,
@@ -83,6 +84,9 @@ NO_FUNCTIONS = "e2e-no-functions"
 """Granted every scope but ``functions.read``."""
 STRANGER = "e2e-stranger"
 """A user who is not a member of any project."""
+NO_WRITE = "e2e-no-webhook-write"
+"""Granted, and carrying in its ``scope`` claim, every scope but
+``webhooks.write``."""
 
 PRINCIPAL = Principal(ISSUER, SUBJECT, CLIENT_ID).digest
 OTHER_PRINCIPAL = Principal(ISSUER, OTHER_SUBJECT, CLIENT_ID).digest
@@ -131,7 +135,14 @@ def setUpModule() -> None:
             READ_ONLY: "88d3e4f5a6b7c8d9e0f1",
             NO_FUNCTIONS: "99e4f5a6b7c8d9e0f1a2",
             STRANGER: "aaf5a6b7c8d9e0f1a2b3",
+            NO_WRITE: "bb06b7c8d9e0f1a2b3c4",
         }
+    )
+    # The main user's token names its scopes, so subscribe's write-scope check
+    # passes on a real grant; the others carry no scope claim.
+    GRANTED[TOKEN] = sorted(f"project:{scope}" for scope in SCOPES)
+    GRANTED[NO_WRITE] = sorted(
+        f"project:{scope}" for scope in SCOPES - {"webhooks.write"}
     )
     cloud.add(
         Project(
@@ -155,14 +166,16 @@ def setUpModule() -> None:
     cloud.grant(READ_ONLY, {MAIN}, SCOPES - {"webhooks.read", "webhooks.write"})
     cloud.grant(NO_FUNCTIONS, {MAIN}, SCOPES - {"functions.read"})
     cloud.grant(STRANGER, set())
+    cloud.grant(NO_WRITE, {MAIN}, SCOPES - {"webhooks.write"})
 
 
 def tearDownModule() -> None:
     receiver.close()
     untrusted.close()
     cloud.close()
-    for token in (READ_ONLY, NO_FUNCTIONS, STRANGER):
+    for token in (READ_ONLY, NO_FUNCTIONS, STRANGER, NO_WRITE):
         SUBJECTS.pop(token, None)
+    GRANTED.clear()
 
 
 def fixture(name: str) -> dict[str, Any]:
@@ -187,7 +200,9 @@ def injected() -> dict[str, Any]:
 def environment() -> dict[str, str]:
     return {
         "MCP_EVENTS": "1",
-        "MCP_EVENTS_SEALING_KEYS": KEYS,
+        # The new key is already in the ring, behind the active one: step 1
+        # of a rotation, so these servers open what a step-2 replica seals.
+        "MCP_EVENTS_SEALING_KEYS": f"{KEYS},{ROTATED}",
         "APPWRITE_ENDPOINT": cloud.endpoint,
     }
 
@@ -449,10 +464,11 @@ class SubscribeFlow(unittest.TestCase):
                 )
 
     def test_refreshes_interleaved_across_a_key_rotation_still_deliver(self):
-        # A rolling rotation: this server (the old replica) still seals with
-        # k1; the new replica seals with k2 and keeps k1 to open. Both refresh
-        # the same subscription and their writes interleave: old envelope,
-        # new envelope, new signing key, old signing key last.
+        # Step 2 of a rotation, rolling out: this server (the old replica,
+        # ring k1,k2) still seals with k1; the new replica (ring k2,k1) seals
+        # with k2. Both refresh the same subscription and their writes
+        # interleave: old envelope, new envelope, new signing key, old signing
+        # key last.
         secret = whsec()
         callback = receiver.endpoint((secret,))
         params = request(*ROWS, callback, secret)
@@ -473,19 +489,25 @@ class SubscribeFlow(unittest.TestCase):
                 stored["signatureKey"], Keyring.parse(KEYS).signing_key(id)
             )
 
-            # Appwrite delivers through the new replica: the k2 envelope
-            # opens, and the k1 signing key still verifies.
-            appwrite = Appwrite(replica)
-            responses = appwrite.fire(cloud, MAIN, ROW_EVENT, fixture("row_created"))
-            appwrite.close()
-            self.assertEqual(len(responses), 1)
-            event_id = self.accepted(responses[0])
-            # Three handshakes (subscribe and both refreshes), then the event.
-            delivery = receiver.wait(callback, 4)[3]
-            self.assertEqual(delivery.headers["webhook-id"], event_id)
-            self.assertEqual(delivery.verified, (True,))
+            # The load balancer can hand Appwrite's delivery to either
+            # replica. Both open the k2 envelope (the old one holds k2 since
+            # step 1) and both accept the k1 signing key.
+            received = 3  # the handshakes of the subscribe and both refreshes
+            for server in (replica, self.server):
+                with self.subTest(replica=server.url):
+                    appwrite = Appwrite(server)
+                    responses = appwrite.fire(
+                        cloud, MAIN, ROW_EVENT, fixture("row_created")
+                    )
+                    appwrite.close()
+                    self.assertEqual(len(responses), 1)
+                    event_id = self.accepted(responses[0])
+                    received += 1
+                    delivery = receiver.wait(callback, received)[received - 1]
+                    self.assertEqual(delivery.headers["webhook-id"], event_id)
+                    self.assertEqual(delivery.verified, (True,))
         self.unsubscribe(target(*ROWS, callback))
-        self.nothing_more(callback, 4)
+        self.nothing_more(callback, 5)
 
     def test_every_event_subscribes_and_is_authorized(self):
         managed = set(self.ours())
@@ -738,6 +760,17 @@ class SubscribeFlow(unittest.TestCase):
         self.refused(
             "events/unsubscribe", target(*ROWS, callback), FORBIDDEN, token=READ_ONLY
         )
+        # A token that may list webhooks but not write them is refused from
+        # its scope claim before Appwrite or the callback hears of it.
+        requests = len(cloud.requests)
+        error = self.refused(
+            "events/subscribe",
+            request(*ROWS, callback, secret),
+            FORBIDDEN,
+            token=NO_WRITE,
+        )
+        self.assertIn("project:webhooks.write", error["message"])
+        self.assertEqual(len(cloud.requests), requests)
         self.nothing_more(callback, 0)
 
         # Appwrite failing on its side is an internal error, and leaves nothing.
@@ -755,16 +788,24 @@ class SubscribeFlow(unittest.TestCase):
                 )
                 self.assertEqual(set(self.ours()), managed)
 
-        # A refresh whose signing-key update fails removes the webhook rather
-        # than leave an envelope and key that may disagree.
+        # A refresh whose signing-key update fails is an internal error, but
+        # the webhook stays: its previous signing key still verifies, so a
+        # transient failure does not end the subscription.
         result = self.subscribe(request(*ROWS, callback, secret))
         cloud.fail("PATCH", r"/v1/webhooks/[^/]+/secret", 500)
         self.refused(
             "events/subscribe", request(*ROWS, callback, secret), INTERNAL_ERROR
         )
-        self.assertNotIn(result["id"], cloud.documents(MAIN))
+        self.assertIn(result["id"], cloud.documents(MAIN))
+        seen = len(receiver.received(callback))
+        responses = self.appwrite.fire(cloud, MAIN, ROW_EVENT, fixture("row_created"))
+        self.assertEqual(len(responses), 1)
+        event_id = self.accepted(responses[0])
+        delivery = receiver.wait(callback, seen + 1)[seen]
+        self.assertEqual(delivery.headers["webhook-id"], event_id)
+        self.unsubscribe(target(*ROWS, callback))
 
-        # Counted like tools/call: four internal errors, one refusal.
+        # Counted like tools/call: four internal errors, two refusals.
         self.assertEqual(
             collector().count("mcp.jsonrpc.errors", error_code="-32603"), internal + 4
         )
@@ -772,7 +813,7 @@ class SubscribeFlow(unittest.TestCase):
             collector().count(
                 SUBSCRIPTIONS, operation="subscribe", outcome="error", reason="-32012"
             ),
-            forbidden + 1,
+            forbidden + 2,
         )
 
     def test_free_plan_limit_and_expired_cleanup(self):

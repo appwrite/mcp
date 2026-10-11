@@ -93,6 +93,10 @@ SUBJECTS: dict[str, str | None] = {
 }
 """Every token the stubbed verifier accepts, and the user it names."""
 
+GRANTED: dict[str, list[str]] = {}
+"""The OAuth ``scope`` claim of a token, for tests that set one; others carry
+none."""
+
 PROTOCOL_VERSION = "2026-07-28"
 LEGACY_PROTOCOL_VERSION = "2025-11-25"
 
@@ -128,7 +132,11 @@ async def _verify_token(_verifier: Any, token: str) -> AccessToken | None:
     if subject is not None:
         claims["sub"] = subject
     return AccessToken(
-        token=token, client_id=CLIENT_ID, scopes=[], subject=subject, claims=claims
+        token=token,
+        client_id=CLIENT_ID,
+        scopes=list(GRANTED.get(token, [])),
+        subject=subject,
+        claims=claims,
     )
 
 

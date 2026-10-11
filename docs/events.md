@@ -98,7 +98,10 @@ subscriptions.
    addresses (`-32602`). The secret must be `whsec_` + base64 of 24 to 64 bytes
    (`-32602`).
 2. Needs a user behind the token: no `sub` is `-32012`. No token at all never
-   reaches JSON-RPC (HTTP `401`).
+   reaches JSON-RPC (HTTP `401`). A token whose granted scopes include none of
+   `project:webhooks.write`, `project:all` or `all` is `-32012` here, before
+   the callback gets any request (listing webhooks below proves only read
+   access, and Appwrite has no side-effect-free write check).
 3. Grants a TTL and seals the subscription. A callback URL too long for the
    envelope is `-32602`.
 4. Reads the event's resource in the project with the caller's token:
@@ -211,8 +214,10 @@ Webhooks receivers do.
 
 Creating a webhook is a single call. A refresh rewrites the webhook and then
 sets its signing key, which the update endpoint does not take. If that second
-call fails, the webhook is deleted rather than left with an envelope and key
-that may disagree, and the client subscribes again.
+call fails, the webhook keeps its new envelope and its previous signing key.
+That key was derived from a key still in the ring, and the ingress accepts the
+signing key of every ring key, so deliveries continue; the error (`-32603`)
+tells the client to retry.
 
 ### Free plan
 
@@ -378,14 +383,24 @@ request that fails authentication gets `401`.
 
 A legitimate webhook cannot get a `401` in normal operation:
 
-- **Key rotation.** A new sealing key goes first in `MCP_EVENTS_SEALING_KEYS`
-  and the old one stays until the longest subscription TTL has passed, so
-  webhooks written with the old key still verify and open. Replicas that
-  refresh the same subscription during a rolling rotation can interleave their
-  writes and leave an envelope from one key next to a signing secret from the
-  other; that still verifies, because the signature is checked against every
-  key in the ring. After the old key is removed, only expired subscriptions
-  still name it. Their webhooks are orphans awaiting cleanup, so they get `200` (`retired_key`) instead of being paused.
+- **Key rotation.** Rotate in three deploys, each rolled out to every replica
+  before the next:
+  1. Add the new key *after* the current one (`k1:…,k2:…`). Every replica can
+     now open `k2` envelopes, but `k1` still seals.
+  2. Move the new key first (`k2:…,k1:…`). Refreshes now seal with `k2`. A
+     replica still on step 1 opens them, so no delivery that reaches it is
+     dropped as `retired_key`.
+  3. Once the longest subscription TTL (24 hours) has passed, remove the old
+     key (`k2:…`).
+
+  Sealing with a key that some replica does not have yet would make that
+  replica drop the subscription's deliveries as `retired_key`. Replicas that
+  refresh the same subscription during step 2 can interleave their writes and
+  leave an envelope from one key next to a signing secret from the other; that
+  still verifies, because the signature is checked against every key in the
+  ring. After the old key is removed, only expired subscriptions still name
+  it. Their webhooks are orphans awaiting cleanup, so they get `200`
+  (`retired_key`) instead of being paused.
 - **Public URL.** The signature covers the registered URL, and every envelope
   is bound to `MCP_PUBLIC_URL`. Changing it breaks every subscription until it
   refreshes, so keep it fixed while subscriptions exist.

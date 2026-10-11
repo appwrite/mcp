@@ -6,7 +6,9 @@ A subscription is one managed Appwrite webhook in the subscriber's project (see
 1. Validates the request: a catalog event (``-32011``), its arguments, a
    ``webhook`` delivery (``-32014`` otherwise), an ``https`` callback that
    resolves only to public addresses and a ``whsec_`` secret (``-32602``).
-2. Takes the principal from the caller's OAuth token (``-32012`` without one).
+2. Takes the principal from the caller's OAuth token (``-32012`` without one),
+   and refuses a token whose granted scopes cannot write webhooks (``-32012``)
+   before anything reaches the callback.
 3. Grants a TTL (:class:`Grant`) and seals the subscription into an envelope
    (an oversized one is ``-32602``).
 4. Authorizes: reads the event's resource in the project with the caller's own
@@ -32,9 +34,10 @@ Appwrite never returns. Deliveries already in flight were opened from the old
 envelope and keep signing with the old secret through their retries.
 
 Errors from Appwrite map onto the events codes; see :func:`_access_error` and
-:func:`_webhook_error`. Nothing is left half-written: creating is one call, and
-a refresh whose second call (the signing key) fails deletes the webhook rather
-than leave one whose envelope and key disagree.
+:func:`_webhook_error`. Creating is one call. A refresh whose second call (the
+signing key) fails keeps the webhook with its new envelope and previous signing
+key, which still verifies because the ingress accepts the key of every sealing
+key in the ring, and reports the error so the client retries.
 
 ``events/unsubscribe`` recomputes the id from the principal and the request and
 deletes that webhook if it is a managed one. A missing webhook is still
@@ -105,6 +108,8 @@ PROJECT = "project_id"
 
 SCOPE_PREFIX = "project:"
 WEBHOOK_SCOPES = ("webhooks.read", "webhooks.write")
+WRITE_GRANTS = frozenset({"all", "project:all", "project:webhooks.write"})
+"""OAuth scopes any one of which lets a token write project webhooks."""
 
 
 class Operation(StrEnum):
@@ -246,6 +251,7 @@ class Subscriptions:
         suggested = _ttl(params)
         _max_age(params.max_age_ms)
         principal = _principal()
+        _writable()
 
         grant = Grant.of(suggested, self._now())
         subscription = Subscription.create(
@@ -404,13 +410,12 @@ class Subscriptions:
         try:
             webhooks.sign(subscription.id, secret)
         except AppwriteException as error:
-            # The envelope is written but the signing key is not; after a
-            # sealing-key rotation they would disagree and every delivery would
-            # be refused. End the subscription instead; the client re-subscribes.
-            try:
-                webhooks.delete(subscription.id)
-            except AppwriteException:
-                pass
+            # The new envelope is written and the previous signing key stays.
+            # That key was derived from a key still in the ring (keys stay
+            # until every subscription sealed with them has expired), and the
+            # ingress checks signatures against every ring key, so the webhook
+            # keeps delivering. Report the failure so the client retries, but
+            # do not turn a transient error into a lost subscription.
             raise _webhook_error(error, target.project, count) from error
         return Outcome.REFRESHED
 
@@ -514,6 +519,29 @@ def _max_age(value: object) -> None:
         )
 
 
+def _writable() -> None:
+    """Refuse a token whose granted scopes cannot write webhooks before the
+    callback gets a verification POST.
+
+    Listing the webhooks proves ``webhooks.read`` only, and Appwrite has no
+    side-effect-free way to prove ``webhooks.write``; the token's ``scope``
+    claim does. A token that carries no scopes at all is left to Appwrite,
+    which refuses the write itself."""
+    token = get_access_token()
+    scopes = set(token.scopes) if token is not None else set()
+    if not scopes or scopes & WRITE_GRANTS:
+        return
+    raise EventsError.forbidden(_scopes_message())
+
+
+def _scopes_message() -> str:
+    scopes = " and ".join(SCOPE_PREFIX + scope for scope in WEBHOOK_SCOPES)
+    return (
+        f"Event subscriptions need the {scopes} scopes. Reconnect the "
+        "Appwrite connector and grant them."
+    )
+
+
 def _principal() -> str:
     """Digest of the OAuth principal behind the current request."""
     token = get_access_token()
@@ -585,11 +613,7 @@ def _webhook_error(error: AppwriteException, project: str, count: int) -> Events
     # reach, as on subscribe, so project ids cannot be probed.
     if code in (401, 403) or error.type == AppwriteError.PROJECT_NOT_FOUND:
         if error.type == AppwriteError.UNAUTHORIZED_SCOPE:
-            scopes = " and ".join(SCOPE_PREFIX + scope for scope in WEBHOOK_SCOPES)
-            return EventsError.forbidden(
-                f"Event subscriptions need the {scopes} scopes. Reconnect the "
-                "Appwrite connector and grant them."
-            )
+            return EventsError.forbidden(_scopes_message())
         return EventsError.forbidden(f"You cannot manage webhooks in project {project}")
     return EventsError.internal(
         f"Appwrite could not save the subscription (HTTP {code or 'error'})"
