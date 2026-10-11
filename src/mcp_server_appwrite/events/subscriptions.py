@@ -10,7 +10,8 @@ A subscription is one managed Appwrite webhook in the subscriber's project (see
    and refuses a token whose granted scopes cannot write webhooks (``-32012``)
    before anything reaches the callback.
 3. Grants a TTL (:class:`Grant`) and seals the subscription into an envelope
-   (an oversized one is ``-32602``).
+   for this server (an oversized one, or one the subscription record refuses,
+   is ``-32602``).
 4. Authorizes: reads the event's resource in the project with the caller's own
    token (:class:`.catalog.Access`). Every refresh repeats it, so access that
    was revoked ends the subscription at the next refresh at the latest.
@@ -52,7 +53,6 @@ import sys
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -70,9 +70,11 @@ from .delivery import Callback, CallbackError, InvalidSecretError, decode_secret
 from .egress import SECURE_SCHEME, DestinationError
 from .envelope import (
     EnvelopeTooLarge,
+    InvalidSubscription,
     Principal,
     Subscription,
     subscription_id,
+    timestamp,
 )
 from .errors import CallbackFailure, EventsError
 from .ingress import Ingress
@@ -180,12 +182,6 @@ class Grant:
         return cls(expires=expires, refresh=expires - ttl // REFRESH_SHARE)
 
 
-def timestamp(milliseconds: int) -> str:
-    """ISO 8601 UTC with milliseconds, as ``refreshBefore`` is sent."""
-    moment = datetime.fromtimestamp(milliseconds / 1000, UTC)
-    return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
-
-
 ClientFactory = Callable[[str], Client]
 """Builds the Appwrite client for the current request's token, scoped to a
 project (``server.resolve_client``)."""
@@ -259,15 +255,22 @@ class Subscriptions:
             name=target.event.name,
             arguments=target.arguments,
             callback=callback,
-            secrets=(secret,),
+            secret=secret,
             expires=grant.expires,
+            refresh=grant.refresh,
             principal=principal,
         )
         try:
-            envelope = self._ingress.keyring.seal(subscription)
+            envelope = self._ingress.keyring.seal(subscription, self._ingress.server)
         except EnvelopeTooLarge as error:
             raise EventsError.invalid_params(
                 "delivery.url is too long to fit in the subscription"
+            ) from error
+        except InvalidSubscription as error:
+            raise EventsError.invalid_params(
+                "delivery is not a valid subscription: the url must be https "
+                "without credentials or a fragment, and the secret canonical "
+                "padded base64"
             ) from error
         await self._check(callback)
 
@@ -321,7 +324,7 @@ class Subscriptions:
 
     async def _verify(self, subscription: Subscription) -> None:
         callback = Callback(
-            subscription.callback, subscription.id, subscription.secrets
+            subscription.callback, subscription.id, (subscription.secret,)
         )
         try:
             await self._ingress.dispatcher.verify(callback)

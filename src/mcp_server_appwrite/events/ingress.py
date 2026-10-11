@@ -269,6 +269,11 @@ class Ingress:
         return self._dispatcher
 
     @property
+    def server(self) -> str:
+        """This deployment as envelopes are bound to it: ``MCP_PUBLIC_URL``."""
+        return self._base
+
+    @property
     def route(self) -> Route:
         return Route(PATH, endpoint=self.handle, methods=["POST"])
 

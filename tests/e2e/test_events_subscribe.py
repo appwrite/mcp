@@ -56,9 +56,12 @@ from mcp_server_appwrite.events.catalog import lookup
 from mcp_server_appwrite.events.delivery import Dispatcher, RetryPolicy
 from mcp_server_appwrite.events.egress import Egress
 from mcp_server_appwrite.events.envelope import (
+    Context,
     Keyring,
     Principal,
+    key_id,
     subscription_id,
+    timestamp,
 )
 from mcp_server_appwrite.events.ingress import Ingress
 
@@ -368,8 +371,18 @@ class SubscribeFlow(unittest.TestCase):
         self.assertTrue(webhook["tls"])
         self.assertTrue(webhook["enabled"])
         self.assertEqual(webhook["authUsername"], "mcp-events")
-        self.assertTrue(webhook["httpPass"].startswith("v1.k1."))
         self.assertEqual(webhook["signatureKey"], Keyring.parse(KEYS).signing_key(id))
+        # The password is the JWE envelope, sealed with k1 for this server, the
+        # project and the webhook id, and carrying the granted lease.
+        self.assertEqual(key_id(webhook["httpPass"]), "k1")
+        sealed = Keyring.parse(KEYS).open(
+            webhook["httpPass"], Context(server=PUBLIC_URL, tenant=MAIN, resource=id)
+        )
+        self.assertEqual(
+            (sealed.id, sealed.callback, sealed.secret), (id, callback, old)
+        )
+        self.assertEqual(timestamp(sealed.refresh), result["refreshBefore"])
+        self.assertAlmostEqual(sealed.expires / 1000, started + 3600, delta=5)
         match = LABEL.fullmatch(webhook["name"])
         assert match is not None, webhook["name"]
         self.assertEqual(match["event"], name)
@@ -484,7 +497,7 @@ class SubscribeFlow(unittest.TestCase):
             cloud.before("PATCH", rf"/v1/webhooks/{id}/secret", new_replica_refreshes)
             self.subscribe(params)
             stored = cloud.documents(MAIN)[id]
-            self.assertTrue(stored["httpPass"].startswith("v1.k2."))
+            self.assertEqual(key_id(stored["httpPass"]), "k2")
             self.assertEqual(
                 stored["signatureKey"], Keyring.parse(KEYS).signing_key(id)
             )
@@ -646,6 +659,7 @@ class SubscribeFlow(unittest.TestCase):
             "private url": changed(url="https://10.0.0.7/hooks"),
             "metadata url": changed(url="https://169.254.169.254/latest"),
             "credentials in url": changed(url=callback.replace("https://", "https://u:p@")),
+            "fragment in url": changed(url=callback + "#events"),
             "no secret": changed(secret=None),
             "secret not a string": changed(secret=42),
             "empty secret": changed(secret=""),
@@ -655,6 +669,8 @@ class SubscribeFlow(unittest.TestCase):
             "space after prefix": changed(secret="whsec_ " + key),
             "secret not base64": changed(secret="whsec_not*base64!"),
             "secret bad padding": changed(secret="whsec_" + key[:-1]),
+            # Decodes, but the subscription record wants canonical base64.
+            "secret not canonical": changed(secret="whsec_" + key[:-2] + "t="),
             "secret of 23 bytes": changed(secret="whsec_" + base64.b64encode(b"k" * 23).decode()),
             "secret of 65 bytes": changed(secret="whsec_" + base64.b64encode(b"k" * 65).decode()),
             "envelope too large": changed(url=callback + "?pad=" + "a" * 2000),

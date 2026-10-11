@@ -102,8 +102,10 @@ subscriptions.
    `project:webhooks.write`, `project:all` or `all` is `-32012` here, before
    the callback gets any request (listing webhooks below proves only read
    access, and Appwrite has no side-effect-free write check).
-3. Grants a TTL and seals the subscription. A callback URL too long for the
-   envelope is `-32602`.
+3. Grants a TTL and seals the subscription (see [Envelope](#envelope)). A
+   callback URL too long for the envelope is `-32602`, and so is a delivery the
+   subscription record refuses (a URL with a fragment, a secret whose base64
+   is not canonical).
 4. Reads the event's resource in the project with the caller's token:
 
    | Event | Read | Scope |
