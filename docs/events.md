@@ -88,7 +88,8 @@ behind the bearer-token gate: the Appwrite signature is its authentication.
 
 For each delivery the ingress:
 
-1. Reads the envelope from Basic auth and takes its sealing key id.
+1. Reads the envelope from Basic auth and takes the sealing key id (`kid`) from
+   its JWE header.
 2. Verifies `X-Appwrite-Webhook-Signature`. Appwrite signs
    `base64(HMAC-SHA1(url + body))` with the webhook secret, where `url` is the
    URL the webhook was registered with. The ingress rebuilds that URL from
@@ -100,10 +101,10 @@ For each delivery the ingress:
    signature covers the whole body, so the read itself is bounded: a request
    without a signature is refused before the body is read, and a body past
    16 MiB or one still arriving after 10 seconds is not read on.
-3. Opens the envelope for the subscription id and
-   `X-Appwrite-Webhook-Project-Id`. The envelope is bound to both, so one copied
-   to another webhook or project does not open.
-4. Checks expiry, checks that `X-Appwrite-Webhook-Events` contains one of the
+3. Opens the envelope for this server (`MCP_PUBLIC_URL`), the project in
+   `X-Appwrite-Webhook-Project-Id` and the subscription id in the path (see
+   [Envelope](#envelope)), and checks its lease expiry.
+4. Checks that `X-Appwrite-Webhook-Events` contains one of the
    subscription's Appwrite patterns, and projects the body onto the event's
    payload schema. Only the declared fields are forwarded, never the raw body:
    Appwrite sends whole rows, users with email and phone, and executions with
@@ -111,6 +112,47 @@ For each delivery the ingress:
 5. Starts the delivery in a background task and answers `200` straight away,
    well inside Appwrite's 15 second timeout. The delivery is signed with
    Standard Webhooks and retried in-process (see `events/delivery.py`).
+
+### Envelope
+
+The envelope is the encrypted profile of
+[mcp-event-subscriptions](https://github.com/ChiragAgg5k/mcp-event-subscriptions)
+(`mcp-event-subscriptions` on PyPI): a
+[Subscription Record v1](https://github.com/ChiragAgg5k/mcp-event-subscriptions/blob/main/SPEC.md)
+sealed as JWE Compact with the
+[`mcp-subscription+jwe` profile](https://github.com/ChiragAgg5k/mcp-event-subscriptions/blob/main/profiles/encrypted-envelope.md)
+(`alg` `dir`, `enc` `A256GCM`, a random 96-bit IV). `events/envelope.py` is the
+adapter around the package.
+
+- **Record.** `version` 1, `id` (the subscription id), `principal` (a digest of
+  the OAuth `iss`, `sub` and `client_id`, never a token), `event.name` and
+  `event.arguments`, `delivery` (`mode` `webhook`, the callback `url` and its one
+  `whsec_` `secret`), `lease` (`expiresAt` and `refreshBefore` in UTC RFC 3339
+  with `Z`) and empty `extensions`.
+- **Context binding.** Every envelope is sealed for a context of `server`
+  (`MCP_PUBLIC_URL`), `tenant` (the project id) and `resource` (the
+  subscription id, which is also the webhook id). The ingress takes the expected
+  context only from its configuration, the routed webhook id and
+  `X-Appwrite-Webhook-Project-Id`, never from the envelope, so an envelope
+  copied to another webhook, project or deployment does not open. The record
+  must also hash back to the subscription id, or it does not open either.
+- **Keys.** Each key in `MCP_EVENTS_SEALING_KEYS` is 32 random bytes (keys that
+  are short, long or obviously not random stop the server at startup) and is
+  the JWE key directly. The webhook signing secret is derived from it with
+  HKDF-SHA256 under its own label, so the two never share a key.
+- **Size.** The envelope must fit Appwrite's `authPassword`, which
+  appwrite/appwrite#14293 has to raise to at least 2048 characters. Sealing
+  refuses anything longer (`ENVELOPE_BUDGET`). Measured with 36-character ids,
+  key id `k1` and server `https://mcp.appwrite.io`:
+
+  | Case | Envelope length |
+  | --- | --- |
+  | `tablesdb.row.created`, 59-character URL, 32-byte secret | 1108 |
+  | `users.user.created`, 100-character URL, 32-byte secret | 1115 |
+  | `tablesdb.row.created`, 150-character URL, 32-byte secret | 1322 |
+  | `functions.deployment.completed` + `status`, 300-character URL, 64-byte secret | 1551 |
+  | **Worst case:** `tablesdb.row.created`, 300-character URL, 64-byte secret | **1580** |
+  | `ENVELOPE_BUDGET` | 2048 |
 
 ### Delivery backlog
 
@@ -174,7 +216,7 @@ request that fails authentication gets `401`.
 | Delivery backlog full (process or subscription) | `200` dropped `backlog_full` | no |
 | No Basic auth, or the password is not an envelope | `401` `credentials` | no |
 | Signature missing or wrong | `401` `signature` | no |
-| Envelope tampered with, or for another webhook or project | `401` `envelope` | no |
+| Envelope tampered with, not the profile, or for another server, webhook or project | `401` `envelope` | no |
 
 A legitimate webhook cannot get a `401` in normal operation:
 
@@ -186,9 +228,9 @@ A legitimate webhook cannot get a `401` in normal operation:
   other; that still verifies, because the signature is checked against every
   key in the ring. After the old key is removed, only expired subscriptions
   still name it. Their webhooks are orphans awaiting cleanup, so they get `200` (`retired_key`) instead of being paused.
-- **Public URL.** The signature covers the registered URL. Changing
-  `MCP_PUBLIC_URL` breaks every subscription until it refreshes, so keep it
-  fixed while subscriptions exist.
+- **Public URL.** The signature covers the registered URL, and every envelope
+  is bound to `MCP_PUBLIC_URL`. Changing it breaks every subscription until it
+  refreshes, so keep it fixed while subscriptions exist.
 - **Edited webhooks.** Changing the webhook's password, secret or URL in the
   Console does produce `401`s. The subscription is broken either way, and
   Appwrite pausing it is the right result.

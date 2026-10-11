@@ -98,6 +98,14 @@ USERS = ("users.user.created", {})
 USER_EVENT = "users.user_jane.create"
 
 INGRESS = "mcp.events.ingress"
+HEADER = {
+    "alg": "dir",
+    "enc": "A256GCM",
+    "kid": "k1",
+    "typ": "mcp-subscription+jwe",
+    "cty": "application/json",
+}
+"""The profile's protected header, for hand-made envelopes."""
 DELIVERIES = "mcp.events.deliveries"
 
 receiver: Receiver
@@ -138,6 +146,20 @@ def injected(
     }
 
 
+def base64url(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+def jwe(header: dict[str, str]) -> str:
+    """A JWE Compact envelope with ``header`` and junk contents."""
+    protected = base64url(json.dumps(header, separators=(",", ":")).encode())
+    return f"{protected}..{base64url(bytes(12))}.AAAA.{base64url(bytes(16))}"
+
+
+def basic(password: str) -> str:
+    return "Basic " + base64.b64encode(f"mcp:{password}".encode()).decode()
+
+
 def events_on(keys: str) -> dict[str, str]:
     return {"MCP_EVENTS": "1", "MCP_EVENTS_SEALING_KEYS": keys}
 
@@ -154,26 +176,27 @@ class IngressFlow(unittest.TestCase):
         name: str,
         arguments: dict[str, str],
         *,
-        secrets: tuple[str, ...] | None = None,
         replies: tuple[Reply, ...] = (),
         expires: int | None = None,
         keys: str | None = None,
         signing: str | None = None,
+        server: str = PUBLIC_URL,
         target: Receiver | None = None,
-        also_check: tuple[str, ...] = (),
-    ) -> tuple[Webhook, str, tuple[str, ...]]:
-        """Create the webhook PR 5's ``events/subscribe`` will create. Returns
-        it with the callback URL and the subscription's secrets. The receiver
-        checks each delivery against the secrets, then ``also_check``."""
-        secrets = secrets or (whsec(),)
-        callback = (target or receiver).endpoint((*secrets, *also_check), replies)
+    ) -> tuple[Webhook, str, str]:
+        """Create the webhook PR 5's ``events/subscribe`` will create, sealed
+        for ``server``. Returns it with the callback URL and the subscription's
+        secret, which the receiver checks each delivery against."""
+        secret = whsec()
+        callback = (target or receiver).endpoint((secret,), replies)
+        expires = expires or int(time.time() * 1000) + 3_600_000
         subscription = Subscription.create(
             project=PROJECT,
             name=name,
             arguments={"project_id": PROJECT, **arguments},
             callback=callback,
-            secrets=secrets,
-            expires=expires or int(time.time() * 1000) + 3_600_000,
+            secret=secret,
+            expires=expires,
+            refresh=expires - 360_000,
             principal=PRINCIPAL,
         )
         keyring = Keyring.parse(keys or self.keys)
@@ -192,9 +215,9 @@ class IngressFlow(unittest.TestCase):
             events=events,
             project=PROJECT,
             user="mcp",
-            password=keyring.seal(subscription),
+            password=keyring.seal(subscription, server),
         )
-        return webhook, callback, secrets
+        return webhook, callback, secret
 
     def accepted(self, response) -> str:
         self.assertEqual(response.status_code, 200, response.text)
@@ -502,19 +525,6 @@ class DeliveryFlow(IngressFlow):
         self.delivered(other_callback, elsewhere)
         self.nothing_more((callback, 3), (other_callback, 1))
 
-    def test_rotated_client_secrets_both_verify(self):
-        current, previous, unrelated = whsec(), whsec(64), whsec()
-        webhook, callback, _ = self.subscribe(
-            *ROWS, secrets=(current, previous), also_check=(unrelated,)
-        )
-        event_id = self.accepted(
-            self.appwrite.deliver(webhook, ROW_EVENT, fixture("row_created"))
-        )
-        received = receiver.wait(callback, 1)[0]
-        self.assertEqual(received.headers["webhook-id"], event_id)
-        self.assertEqual(len(received.headers["webhook-signature"].split(" ")), 2)
-        self.assertEqual(received.verified, (True, True, False))
-
     def test_ingress_acknowledges_what_it_must_not_deliver(self):
         # Everything from the subscriber's own webhook gets a 200, so Appwrite
         # never pauses it and never emails the owner.
@@ -674,34 +684,51 @@ class DeliveryFlow(IngressFlow):
         # Sealed with the server's own key and bound to this webhook and
         # project, but holding another subscription's contents: it decrypts,
         # and still does not open because the contents do not hash to the id.
+        expires = int(time.time() * 1000) + 3_600_000
         stranger_contents = Subscription.create(
             project=PROJECT,
             name="tablesdb.row.created",
             arguments={"project_id": PROJECT, **ROWS[1]},
             callback=receiver.endpoint(()),
-            secrets=(whsec(),),
-            expires=int(time.time() * 1000) + 3_600_000,
+            secret=whsec(),
+            expires=expires,
+            refresh=expires - 360_000,
             principal=PRINCIPAL,
         )
         object.__setattr__(stranger_contents, "id", webhook.id)
         rebound = Webhook(
             **{
                 **webhook.__dict__,
-                "password": Keyring.parse(self.keys).seal(stranger_contents),
+                "password": Keyring.parse(self.keys).seal(
+                    stranger_contents, PUBLIC_URL
+                ),
             }
         )
         self.rejected(self.appwrite.deliver(rebound, ROW_EVENT, body), "envelope")
+        # The same webhook and project, sealed with this server's key by
+        # another deployment (another MCP_PUBLIC_URL).
+        foreign, _, _ = self.subscribe(*ROWS, server="https://mcp.other.test")
+        self.rejected(self.appwrite.deliver(foreign, ROW_EVENT, body), "envelope")
+        # A JWE that names a ring key but not the profile's algorithm pair.
+        unsupported = Webhook(
+            **{**webhook.__dict__, "password": jwe({**HEADER, "enc": "A128GCM"})}
+        )
+        self.rejected(self.appwrite.deliver(unsupported, ROW_EVENT, body), "envelope")
 
         for authorization in (
             None,
             "Bearer token",
             "Basic !!!",
             "Basic " + base64.b64encode(b"mcp:").decode(),
-            "Basic " + base64.b64encode(b"mcp:v9.k1.AAAA").decode(),
-            # Shorter than a nonce and a tag.
-            "Basic " + base64.b64encode(b"mcp:v1.k1.AAAA").decode(),
-            "Basic " + base64.b64encode(b"mcp:v1.k1.not*base64").decode(),
-            "Basic " + base64.b64encode(b"mcp:v1.k/1.AAAA").decode(),
+            # Not JWE Compact: too few parts, or an encrypted key under `dir`.
+            basic("v1.k1.AAAA"),
+            basic(jwe(HEADER) + ".AAAA"),
+            basic(jwe(HEADER).replace("..", ".AAAA.")),
+            # A header that is not base64url JSON, or has no usable key id.
+            basic("not*base64..AAAA.AAAA.AAAA"),
+            basic(base64url(b"[1]") + "..AAAA.AAAA.AAAA"),
+            basic(jwe({key: value for key, value in HEADER.items() if key != "kid"})),
+            basic(jwe({**HEADER, "kid": "k/1"})),
         ):
             with self.subTest(authorization=authorization):
                 if authorization is None:
@@ -748,7 +775,7 @@ class DeliveryFlow(IngressFlow):
         self.delivered(callback, event_id)
         self.nothing_more((callback, 1))
         self.assertEqual(
-            collector().count(INGRESS, outcome="rejected"), rejected_before + 18
+            collector().count(INGRESS, outcome="rejected"), rejected_before + 23
         )
 
     def test_failed_deliveries_are_retried_then_given_up(self):

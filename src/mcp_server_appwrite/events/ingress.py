@@ -7,7 +7,7 @@ not behind the bearer-token gate: the Appwrite signature is the authentication.
 
 For each delivery:
 
-1. Take the envelope from Basic auth and read its key id.
+1. Take the envelope from Basic auth and read the key id in its JWE header.
 2. Verify ``X-Appwrite-Webhook-Signature``: Appwrite signs
    ``HMAC-SHA1(url + body)`` with the webhook secret, where ``url`` is the URL
    the webhook was registered with. The ingress rebuilds that URL from
@@ -18,9 +18,12 @@ For each delivery:
    rolling key rotation can interleave their writes and leave an envelope
    sealed with one key next to a secret derived from the other. The body is
    hashed as it streams in.
-3. Open the envelope for (subscription id, ``X-Appwrite-Webhook-Project-Id``).
-4. Check expiry, map the Appwrite event onto the subscribed catalog event and
-   project the body down to the event's payload fields (:mod:`.projection`).
+3. Open the envelope for this server (``MCP_PUBLIC_URL``), the project in
+   ``X-Appwrite-Webhook-Project-Id`` and the subscription id in the path. The
+   expected binding comes only from configuration and routing, never from the
+   envelope. Opening also checks the lease expiry.
+4. Map the Appwrite event onto the subscribed catalog event and project the
+   body down to the event's payload fields (:mod:`.projection`).
 5. Take a backlog slot (:data:`BACKLOG` per process, :data:`SUBSCRIPTION_BACKLOG`
    per subscription), start the delivery in the background and answer ``200``
    at once, well inside Appwrite's 15 second timeout. With no slot free the
@@ -41,8 +44,9 @@ project. A legitimate webhook cannot produce those in normal operation:
   subscriptions still name it; their deliveries are dropped with ``200``
   (``retired_key``) rather than rejected, because the webhook is an orphan that
   has not been cleaned up yet, not an attacker.
-* Changing ``MCP_PUBLIC_URL`` changes the signed URL and breaks every existing
-  subscription until it refreshes. Do not change it while subscriptions exist.
+* Changing ``MCP_PUBLIC_URL`` changes the signed URL and the server every
+  envelope is bound to, and breaks every existing subscription until it
+  refreshes. Do not change it while subscriptions exist.
 * Editing the webhook's password, secret or URL in the Console does produce
   ``401``; the subscription is broken either way, and pausing it is the right
   outcome.
@@ -85,11 +89,13 @@ from .delivery import (
 )
 from .egress import Egress
 from .envelope import (
-    Envelope,
+    Context,
     EnvelopeError,
     Keyring,
+    SubscriptionExpired,
     appwrite_hmac,
     canonical_json,
+    key_id,
     valid_subscription_id,
 )
 from .projection import Drop, Dropped, project
@@ -301,11 +307,11 @@ class Ingress:
         if not valid_subscription_id(id) or envelope is None:
             return self._reject(id, Rejection.CREDENTIALS)
         try:
-            key_id = Envelope.parse(envelope).key
+            sealing = key_id(envelope)
         except EnvelopeError:
             return self._reject(id, Rejection.CREDENTIALS)
         try:
-            self._keyring.get(key_id)
+            self._keyring.get(sealing)
         except EnvelopeError:
             return self._drop(id, Drop.RETIRED_KEY)
 
@@ -328,13 +334,17 @@ class Ingress:
         if not verified:
             return self._reject(id, Rejection.SIGNATURE)
 
-        project_id = request.headers.get(PROJECT_HEADER, "")
+        context = Context(
+            server=self._base,
+            tenant=request.headers.get(PROJECT_HEADER, ""),
+            resource=id,
+        )
         try:
-            subscription = self._keyring.open(envelope, id, project_id)
+            subscription = self._keyring.open(envelope, context)
+        except SubscriptionExpired:
+            return self._drop(id, Drop.EXPIRED)
         except EnvelopeError:
             return self._reject(id, Rejection.ENVELOPE)
-        if subscription.expired():
-            return self._drop(id, Drop.EXPIRED, subscription.name)
         event = CATALOG.get(subscription.name)
         if event is None:
             return self._drop(id, Drop.UNKNOWN_EVENT)
@@ -358,7 +368,7 @@ class Ingress:
 
         try:
             callback = Callback(
-                subscription.callback, subscription.id, subscription.secrets
+                subscription.callback, subscription.id, (subscription.secret,)
             )
         except InvalidSecretError:
             return self._drop(id, Drop.MALFORMED, event.name)
