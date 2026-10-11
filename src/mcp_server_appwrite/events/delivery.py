@@ -5,8 +5,8 @@ MCP webhook delivery is a profile of Standard Webhooks
 every POST carries ``webhook-id``, ``webhook-timestamp`` (Unix seconds) and
 ``webhook-signature: v1,<base64 HMAC-SHA256(key, "{id}.{timestamp}.{body}")>``,
 where ``key`` is the base64-decoded part of the client's ``whsec_`` secret.
-During rotation the header carries one space-separated signature per secret so
-the receiver can verify with either. MCP adds ``X-MCP-Subscription-Id``.
+A subscription has one secret, so the header carries one signature. MCP adds
+``X-MCP-Subscription-Id``.
 
 Two kinds of POST go out through :class:`Dispatcher`, both over the SSRF-safe
 :mod:`egress` path:
@@ -36,7 +36,7 @@ import random
 import secrets
 import ssl
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import partial
@@ -125,14 +125,11 @@ def decode_secret(secret: str) -> bytes:
     return key
 
 
-def sign(keys: Sequence[bytes], message_id: str, timestamp: int, body: bytes) -> str:
-    """Standard Webhooks ``webhook-signature`` value, one entry per key."""
+def sign(key: bytes, message_id: str, timestamp: int, body: bytes) -> str:
+    """Standard Webhooks ``webhook-signature`` value."""
     content = f"{message_id}.{timestamp}.".encode() + body
-    return " ".join(
-        f"{SIGNATURE_VERSION},"
-        + base64.b64encode(hmac.new(key, content, hashlib.sha256).digest()).decode()
-        for key in keys
-    )
+    digest = hmac.new(key, content, hashlib.sha256).digest()
+    return f"{SIGNATURE_VERSION},{base64.b64encode(digest).decode()}"
 
 
 def encode(payload: Mapping[str, Any]) -> bytes:
@@ -142,22 +139,17 @@ def encode(payload: Mapping[str, Any]) -> bytes:
 
 @dataclass(frozen=True)
 class Callback:
-    """Where and how to deliver for one subscription.
-
-    ``secrets`` holds every active ``whsec_`` secret, newest first; more than
-    one during a rotation grace window.
-    """
+    """Where and how to deliver for one subscription."""
 
     url: str
     subscription: str
-    secrets: tuple[str, ...]
-    keys: tuple[bytes, ...] = field(init=False, repr=False, compare=False)
+    secret: str = field(repr=False)
+    """The client's ``whsec_`` secret. Kept out of ``repr``, like its key, so
+    logging a callback never leaks it."""
+    key: bytes = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        if not self.secrets:
-            raise InvalidSecretError("At least one secret is required")
-        keys = tuple(decode_secret(secret) for secret in self.secrets)
-        object.__setattr__(self, "keys", keys)
+        object.__setattr__(self, "key", decode_secret(self.secret))
 
 
 @dataclass(frozen=True)
@@ -272,7 +264,7 @@ class Dispatcher:
             "Content-Type": CONTENT_TYPE,
             ID_HEADER: message_id,
             TIMESTAMP_HEADER: str(timestamp),
-            SIGNATURE_HEADER: sign(callback.keys, message_id, timestamp, body),
+            SIGNATURE_HEADER: sign(callback.key, message_id, timestamp, body),
             SUBSCRIPTION_HEADER: callback.subscription,
         }
 

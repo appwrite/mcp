@@ -2,15 +2,16 @@
 
 Signing (checked by the official ``standardwebhooks`` library), the delivery
 body and headers, re-signed retries with a short injected policy, 410/413 not
-retried, dual signing during secret rotation and the 256 KiB cap are covered
-end to end through the ingress in ``tests/e2e/test_events_ingress.py`` (#134).
-What stays here:
+retried and the 256 KiB cap are covered end to end through the ingress in
+``tests/e2e/test_events_ingress.py`` (#134). What stays here:
 
 * ``whsec_`` secret validation and the verification handshake: only
   ``events/subscribe`` (PR 5 of #127) calls them. Replace these with its e2e
   flow.
 * The production retry schedule, whose real-time waits (30 s, 2 min, 8 min)
   are too long to run end to end.
+* That a callback's ``repr`` never shows its secret: nothing on the wire
+  shows a ``repr``.
 """
 
 import base64
@@ -103,16 +104,21 @@ class SecretTest(unittest.TestCase):
                 with self.assertRaises(delivery.InvalidSecretError):
                     delivery.decode_secret(secret)  # type: ignore[arg-type]
 
-    def test_callback_requires_valid_secrets(self) -> None:
+    def test_callback_requires_a_valid_secret(self) -> None:
         with self.assertRaises(delivery.InvalidSecretError):
-            delivery.Callback(URL, SUBSCRIPTION, ())
-        with self.assertRaises(delivery.InvalidSecretError):
-            delivery.Callback(URL, SUBSCRIPTION, ("whsec_short",))
+            delivery.Callback(URL, SUBSCRIPTION, "whsec_short")
+
+
+class CallbackTest(unittest.TestCase):
+    def test_repr_hides_the_secret(self) -> None:
+        callback = delivery.Callback(URL, SUBSCRIPTION, SECRET)
+        self.assertNotIn(SECRET.removeprefix("whsec_"), repr(callback))
+        self.assertIn(SUBSCRIPTION, repr(callback))
 
 
 class VerificationTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self.callback = delivery.Callback(URL, SUBSCRIPTION, (SECRET,))
+        self.callback = delivery.Callback(URL, SUBSCRIPTION, SECRET)
         self.clock = Clock()
 
     async def run_verify(self, handler) -> None:
@@ -202,7 +208,7 @@ class VerificationTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_forbidden_destination_is_connection_refused(self) -> None:
         self.callback = delivery.Callback(
-            "http://hooks.example.com/", SUBSCRIPTION, (SECRET,)
+            "http://hooks.example.com/", SUBSCRIPTION, SECRET
         )
         recorder = Recorder(httpx.Response(200))
         await self.assert_reason(recorder, delivery.Reason.CONNECTION_REFUSED)
@@ -214,7 +220,7 @@ class RetryScheduleTest(unittest.IsolatedAsyncioTestCase):
     which runs a short injected policy instead."""
 
     def setUp(self) -> None:
-        self.callback = delivery.Callback(URL, SUBSCRIPTION, (SECRET,))
+        self.callback = delivery.Callback(URL, SUBSCRIPTION, SECRET)
         self.clock = Clock()
         self.sleeps: list[float] = []
 
