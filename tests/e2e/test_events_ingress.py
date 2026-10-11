@@ -119,9 +119,12 @@ def fixture(name: str) -> dict[str, Any]:
     return json.loads((FIXTURES / f"{name}.json").read_text())
 
 
-def injected(dispatcher: type[Dispatcher] = Dispatcher) -> dict[str, Any]:
+def injected(
+    dispatcher: type[Dispatcher] = Dispatcher, **backlogs: int
+) -> dict[str, Any]:
     """``build_app`` arguments: the production ingress, keyring and public URL
-    from the environment, with an egress that may reach the local receiver."""
+    from the environment, with an egress that may reach the local receiver.
+    ``backlogs`` override the ingress backlog limits."""
     egress = Egress(allow_loopback=True, ssl_context=receiver.trust(), timeout=TIMEOUT)
     return {
         "ingress": Ingress(
@@ -129,6 +132,7 @@ def injected(dispatcher: type[Dispatcher] = Dispatcher) -> dict[str, Any]:
             egress,
             dispatcher(egress, POLICY),
             base=public_base_url(),
+            **backlogs,
         )
     }
 
@@ -153,6 +157,7 @@ class IngressFlow(unittest.TestCase):
         replies: tuple[Reply, ...] = (),
         expires: int | None = None,
         keys: str | None = None,
+        signing: str | None = None,
         target: Receiver | None = None,
         also_check: tuple[str, ...] = (),
     ) -> tuple[Webhook, str, tuple[str, ...]]:
@@ -178,7 +183,11 @@ class IngressFlow(unittest.TestCase):
         webhook = Webhook(
             id=subscription.id,
             url=f"{PUBLIC_URL}{WEBHOOK_PATH}{subscription.id}",
-            secret=keyring.signing_key(subscription.id),
+            # ``signing`` stands in for a replica with another active key
+            # writing the signing key after this envelope.
+            secret=Keyring.parse(signing or keys or self.keys).signing_key(
+                subscription.id
+            ),
             events=events,
             project=PROJECT,
             user="mcp",
@@ -338,6 +347,11 @@ class DeliveryFlow(IngressFlow):
             ),
             "status",
         )
+        # Only failures qualify: a run that completed is not delivered.
+        completed = {**fixture("execution_sync_failed"), "status": "completed"}
+        self.dropped(
+            self.appwrite.deliver(webhook, EXECUTION_CREATE, completed), "status"
+        )
         event_id = self.accepted(
             self.appwrite.deliver(
                 webhook, EXECUTION_UPDATE, fixture("execution_async_failed")
@@ -388,9 +402,14 @@ class DeliveryFlow(IngressFlow):
             ),
             "status",
         )
+        # A deployment still building is not terminal.
+        building = {**fixture("deployment_function_ready"), "status": "building"}
+        self.dropped(
+            self.appwrite.deliver(webhook, DEPLOYMENT_UPDATE, building), "status"
+        )
         silent.append((callback, 1))
 
-        # The status argument narrows delivery.
+        # The status argument narrows delivery to the requested status.
         name, arguments = DEPLOYMENTS
         webhook, callback, _ = self.subscribe(name, {**arguments, "status": "failed"})
         self.dropped(
@@ -399,7 +418,14 @@ class DeliveryFlow(IngressFlow):
             ),
             "status",
         )
-        silent.append((callback, 0))
+        event_id = self.accepted(
+            self.appwrite.deliver(
+                webhook, DEPLOYMENT_UPDATE, fixture("deployment_function_failed")
+            )
+        )
+        _, event = self.delivered(callback, event_id)
+        self.assertEqual(event["data"]["status"], "failed")
+        silent.append((callback, 1))
 
         # Bad types never reach the payload; zoned times convert to UTC.
         webhook, callback, _ = self.subscribe(*FILES)
@@ -644,6 +670,26 @@ class DeliveryFlow(IngressFlow):
         self.rejected(self.appwrite.deliver(moved, ROW_EVENT, body), "envelope")
         copied = Webhook(**{**webhook.__dict__, "password": other.password})
         self.rejected(self.appwrite.deliver(copied, ROW_EVENT, body), "envelope")
+        # Sealed with the server's own key and bound to this webhook and
+        # project, but holding another subscription's contents: it decrypts,
+        # and still does not open because the contents do not hash to the id.
+        stranger_contents = Subscription.create(
+            project=PROJECT,
+            name="tablesdb.row.created",
+            arguments={"project_id": PROJECT, **ROWS[1]},
+            callback=receiver.endpoint(()),
+            secrets=(whsec(),),
+            expires=int(time.time() * 1000) + 3_600_000,
+            principal=PRINCIPAL,
+        )
+        object.__setattr__(stranger_contents, "id", webhook.id)
+        rebound = Webhook(
+            **{
+                **webhook.__dict__,
+                "password": Keyring.parse(self.keys).seal(stranger_contents),
+            }
+        )
+        self.rejected(self.appwrite.deliver(rebound, ROW_EVENT, body), "envelope")
 
         for authorization in (
             None,
@@ -651,6 +697,10 @@ class DeliveryFlow(IngressFlow):
             "Basic !!!",
             "Basic " + base64.b64encode(b"mcp:").decode(),
             "Basic " + base64.b64encode(b"mcp:v9.k1.AAAA").decode(),
+            # Shorter than a nonce and a tag.
+            "Basic " + base64.b64encode(b"mcp:v1.k1.AAAA").decode(),
+            "Basic " + base64.b64encode(b"mcp:v1.k1.not*base64").decode(),
+            "Basic " + base64.b64encode(b"mcp:v1.k/1.AAAA").decode(),
         ):
             with self.subTest(authorization=authorization):
                 if authorization is None:
@@ -672,6 +722,16 @@ class DeliveryFlow(IngressFlow):
             }
         )
         self.rejected(self.appwrite.deliver(stranger, ROW_EVENT, body), "credentials")
+        # Right length and charset for an Appwrite id, but not one the server
+        # derives (sub_ + 32 lowercase hex).
+        for id in ("sub_" + "z" * 32, "sub_" + "A" * 32):
+            with self.subTest(id=id):
+                foreign = Webhook(
+                    **{**webhook.__dict__, "url": f"{PUBLIC_URL}{WEBHOOK_PATH}{id}"}
+                )
+                self.rejected(
+                    self.appwrite.deliver(foreign, ROW_EVENT, body), "credentials"
+                )
         response = self.appwrite.deliver(webhook, ROW_EVENT, body, method="GET")
         self.assertEqual(response.status_code, 405)
 
@@ -687,7 +747,7 @@ class DeliveryFlow(IngressFlow):
         self.delivered(callback, event_id)
         self.nothing_more((callback, 1))
         self.assertEqual(
-            collector().count(INGRESS, outcome="rejected"), rejected_before + 12
+            collector().count(INGRESS, outcome="rejected"), rejected_before + 18
         )
 
     def test_failed_deliveries_are_retried_then_given_up(self):
@@ -773,7 +833,7 @@ class DeliveryFlow(IngressFlow):
                 )
 
     def test_a_burst_stays_within_the_per_host_limit(self):
-        webhook, callback, _ = self.subscribe(*ROWS, replies=(Reply(delay=0.4),))
+        webhook, callback, _ = self.subscribe(*ROWS, replies=(Reply(delay=0.3),))
         ids = {
             self.accepted(
                 self.appwrite.deliver(webhook, ROW_EVENT, fixture("row_created"))
@@ -783,6 +843,55 @@ class DeliveryFlow(IngressFlow):
         received = receiver.wait(callback, 8, timeout=15)
         self.assertEqual({r.headers["webhook-id"] for r in received}, ids)
         self.assertEqual(receiver.peak(callback), 4)
+        self.nothing_more((callback, 8))
+
+        # Waiting for a per-host slot counts against the 1 s deadline. Each
+        # reply takes 0.6 s: the first four fit, the four queued behind them
+        # get a slot at ~0.6 s and time out at ~1 s instead of being sent
+        # late, then succeed on their retry.
+        webhook, callback, _ = self.subscribe(*ROWS, replies=(Reply(delay=0.6),))
+        ids = [
+            self.accepted(
+                self.appwrite.deliver(webhook, ROW_EVENT, fixture("row_created"))
+            )
+            for _ in range(8)
+        ]
+        received = receiver.wait(callback, 12, timeout=15)
+        attempts = [r.headers["webhook-id"] for r in received]
+        self.assertEqual(set(attempts), set(ids))
+        self.assertEqual(sorted(attempts.count(id) for id in ids), [1] * 4 + [2] * 4)
+        self.nothing_more((callback, 12))
+
+    def test_a_full_backlog_is_acknowledged_and_dropped(self):
+        # Three deliveries in flight per process, two per subscription. Every
+        # answer is a 200, so Appwrite never pauses the webhook.
+        before = collector().count(INGRESS, outcome="dropped", reason="backlog_full")
+        slow = Reply(delay=0.8)
+        first, first_callback, _ = self.subscribe(*ROWS, replies=(slow, slow, Reply()))
+        second, second_callback, _ = self.subscribe(*ROWS, replies=(slow,))
+        limits = {"backlog": 3, "subscription_backlog": 2}
+        with Server(events_on(self.keys), lambda: injected(**limits)) as server:
+            appwrite = Appwrite(server)
+
+            def deliver(webhook: Webhook):
+                return appwrite.deliver(webhook, ROW_EVENT, fixture("row_created"))
+
+            self.accepted(deliver(first))
+            self.accepted(deliver(first))
+            self.dropped(deliver(first), "backlog_full")
+            self.accepted(deliver(second))
+            self.dropped(deliver(second), "backlog_full")
+            receiver.wait(first_callback, 2)
+            receiver.wait(second_callback, 1)
+            # Finished deliveries free their slots.
+            time.sleep(0.8 + SETTLE)
+            self.delivered(first_callback, self.accepted(deliver(first)), count=3)
+            appwrite.close()
+        self.nothing_more((first_callback, 3), (second_callback, 1))
+        self.assertEqual(
+            collector().count(INGRESS, outcome="dropped", reason="backlog_full"),
+            before + 2,
+        )
 
 
 class RotationFlow(IngressFlow):
@@ -813,6 +922,18 @@ class RotationFlow(IngressFlow):
                 new_callback,
                 self.accepted(appwrite.deliver(new, ROW_EVENT, fixture("row_created"))),
             )
+            # Two replicas refreshing one subscription mid-rotation can leave
+            # the new key's envelope next to the old key's signing key (old
+            # replica's secret update landing last). It still verifies.
+            mixed, mixed_callback, _ = self.subscribe(
+                *ROWS, keys=KEY_TWO, signing=KEY_ONE
+            )
+            self.delivered(
+                mixed_callback,
+                self.accepted(
+                    appwrite.deliver(mixed, ROW_EVENT, fixture("row_created"))
+                ),
+            )
             appwrite.close()
 
         with Server(events_on(KEY_TWO), injected) as server:
@@ -827,7 +948,7 @@ class RotationFlow(IngressFlow):
                 count=2,
             )
             appwrite.close()
-        self.nothing_more((old_callback, 2), (new_callback, 2))
+        self.nothing_more((old_callback, 2), (new_callback, 2), (mixed_callback, 1))
 
 
 class ProductionEgressFlow(IngressFlow):

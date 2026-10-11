@@ -65,6 +65,9 @@ class Drop(StrEnum):
     """The status filter does not accept the body's status."""
     TOO_LARGE = "too_large"
     """The body is larger than the ingress reads."""
+    BACKLOG_FULL = "backlog_full"
+    """The process or the subscription already has the most deliveries in
+    flight it may hold."""
 
 
 class Dropped(Exception):

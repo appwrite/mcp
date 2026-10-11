@@ -93,8 +93,10 @@ For each delivery the ingress:
    `base64(HMAC-SHA1(url + body))` with the webhook secret, where `url` is the
    URL the webhook was registered with. The ingress rebuilds that URL from
    `MCP_PUBLIC_URL` and the path and ignores the inbound `Host`. The secret is
-   derived from the subscription id and the envelope's sealing key. The body is
-   hashed as it streams in; up to 2 MiB of it is kept.
+   derived from the subscription id and a sealing key, and the signature is
+   checked against the secret of every key in the ring, not only the one that
+   sealed the envelope (see key rotation below). The body is hashed as it
+   streams in; up to 2 MiB of it is kept.
 3. Opens the envelope for the subscription id and
    `X-Appwrite-Webhook-Project-Id`. The envelope is bound to both, so one copied
    to another webhook or project does not open.
@@ -106,6 +108,22 @@ For each delivery the ingress:
 5. Starts the delivery in a background task and answers `200` straight away,
    well inside Appwrite's 15 second timeout. The delivery is signed with
    Standard Webhooks and retried in-process (see `events/delivery.py`).
+
+### Delivery backlog
+
+A delivery to a failing callback stays in flight through its retries, up to
+about 13 minutes. To keep memory bounded, a process holds at most **1024**
+deliveries in flight, and one subscription at most **64** of them
+(`BACKLOG` and `SUBSCRIPTION_BACKLOG` in `events/ingress.py`). A delivery that
+arrives while either limit is reached is still answered `200`, so Appwrite never
+pauses the subscriber's webhook, but it is dropped and counted as
+`mcp.events.ingress{outcome="dropped", reason="backlog_full"}`. Delivery is at
+most once anyway; the per-subscription limit keeps one busy subscription with a
+dead callback from crowding out everyone else.
+
+Outbound requests share one deadline (10 s) that also covers waiting for one of
+the four per-host slots, and each attempt is signed only once it holds a slot,
+so a queued request never goes out late or with a stale `webhook-timestamp`.
 
 `eventId` is `evt_` + a SHA-256 over `X-Appwrite-Webhook-Delivery-Id` and the
 subscription id. Appwrite keeps the delivery id across its own retries, so a
@@ -149,6 +167,7 @@ request that fails authentication gets `401`.
 | Status filter does not match (`waiting`, `ready` for a `failed` filter) | `200` dropped `status` | no |
 | Body is not a JSON object | `200` dropped `malformed` | no |
 | Body over 2 MiB (signature still checked) | `200` dropped `too_large` | no |
+| Delivery backlog full (process or subscription) | `200` dropped `backlog_full` | no |
 | No Basic auth, or the password is not an envelope | `401` `credentials` | no |
 | Signature missing or wrong | `401` `signature` | no |
 | Envelope tampered with, or for another webhook or project | `401` `envelope` | no |
@@ -157,9 +176,12 @@ A legitimate webhook cannot get a `401` in normal operation:
 
 - **Key rotation.** A new sealing key goes first in `MCP_EVENTS_SEALING_KEYS`
   and the old one stays until the longest subscription TTL has passed, so
-  webhooks written with the old key still verify and open. After the old key is
-  removed, only expired subscriptions still name it. Their webhooks are orphans
-  awaiting cleanup, so they get `200` (`retired_key`) instead of being paused.
+  webhooks written with the old key still verify and open. Replicas that
+  refresh the same subscription during a rolling rotation can interleave their
+  writes and leave an envelope from one key next to a signing secret from the
+  other; that still verifies, because the signature is checked against every
+  key in the ring. After the old key is removed, only expired subscriptions
+  still name it. Their webhooks are orphans awaiting cleanup, so they get `200` (`retired_key`) instead of being paused.
 - **Public URL.** The signature covers the registered URL. Changing
   `MCP_PUBLIC_URL` breaks every subscription until it refreshes, so keep it
   fixed while subscriptions exist.

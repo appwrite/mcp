@@ -12,13 +12,19 @@ For each delivery:
    ``HMAC-SHA1(url + body)`` with the webhook secret, where ``url`` is the URL
    the webhook was registered with. The ingress rebuilds that URL from
    ``MCP_PUBLIC_URL`` and the path and never trusts the inbound ``Host``. The
-   secret is derived from the subscription id and the envelope's sealing key,
-   so no storage is needed. The body is hashed as it streams in.
+   secret is derived from the subscription id and a sealing key, so no storage
+   is needed. It is checked against the secret of every key in the ring, not
+   only the envelope's: replicas refreshing the same subscription during a
+   rolling key rotation can interleave their writes and leave an envelope
+   sealed with one key next to a secret derived from the other. The body is
+   hashed as it streams in.
 3. Open the envelope for (subscription id, ``X-Appwrite-Webhook-Project-Id``).
 4. Check expiry, map the Appwrite event onto the subscribed catalog event and
    project the body down to the event's payload fields (:mod:`.projection`).
-5. Start the delivery in the background and answer ``200`` at once, well inside
-   Appwrite's 15 second timeout.
+5. Take a backlog slot (:data:`BACKLOG` per process, :data:`SUBSCRIPTION_BACKLOG`
+   per subscription), start the delivery in the background and answer ``200``
+   at once, well inside Appwrite's 15 second timeout. With no slot free the
+   event is acknowledged and dropped (``backlog_full``).
 
 Status codes follow one rule: **anything that came from the subscriber's own
 webhook is answered with 2xx.** Appwrite counts every ``>= 400`` answer and,
@@ -55,7 +61,7 @@ import hmac
 import json
 import sys
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -97,6 +103,16 @@ very large text columns) are still hashed to the end so the signature is
 checked, then dropped: the forwarded fields are IDs, but the JSON has to parse
 to find them."""
 
+BACKLOG = 1024
+"""Deliveries one process keeps in flight, retries and backoff included. A
+delivery to a failing callback lives for up to ~13 minutes, so without a bound
+a steady stream of events to dead callbacks would grow without limit. Past it,
+deliveries are acknowledged and dropped (``backlog_full``)."""
+
+SUBSCRIPTION_BACKLOG = 64
+"""Deliveries one subscription keeps in flight, so a single busy subscription
+with a failing callback cannot take the whole :data:`BACKLOG`."""
+
 EVENT_PREFIX = "evt_"
 EVENT_HASH_CHARS = 32
 
@@ -134,8 +150,8 @@ class Body:
     """The body, or empty when it exceeded :data:`BODY_LIMIT_BYTES`."""
     complete: bool
     """Whether ``content`` is the whole body."""
-    signature: str
-    """The Appwrite signature computed over the whole body."""
+    signatures: tuple[str, ...]
+    """The Appwrite signature over the whole body, under each signing key."""
 
 
 def event_id(delivery: str, subscription: str) -> str:
@@ -187,12 +203,22 @@ class Ingress:
         dispatcher: Dispatcher | None = None,
         *,
         base: str,
+        backlog: int = BACKLOG,
+        subscription_backlog: int = SUBSCRIPTION_BACKLOG,
     ) -> None:
+        if backlog < 1 or subscription_backlog < 1:
+            raise ValueError("backlogs must be at least 1")
         self._keyring = keyring
         self._egress = egress
         self._dispatcher = dispatcher or Dispatcher(egress)
         self._base = base.rstrip("/")
         self._group: TaskGroup | None = None
+        self._backlog = backlog
+        self._subscription_backlog = subscription_backlog
+        self._pending: dict[str, int] = {}
+        """Deliveries in flight per subscription id; an entry exists only
+        while its count is above zero."""
+        self._inflight = 0
 
     @classmethod
     def from_env(cls) -> Ingress:
@@ -222,21 +248,25 @@ class Ingress:
                     self._group = None
                     group.cancel_scope.cancel()
 
-    async def read(self, request: Request, id: str, key: str) -> Body:
-        """Stream the body, hashing all of it and keeping at most
-        :data:`BODY_LIMIT_BYTES`."""
-        digest = appwrite_hmac(self.url(id), key)
+    async def read(self, request: Request, id: str, keys: Sequence[str]) -> Body:
+        """Stream the body, hashing all of it under each of ``keys`` and
+        keeping at most :data:`BODY_LIMIT_BYTES`."""
+        url = self.url(id)
+        digests = [appwrite_hmac(url, key) for key in keys]
         content = bytearray()
         complete = True
         async for chunk in request.stream():
-            digest.update(chunk)
+            for digest in digests:
+                digest.update(chunk)
             if complete and len(content) + len(chunk) > BODY_LIMIT_BYTES:
                 complete = False
                 content.clear()
             elif complete:
                 content.extend(chunk)
-        signature = base64.b64encode(digest.digest()).decode("ascii")
-        return Body(bytes(content), complete, signature)
+        signatures = tuple(
+            base64.b64encode(digest.digest()).decode("ascii") for digest in digests
+        )
+        return Body(bytes(content), complete, signatures)
 
     async def handle(self, request: Request) -> Response:
         id = request.path_params["id"]
@@ -248,15 +278,21 @@ class Ingress:
         except EnvelopeError:
             return self._reject(id, Rejection.CREDENTIALS)
         try:
-            key = self._keyring.signing_key(id, key_id)
+            self._keyring.get(key_id)
         except EnvelopeError:
             return self._drop(id, Drop.RETIRED_KEY)
 
-        body = await self.read(request, id, key)
-        signature = request.headers.get(SIGNATURE_HEADER, "")
-        if not hmac.compare_digest(
-            body.signature.encode("ascii"), signature.encode("utf-8")
-        ):
+        # The signing key is checked against every key in the ring, not only
+        # the one that sealed the envelope: two replicas refreshing the same
+        # subscription across a key rotation can leave the webhook with an
+        # envelope from one key and a signing key from the other.
+        keys = [self._keyring.signing_key(id, key.id) for key in self._keyring.keys]
+        body = await self.read(request, id, keys)
+        signature = request.headers.get(SIGNATURE_HEADER, "").encode("utf-8")
+        verified = False
+        for expected in body.signatures:
+            verified |= hmac.compare_digest(expected.encode("ascii"), signature)
+        if not verified:
             return self._reject(id, Rejection.SIGNATURE)
 
         project_id = request.headers.get(PROJECT_HEADER, "")
@@ -305,11 +341,38 @@ class Ingress:
         )
         if self._group is None:
             raise RuntimeError("Ingress.run() is not active")
+        if not self._admit(subscription.id):
+            return self._drop(id, Drop.BACKLOG_FULL, event.name)
         self._group.start_soon(self._deliver, callback, occurrence)
         telemetry.record_ingress(Outcome.ACCEPTED, None, event.name)
         return JSONResponse({"status": Outcome.ACCEPTED, "eventId": occurrence.id})
 
+    def _admit(self, subscription: str) -> bool:
+        """Take a backlog slot for one delivery of ``subscription``, unless the
+        process or that subscription is already at its limit. Runs on the
+        event loop, so the counters need no lock."""
+        pending = self._pending.get(subscription, 0)
+        if self._inflight >= self._backlog or pending >= self._subscription_backlog:
+            return False
+        self._inflight += 1
+        self._pending[subscription] = pending + 1
+        return True
+
+    def _release(self, subscription: str) -> None:
+        self._inflight -= 1
+        pending = self._pending[subscription] - 1
+        if pending:
+            self._pending[subscription] = pending
+        else:
+            del self._pending[subscription]
+
     async def _deliver(self, callback: Callback, event: Event) -> None:
+        try:
+            await self._attempt(callback, event)
+        finally:
+            self._release(callback.subscription)
+
+    async def _attempt(self, callback: Callback, event: Event) -> None:
         started = time.monotonic()
         try:
             result = await self._dispatcher.deliver(callback, event)
