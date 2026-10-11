@@ -39,6 +39,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
+from functools import partial
 from typing import Any
 
 import anyio
@@ -264,7 +265,8 @@ class Dispatcher:
     def headers(
         self, callback: Callback, message_id: str, body: bytes
     ) -> dict[str, str]:
-        """Signed headers for one attempt, stamped with the current time."""
+        """Signed headers for one attempt, stamped with the current time. The
+        egress builds them once the request holds its slot, right before sending."""
         timestamp = int(self._clock())
         return {
             "Content-Type": CONTENT_TYPE,
@@ -281,7 +283,7 @@ class Dispatcher:
         message_id = VERIFICATION_ID_PREFIX + secrets.token_hex(12)
         try:
             response = await self._egress.post(
-                callback.url, body, self.headers(callback, message_id, body)
+                callback.url, body, partial(self.headers, callback, message_id, body)
             )
         except TRANSPORT_ERRORS as error:
             raise CallbackError(classify(error)) from error
@@ -306,7 +308,7 @@ class Dispatcher:
                 await self._sleep(self._policy.delay(attempt - 2, self._sample()))
             try:
                 response = await self._egress.post(
-                    callback.url, body, self.headers(callback, event.id, body)
+                    callback.url, body, partial(self.headers, callback, event.id, body)
                 )
             except DestinationError:
                 return Result(

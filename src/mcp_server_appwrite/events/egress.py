@@ -6,8 +6,9 @@ path those requests take, for verification handshakes and event deliveries
 alike, and it enforces the MCP Events "Webhook Security" rules:
 
 * ``https`` only. Plain ``http`` is accepted solely through the explicit
-  ``allow_loopback`` constructor flag, which tests use to reach a local server;
-  nothing reads it from the environment.
+  ``allow_loopback`` constructor flag, which tests use to reach a local server,
+  and even then only for a loopback host (``localhost`` or a loopback IP) whose
+  every address is loopback; nothing reads the flag from the environment.
 * We resolve DNS ourselves and refuse the request if *any* resolved address is
   not globally routable (IANA IPv4/IPv6 special-purpose registries, plus the
   IPv6 forms that embed an IPv4 address).
@@ -17,8 +18,8 @@ alike, and it enforces the MCP Events "Webhook Security" rules:
   possible. TLS SNI and the ``Host`` header still carry the original hostname,
   because httpcore derives both from the request URL, not from the address the
   backend connected to.
-* Redirects are never followed, the whole request is bounded by one deadline,
-  response bodies are read up to a small cap, and concurrent requests to one
+* Redirects are never followed, the whole request is bounded by one deadline
+  that also covers the wait for a per-host slot, response bodies are read up to a small cap, and concurrent requests to one
   destination host are limited so a single subscriber cannot monopolise egress.
 """
 
@@ -44,6 +45,9 @@ Resolver = Callable[[str, int], Awaitable[list[IPAddress]]]
 
 SECURE_SCHEME = "https"
 INSECURE_SCHEME = "http"
+
+LOOPBACK_NAME = "localhost"
+"""The one hostname (and, per RFC 6761, its subdomains) treated as loopback."""
 
 # Total wall-clock budget for one request: connect, TLS, send and read.
 TIMEOUT_SECONDS = 10.0
@@ -123,6 +127,21 @@ def permitted(address: IPAddress, *, allow_loopback: bool = False) -> bool:
     )
 
 
+def loopback_host(host: str) -> bool:
+    """Whether ``host`` names this machine: ``localhost``, a subdomain of it,
+    or a loopback IP literal. Resolution is checked separately, at connect."""
+    name = host.lower().rstrip(".")
+    if name == LOOPBACK_NAME or name.endswith("." + LOOPBACK_NAME):
+        return True
+    try:
+        address = ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        return address.ipv4_mapped.is_loopback
+    return address.is_loopback
+
+
 def validate_url(url: str, *, allow_loopback: bool = False) -> httpx.URL:
     """Parse ``url`` and enforce the scheme and host rules for callbacks.
 
@@ -133,11 +152,16 @@ def validate_url(url: str, *, allow_loopback: bool = False) -> httpx.URL:
         parsed = httpx.URL(url)
     except (httpx.InvalidURL, TypeError) as error:
         raise DestinationError("Callback URL is not a valid URL") from error
-    schemes = {SECURE_SCHEME, INSECURE_SCHEME} if allow_loopback else {SECURE_SCHEME}
-    if parsed.scheme not in schemes:
+    if parsed.scheme not in (SECURE_SCHEME, INSECURE_SCHEME):
         raise DestinationError("Callback URL must use https")
     if not parsed.host:
         raise DestinationError("Callback URL must include a host")
+    if parsed.scheme == INSECURE_SCHEME and not (
+        allow_loopback and loopback_host(parsed.host)
+    ):
+        # Plain http is a test escape hatch for a local server only; signed
+        # event data never travels unencrypted to another machine.
+        raise DestinationError("Callback URL must use https")
     if parsed.userinfo:
         raise DestinationError("Callback URL must not include credentials")
     return parsed
@@ -152,6 +176,12 @@ async def resolve(host: str, port: int) -> list[IPAddress]:
         if address not in addresses:
             addresses.append(address)
     return addresses
+
+
+def _loopback(address: IPAddress) -> bool:
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        return address.ipv4_mapped.is_loopback
+    return address.is_loopback
 
 
 class Backend(httpcore.AsyncNetworkBackend):
@@ -179,11 +209,17 @@ class Backend(httpcore.AsyncNetworkBackend):
         )
 
     async def addresses(self, host: str, port: int) -> list[IPAddress]:
-        """Resolve ``host`` and return its addresses if all are permitted."""
+        """Resolve ``host`` and return its addresses if all are permitted.
+
+        A loopback host (the only one plain ``http`` may reach) must resolve
+        to loopback alone, so ``localhost`` mapped elsewhere is refused."""
         addresses = await self._resolver(host, port)
         if not addresses:
             raise DestinationError("Callback host did not resolve")
+        local = self._allow_loopback and loopback_host(host)
         for address in addresses:
+            if local and not _loopback(address):
+                raise DestinationError("Loopback host resolves to another machine")
             if not permitted(address, allow_loopback=self._allow_loopback):
                 raise DestinationError("Callback host resolves to a non-public address")
         return addresses
@@ -331,20 +367,26 @@ class Egress:
             await self._backend.addresses(parsed.host, port)
 
     async def post(
-        self, url: str, content: bytes, headers: Mapping[str, str]
+        self, url: str, content: bytes, headers: Callable[[], Mapping[str, str]]
     ) -> Response:
         """POST ``content`` to ``url`` under the egress policy.
+
+        One deadline covers the wait for a per-host slot and the request, so a
+        request queued behind slow ones still ends within the timeout.
+        ``headers`` is called once the slot is held, right before sending, so
+        a signature timestamp is taken when the request goes out, not when it
+        was queued.
 
         Raises :class:`DestinationError` for a forbidden URL or address,
         ``TimeoutError`` when the deadline passes, and ``httpx.TransportError``
         for network and TLS failures.
         """
         parsed = validate_url(url, allow_loopback=self._allow_loopback)
-        # Identity encoding keeps the body cap meaningful: a compressed reply
-        # cannot expand past it.
-        request_headers = {**headers, "Accept-Encoding": "identity"}
-        async with self._limiter.slot(parsed.host):
-            with anyio.fail_after(self._timeout):
+        with anyio.fail_after(self._timeout):
+            async with self._limiter.slot(parsed.host):
+                # Identity encoding keeps the body cap meaningful: a
+                # compressed reply cannot expand past it.
+                request_headers = {**headers(), "Accept-Encoding": "identity"}
                 async with self._client.stream(
                     "POST", parsed, content=content, headers=request_headers
                 ) as response:

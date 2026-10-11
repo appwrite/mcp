@@ -13,11 +13,19 @@ per-host concurrency limit. What stays here cannot be produced end to end:
 * URL shapes the subscribe path (PR 5) will reject before any delivery.
 * The response body cap: delivery discards response bodies, so it is
   invisible on the wire.
+* Plain ``http`` under ``allow_loopback``: the flag is test-only, and no test
+  can safely prove that a public ``http`` callback is refused by sending to
+  one, so the scheme and resolution rules are checked here.
+* The deadline covering the wait for a per-host slot, and headers (the
+  signature timestamp) built only once the slot is held, at a precision the
+  wire's whole-second ``webhook-timestamp`` cannot show.
 """
 
 import ipaddress
+import time
 import unittest
 
+import anyio
 import httpcore
 import httpx
 
@@ -151,12 +159,119 @@ class ValidateUrlTest(unittest.TestCase):
         self.assertEqual(url.scheme, "http")
 
 
+class LoopbackHttpTest(unittest.IsolatedAsyncioTestCase):
+    """``allow_loopback`` admits plain ``http`` for a loopback host only."""
+
+    def test_http_needs_a_loopback_host(self) -> None:
+        for url in (
+            "http://localhost:8080/x",
+            "http://api.localhost/x",
+            "http://127.8.8.8/x",
+            "http://[::1]/x",
+        ):
+            with self.subTest(url=url):
+                egress.validate_url(url, allow_loopback=True)
+        for url in (
+            "http://hooks.example.com/x",
+            "http://93.184.216.34/x",
+            "http://10.0.0.7/x",
+            "http://localhost.example.com/x",
+        ):
+            with self.subTest(url=url):
+                with self.assertRaises(egress.DestinationError):
+                    egress.validate_url(url, allow_loopback=True)
+        with self.assertRaises(egress.DestinationError):
+            egress.validate_url("http://localhost/x")
+        egress.validate_url("https://hooks.example.com/x", allow_loopback=True)
+
+    async def test_loopback_name_must_resolve_to_loopback(self) -> None:
+        loopback = ipaddress.ip_address("127.0.0.1")
+        for answers in ((PUBLIC,), (loopback, PUBLIC)):
+            with self.subTest(answers=answers):
+                spy = SpyNetwork()
+                async with egress.Egress(
+                    resolver=static(*answers), network=spy, allow_loopback=True
+                ) as client:
+                    with self.assertRaises(egress.DestinationError):
+                        await client.post("http://localhost:9/x", b"{}", dict)
+                self.assertEqual(spy.targets, [])
+        spy = SpyNetwork()
+        async with egress.Egress(
+            resolver=static(loopback), network=spy, allow_loopback=True
+        ) as client:
+            with self.assertRaises(httpx.ConnectError):
+                await client.post("http://localhost:9/x", b"{}", dict)
+        self.assertEqual(spy.targets, [("127.0.0.1", 9)])
+
+
+class SlowTransport(httpx.AsyncBaseTransport):
+    """Answers every request after ``delay`` seconds, recording arrivals."""
+
+    def __init__(self, delay: float) -> None:
+        self.delay = delay
+        self.arrivals: list[float] = []
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.arrivals.append(time.monotonic())
+        await anyio.sleep(self.delay)
+        return httpx.Response(200, content=b"{}")
+
+
+class DeadlineTest(unittest.IsolatedAsyncioTestCase):
+    async def test_waiting_for_a_slot_counts_against_the_deadline(self) -> None:
+        # Four 80 ms requests to one host, one slot, a 100 ms timeout: only
+        # the first fits. With the deadline started after the slot, all four
+        # succeeded after ~330 ms.
+        transport = SlowTransport(0.08)
+        outcomes: list[str] = []
+
+        async def post(client: egress.Egress) -> None:
+            try:
+                await client.post("https://hooks.example.com/", b"{}", dict)
+                outcomes.append("ok")
+            except TimeoutError:
+                outcomes.append("timeout")
+
+        started = time.monotonic()
+        async with egress.Egress(
+            concurrency=1, timeout=0.1, transport=transport
+        ) as client:
+            async with anyio.create_task_group() as group:
+                for _ in range(4):
+                    group.start_soon(post, client)
+        elapsed = time.monotonic() - started
+        self.assertEqual(sorted(outcomes), ["ok", "timeout", "timeout", "timeout"])
+        self.assertLess(elapsed, 0.2)
+
+    async def test_headers_are_built_once_the_slot_is_held(self) -> None:
+        transport = SlowTransport(0.08)
+        built: list[float] = []
+
+        def headers() -> dict[str, str]:
+            built.append(time.monotonic())
+            return {}
+
+        async with egress.Egress(
+            concurrency=1, timeout=1.0, transport=transport
+        ) as client:
+            async with anyio.create_task_group() as group:
+                for _ in range(4):
+                    group.start_soon(
+                        client.post, "https://hooks.example.com/", b"{}", headers
+                    )
+        self.assertEqual(len(built), 4)
+        for stamped, sent in zip(built, transport.arrivals, strict=True):
+            self.assertLess(sent - stamped, 0.03)
+        # Queued requests were stamped as they went out, not when queued.
+        self.assertGreater(built[-1] - built[0], 0.2)
+
+
 class ConnectTargetTest(unittest.IsolatedAsyncioTestCase):
     async def test_connects_to_the_checked_address(self) -> None:
         spy = SpyNetwork()
         async with egress.Egress(resolver=static(PUBLIC), network=spy) as client:
             with self.assertRaises(httpx.ConnectError):
-                await client.post("https://hooks.example.com/x", b"{}", {})
+                await client.post("https://hooks.example.com/x", b"{}", dict)
         self.assertEqual(spy.targets, [(str(PUBLIC), 443)])
 
     async def test_any_private_answer_rejects_the_host(self) -> None:
@@ -164,7 +279,7 @@ class ConnectTargetTest(unittest.IsolatedAsyncioTestCase):
         resolver = static(PUBLIC, PRIVATE)
         async with egress.Egress(resolver=resolver, network=spy) as client:
             with self.assertRaises(egress.DestinationError):
-                await client.post("https://hooks.example.com/x", b"{}", {})
+                await client.post("https://hooks.example.com/x", b"{}", dict)
         self.assertEqual(spy.targets, [])
 
     async def test_dns_rebinding_is_rejected_at_connect(self) -> None:
@@ -177,7 +292,7 @@ class ConnectTargetTest(unittest.IsolatedAsyncioTestCase):
         async with egress.Egress(resolver=rebinding, network=spy) as client:
             await client.check("https://rebind.example.com/hook")
             with self.assertRaises(egress.DestinationError):
-                await client.post("https://rebind.example.com/hook", b"{}", {})
+                await client.post("https://rebind.example.com/hook", b"{}", dict)
         self.assertEqual(spy.targets, [])
 
     async def test_check_rejects_private_answers(self) -> None:
@@ -188,7 +303,7 @@ class ConnectTargetTest(unittest.IsolatedAsyncioTestCase):
     async def test_unresolvable_host_is_rejected(self) -> None:
         async with egress.Egress(resolver=static(), network=SpyNetwork()) as client:
             with self.assertRaises(egress.DestinationError):
-                await client.post("https://nowhere.example.com/", b"{}", {})
+                await client.post("https://nowhere.example.com/", b"{}", dict)
 
 
 class BodyCapTest(unittest.IsolatedAsyncioTestCase):
@@ -197,7 +312,7 @@ class BodyCapTest(unittest.IsolatedAsyncioTestCase):
             lambda request: httpx.Response(200, content=b"x" * 100_000)
         )
         async with egress.Egress(body_limit=1024, transport=transport) as client:
-            response = await client.post("https://hooks.example.com/", b"{}", {})
+            response = await client.post("https://hooks.example.com/", b"{}", dict)
         self.assertEqual(len(response.body), 1024)
 
 
