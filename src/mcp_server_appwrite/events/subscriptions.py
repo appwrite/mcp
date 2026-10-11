@@ -323,9 +323,7 @@ class Subscriptions:
             ) from error
 
     async def _verify(self, subscription: Subscription) -> None:
-        callback = Callback(
-            subscription.callback, subscription.id, (subscription.secret,)
-        )
+        callback = Callback(subscription.callback, subscription.id, subscription.secret)
         try:
             await self._ingress.dispatcher.verify(callback)
         except CallbackError as error:
