@@ -22,6 +22,7 @@ import base64
 import json
 import os
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 
 from mcp_server_appwrite.events.envelope import (
@@ -84,12 +85,15 @@ class ProfileVectorTests(unittest.TestCase):
             ("k1", key(1)),
         )
         context = Context(**vector["context"])
+        # The vector's lease ends in 2030; pin the clock before it, as the
+        # package's own conformance tests do.
+        now = datetime(2029, 1, 1, tzinfo=UTC)
 
-        self.assertEqual(keyring.record(vector["token"], context), record)
+        self.assertEqual(keyring.record(vector["token"], context, now=now), record)
         # The vector's id is not one subscription_id() derives, so the adapter
         # refuses it only for binding, after the profile accepted it.
         with self.assertRaises(EnvelopeError) as raised:
-            keyring.open(vector["token"], context)
+            keyring.open(vector["token"], context, now=now)
         self.assertEqual(raised.exception.failure, EnvelopeFailure.BINDING)
 
         # The vector's record is exactly what this adapter seals, given an id

@@ -42,7 +42,7 @@ import json
 import os
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from types import MappingProxyType
@@ -229,8 +229,9 @@ class Subscription:
     """Event arguments, sorted by key and read-only."""
     callback: str
     """Delivery URL."""
-    secret: str
-    """The client's ``whsec_`` secret."""
+    secret: str = field(repr=False)
+    """The client's ``whsec_`` secret. Kept out of ``repr`` so logging a
+    subscription never leaks it."""
     expires: int
     """Lease expiry as Unix epoch milliseconds."""
     refresh: int
@@ -423,17 +424,23 @@ class Keyring:
             raise EnvelopeTooLarge(len(envelope))
         return envelope
 
-    def record(self, envelope: str, context: Context) -> dict[str, Any]:
+    def record(
+        self, envelope: str, context: Context, *, now: datetime | None = None
+    ) -> dict[str, Any]:
         """The Subscription Record v1 in an envelope bound to ``context``, as
         the profile opens it.
 
         Raises :class:`EnvelopeError` when it is malformed, names an unknown
         key, was tampered with, or was sealed for another server, project or
-        webhook, and :class:`SubscriptionExpired` once its lease has ended."""
+        webhook, and :class:`SubscriptionExpired` once its lease has ended at
+        ``now`` (default the current time; fixtures pin it)."""
         self.get(key_id(envelope))
         try:
             return profile.open_envelope(
-                envelope, self.materials, expected_context=context.as_dict()
+                envelope,
+                self.materials,
+                expected_context=context.as_dict(),
+                now=now,
             )
         except profile.ExpiredSubscription as error:
             raise SubscriptionExpired(str(error)) from error
@@ -443,11 +450,13 @@ class Keyring:
                 "envelope was tampered with or belongs to another webhook",
             ) from error
 
-    def open(self, envelope: str, context: Context) -> Subscription:
+    def open(
+        self, envelope: str, context: Context, *, now: datetime | None = None
+    ) -> Subscription:
         """Open an envelope for the webhook and project in ``context``: the
         checks of :meth:`record`, then that its contents hash to the
         subscription id (``binding_mismatch`` otherwise)."""
-        record = self.record(envelope, context)
+        record = self.record(envelope, context, now=now)
         try:
             return Subscription.from_record(record, context.tenant)
         except ValueError as error:
