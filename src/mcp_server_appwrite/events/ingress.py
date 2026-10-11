@@ -381,7 +381,7 @@ class Ingress:
 
         try:
             callback = Callback(
-                subscription.callback, subscription.id, (subscription.secret,)
+                subscription.callback, subscription.id, subscription.secret
             )
         except InvalidSecretError:
             return self._drop(id, Drop.MALFORMED, event.name)
