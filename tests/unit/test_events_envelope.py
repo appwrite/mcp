@@ -111,6 +111,8 @@ class ProfileVectorTests(unittest.TestCase):
         self.assertEqual(
             Subscription.from_record({**record, "id": ours.id}, context.tenant), ours
         )
+        # Logging a subscription never shows its secret.
+        self.assertNotIn(record["delivery"]["secret"], repr(ours))
 
 
 class SubscriptionIdTests(unittest.TestCase):
