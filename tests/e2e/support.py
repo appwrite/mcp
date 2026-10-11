@@ -808,6 +808,15 @@ class Failure:
     times: int
 
 
+@dataclass
+class Interleaving:
+    """Another client's work, run once before the next matching request."""
+
+    method: str
+    path: re.Pattern[str]
+    action: Callable[[], None]
+
+
 class _Refusal(Exception):
     def __init__(self, status: int, type: str, message: str) -> None:
         super().__init__(message)
@@ -845,6 +854,7 @@ class Cloud:
         self._grants: dict[str, tuple[frozenset[str], frozenset[str]]] = {}
         self._projects: dict[str, Project] = {}
         self._failures: list[Failure] = []
+        self._interleavings: list[Interleaving] = []
         self.requests: list[tuple[str, str, str | None]] = []
         """``(method, path, bearer token)`` of every request, in order."""
         cloud = self
@@ -910,6 +920,14 @@ class Cloud:
                 Failure(method, re.compile(path), status, type, times)
             )
 
+    def before(self, method: str, path: str, action: Callable[[], None]) -> None:
+        """Run ``action`` once, right before the next request matching
+        ``method`` and the ``path`` expression is handled, while that request
+        waits: how a concurrent client's calls land between two of a
+        server's. ``action`` may call this API itself."""
+        with self._lock:
+            self._interleavings.append(Interleaving(method, re.compile(path), action))
+
     def store(self, project: str, document: Mapping[str, Any]) -> None:
         """Put a webhook straight into the project, as a person in the Console
         (or an earlier subscribe) would have left it."""
@@ -972,6 +990,19 @@ class Cloud:
         query = parse_qs(parts.query)
         authorization = headers.get("authorization", "")
         token = authorization[7:] if authorization.startswith("Bearer ") else None
+        with self._lock:
+            interleaving = next(
+                (
+                    each
+                    for each in self._interleavings
+                    if each.method == method and each.path.fullmatch(path)
+                ),
+                None,
+            )
+            if interleaving is not None:
+                self._interleavings.remove(interleaving)
+        if interleaving is not None:
+            interleaving.action()
         with self._lock:
             self.requests.append((method, path, token))
             try:

@@ -13,9 +13,11 @@ A subscription is one managed Appwrite webhook in the subscriber's project (see
    token (:class:`.catalog.Access`). Every refresh repeats it, so access that
    was revoked ends the subscription at the next refresh at the latest.
 5. Lists the project's webhooks (which also proves the webhook scopes) and
-   deletes this principal's *expired* managed ones, so stale subscriptions do
-   not hold Free-plan slots. Expiry and owner come from the webhook name
-   (:class:`.webhooks.Label`), because the envelope cannot be read back.
+   deletes this principal's managed ones that expired more than
+   :data:`CLEANUP_GRACE_MS` ago and are unchanged when read again, so stale
+   subscriptions do not hold Free-plan slots. Expiry and owner come from the
+   webhook name (:class:`.webhooks.Label`), because the envelope cannot be
+   read back.
 6. Runs the verification handshake against the callback, every time
    (``-32015`` with ``data.reason`` on failure). The server keeps no
    per-``(principal, url)`` cache and cannot read the previous envelope back
@@ -36,7 +38,8 @@ than leave one whose envelope and key disagree.
 
 ``events/unsubscribe`` recomputes the id from the principal and the request and
 deletes that webhook if it is a managed one. A missing webhook is still
-success, so unsubscribe is idempotent. The id is bound to the principal, so a
+success, so unsubscribe is idempotent; a missing project is ``-32012``, as on
+subscribe. The id is bound to the principal, so a
 caller can only ever reach their own subscriptions.
 """
 
@@ -92,6 +95,11 @@ REFRESH_SHARE = 10
 """``refreshBefore`` comes this fraction (1/10) of the grant before the
 envelope expires: 6 minutes for the default hour, 30 s at the floor. The
 margin absorbs a slow refresh without letting deliveries lapse."""
+
+CLEANUP_GRACE_MS = 10 * 60 * 1000
+"""How long past its expiry a managed webhook must be before a subscribe
+cleans it up. A client still refreshing that subscription would have done so
+well before; past this it has gone, and its deliveries are already dropped."""
 
 PROJECT = "project_id"
 
@@ -409,16 +417,36 @@ class Subscriptions:
     def _clean(
         self, webhooks: Webhooks, existing: list[Any], subscription: Subscription
     ) -> int:
-        """Delete this principal's expired managed webhooks; return how many
-        went. Best effort: a failed delete is retried on the next subscribe."""
+        """Delete this principal's long-expired managed webhooks; return how
+        many went. Best effort: a failed delete is retried on the next
+        subscribe.
+
+        Appwrite has no conditional delete, so a refresh of a candidate can
+        race this. Two guards keep that from deleting a live subscription:
+        only webhooks expired for longer than :data:`CLEANUP_GRACE_MS` are
+        candidates, and each is read again right before the delete and kept
+        if its name or ``$updatedAt`` changed since the listing. What remains
+        is a refresh landing between that read and the delete, of a
+        subscription its client left expired for over ten minutes; the client
+        then gets its webhook back on the following refresh."""
         tag = owner(subscription.principal)
-        now = self._now()
+        cutoff = self._now() - CLEANUP_GRACE_MS
         removed = 0
         for webhook in existing:
             label = managed(webhook)
             if label is None or webhook.id == subscription.id:
                 continue
-            if label.owner != tag or not label.expired(now):
+            if label.owner != tag or not label.expired(cutoff):
+                continue
+            try:
+                current = webhooks.get(webhook.id)
+            except AppwriteException as error:
+                _log(f"{webhook.id}: cleanup failed ({error.code} {error.type})")
+                continue
+            if current is None or (current.name, current.updatedat) != (
+                webhook.name,
+                webhook.updatedat,
+            ):
                 continue
             try:
                 webhooks.delete(webhook.id)
@@ -553,7 +581,9 @@ def _webhook_error(error: AppwriteException, project: str, count: int) -> Events
             limit="webhooks",
             maximum=count,
         )
-    if code in (401, 403):
+    # A project that does not exist is reported like one the caller cannot
+    # reach, as on subscribe, so project ids cannot be probed.
+    if code in (401, 403) or error.type == AppwriteError.PROJECT_NOT_FOUND:
         if error.type == AppwriteError.UNAUTHORIZED_SCOPE:
             scopes = " and ".join(SCOPE_PREFIX + scope for scope in WEBHOOK_SCOPES)
             return EventsError.forbidden(

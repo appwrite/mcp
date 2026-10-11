@@ -119,7 +119,7 @@ subscriptions.
    repeats the read, so revoked access ends a subscription at its next refresh
    at the latest.
 5. Lists the project's webhooks, which also proves the webhook scopes, and
-   deletes this principal's expired subscriptions (see below).
+   deletes this principal's long-expired subscriptions (see below).
 6. Runs the verification handshake: a signed
    `{"type":"verification","challenge":…}` that the callback must echo in a
    `2xx`. A failure is `-32015` with the reason. The handshake runs on every
@@ -134,7 +134,8 @@ subscriptions.
 `events/unsubscribe` recomputes the id from the caller and the request and
 deletes that webhook if it is a managed one. It returns `{}` when there was
 nothing to delete, so it is idempotent, and it can only ever reach the caller's
-own subscriptions because the id includes the principal.
+own subscriptions because the id includes the principal. A project that does
+not exist is `-32012`, as on subscribe, so project ids cannot be probed.
 
 ### TTL
 
@@ -175,9 +176,16 @@ but a different name (renamed in the Console) makes subscribe fail with
 `-32012` rather than be overwritten.
 
 Before writing, subscribe deletes the caller's managed webhooks whose label says
-they have expired. It only touches the caller's own (matched by the owner tag)
-and only expired ones, so a tag collision between two users could at worst
-remove an expired webhook whose deliveries the ingress already drops. Expired
+they expired more than 10 minutes ago. It only touches the caller's own (matched
+by the owner tag) and only long-expired ones, so a tag collision between two
+users could at worst remove an expired webhook whose deliveries the ingress
+already drops. Appwrite has no conditional delete, so a late refresh of that
+same subscription could race the cleanup. The grace period keeps a subscription
+that is still being refreshed out of the candidates, and each candidate is read
+again right before the delete and kept if its name or `$updatedAt` changed
+since the listing. What remains is a refresh landing between that read and the
+delete, of a subscription left expired for over 10 minutes; its next refresh
+creates the webhook again. Expired
 subscriptions of a user who never comes back stay until that user subscribes
 again in the project, or the webhook is deleted in the Console. Appwrite keeps
 delivering to them, and the ingress answers `200` and drops them.
@@ -197,6 +205,7 @@ Webhooks receivers do.
 | --- | --- |
 | `401 general_unauthorized_scope` on `/webhooks` | `-32012`, naming `project:webhooks.read` and `project:webhooks.write` |
 | `401` / `403` otherwise on `/webhooks` | `-32012` |
+| `404 project_not_found` on `/webhooks` (unsubscribe from a missing project) | `-32012` |
 | `403 additional_resource_not_allowed` (plan limit) | `-32013`, `data: {"limit": "webhooks", "max": <webhooks in the project>}` |
 | `5xx`, or anything else | `-32603` |
 

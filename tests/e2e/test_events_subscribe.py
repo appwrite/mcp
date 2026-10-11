@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from jsonschema import Draft202012Validator
 from support import (
     CLIENT_ID,
     ISSUER,
@@ -62,6 +63,8 @@ from mcp_server_appwrite.events.ingress import Ingress
 
 FIXTURES = Path(__file__).parent / "fixtures" / "appwrite"
 KEYS = "k1:" + base64.b64encode(bytes(range(64, 96))).decode()
+ROTATED = "k2:" + base64.b64encode(bytes(range(128, 160))).decode()
+"""The next sealing key of a rotation."""
 TIMEOUT = 1.0
 SETTLE = 0.5
 """Seconds to wait before asserting that nothing (more) was received."""
@@ -271,6 +274,11 @@ class SubscribeFlow(unittest.TestCase):
         self.assertEqual(message["error"]["code"], code, message)
         return message["error"]
 
+    def schemas(self) -> dict[str, Draft202012Validator]:
+        """Validators for the ``inputSchema`` each event publishes."""
+        events = self.call("events/list", {}, TOKEN)["events"]
+        return {e["name"]: Draft202012Validator(e["inputSchema"]) for e in events}
+
     def unsubscribe(self, params: dict[str, Any], *, token: str = TOKEN) -> None:
         result = self.call("events/unsubscribe", params, token)
         self.assertEqual(result, {"resultType": "complete"})
@@ -440,8 +448,48 @@ class SubscribeFlow(unittest.TestCase):
                     counts[outcome] + increase,
                 )
 
+    def test_refreshes_interleaved_across_a_key_rotation_still_deliver(self):
+        # A rolling rotation: this server (the old replica) still seals with
+        # k1; the new replica seals with k2 and keeps k1 to open. Both refresh
+        # the same subscription and their writes interleave: old envelope,
+        # new envelope, new signing key, old signing key last.
+        secret = whsec()
+        callback = receiver.endpoint((secret,))
+        params = request(*ROWS, callback, secret)
+        id = self.subscribe(params)["id"]
+        rotated = {**environment(), "MCP_EVENTS_SEALING_KEYS": f"{ROTATED},{KEYS}"}
+        with Server(rotated, injected) as replica:
+
+            def new_replica_refreshes() -> None:
+                with Client(replica.url, TOKEN) as client:
+                    _, message = client.call("events/subscribe", params)
+                assert "error" not in message, message
+
+            cloud.before("PATCH", rf"/v1/webhooks/{id}/secret", new_replica_refreshes)
+            self.subscribe(params)
+            stored = cloud.documents(MAIN)[id]
+            self.assertTrue(stored["httpPass"].startswith("v1.k2."))
+            self.assertEqual(
+                stored["signatureKey"], Keyring.parse(KEYS).signing_key(id)
+            )
+
+            # Appwrite delivers through the new replica: the k2 envelope
+            # opens, and the k1 signing key still verifies.
+            appwrite = Appwrite(replica)
+            responses = appwrite.fire(cloud, MAIN, ROW_EVENT, fixture("row_created"))
+            appwrite.close()
+            self.assertEqual(len(responses), 1)
+            event_id = self.accepted(responses[0])
+            # Three handshakes (subscribe and both refreshes), then the event.
+            delivery = receiver.wait(callback, 4)[3]
+            self.assertEqual(delivery.headers["webhook-id"], event_id)
+            self.assertEqual(delivery.verified, (True,))
+        self.unsubscribe(target(*ROWS, callback))
+        self.nothing_more(callback, 4)
+
     def test_every_event_subscribes_and_is_authorized(self):
         managed = set(self.ours())
+        schemas = self.schemas()
         ids = set()
         # Secrets span the 24..64 bytes Standard Webhooks allows.
         sizes = (24, 32, 64, 24, 32, 64)
@@ -451,6 +499,10 @@ class SubscribeFlow(unittest.TestCase):
             with self.subTest(event=name):
                 secret = whsec(size)
                 callback = receiver.endpoint((secret,))
+                # What the server accepts, the published schema accepts.
+                self.assertTrue(
+                    schemas[name].is_valid({"project_id": MAIN, **arguments})
+                )
                 reads = cloud.calls("GET", read)
                 result = self.subscribe(request(name, arguments, callback, secret))
                 ids.add(result["id"])
@@ -508,6 +560,14 @@ class SubscribeFlow(unittest.TestCase):
         self.refused(
             "events/subscribe",
             request(*execution, callback, secret, project=MISSING),
+            FORBIDDEN,
+        )
+        # Unsubscribe from a project that does not exist is Forbidden too,
+        # not an internal error, and not the idempotent {} of a missing
+        # webhook.
+        self.refused(
+            "events/unsubscribe",
+            target(*execution, callback, project=MISSING),
             FORBIDDEN,
         )
         # A token with no user behind it has no principal to subscribe for.
@@ -580,32 +640,29 @@ class SubscribeFlow(unittest.TestCase):
             "ttl negative": {**base, "ttlMs": -1},
             "maxAge negative": {**base, "maxAgeMs": -5},
         }  # fmt: skip
+        # Arguments the published input schema must reject as well.
+        schema_rejects = {"unknown argument", "no project", "arguments not an object"}
         # IDs that would widen an Appwrite event pattern, or are not IDs, in
-        # every ID argument of every event.
+        # every ID argument of every event; statuses outside the choices.
+        ids: tuple[object, ...] = ("*", "a*", "a.b", "fn1.executions", "", "-lead", "_lead", "a b", "a" * 37, None, 7)  # fmt: skip
+        statuses: tuple[object, ...] = ("building", "READY", "*", None, 7)
         for event_name, event_arguments, *_ in CASES:
             full = {"project_id": MAIN, **event_arguments}
             for argument in full:
-                if argument == "status":
-                    continue
-                for bad in (
-                    "*",
-                    "a*",
-                    "a.b",
-                    "fn1.executions",
-                    "",
-                    "-lead",
-                    "_lead",
-                    "a b",
-                    "a" * 37,
-                ):
+                for bad in statuses if argument == "status" else ids:
                     params = request(event_name, {}, callback, secret)
                     params["arguments"] = {**full, argument: bad}
-                    invalid[f"{event_name} {argument}={bad!r}"] = params
-        deployments = request("functions.deployment.completed", {"function_id": "fn_billing", "status": "building"}, callback, secret)  # fmt: skip
-        invalid["deployment status outside its choices"] = deployments
+                    label_ = f"{event_name} {argument}={bad!r}"
+                    invalid[label_] = params
+                    schema_rejects.add(label_)
+        schemas = self.schemas()
         for label_, params in invalid.items():
             with self.subTest(invalid=label_):
                 self.refused("events/subscribe", params, INVALID_PARAMS)
+                if label_ in schema_rejects:
+                    # The server refuses what the published schema rejects.
+                    schema = schemas[params["name"]]
+                    self.assertFalse(schema.is_valid(params["arguments"]))
 
         error = self.refused(
             "events/subscribe", {**base, "name": "tablesdb.row.deleted"}, NOT_FOUND
@@ -728,7 +785,7 @@ class SubscribeFlow(unittest.TestCase):
         orders = ("tablesdb.row.created", {"database_id": "main", "table_id": "orders"})
 
         # The Free project holds the user's own webhook and one of ours that
-        # expired: the slot it holds is freed before creating.
+        # expired an hour ago: the slot it holds is freed before creating.
         cloud.store(
             FREE,
             {
@@ -742,7 +799,9 @@ class SubscribeFlow(unittest.TestCase):
             FREE,
             {
                 "$id": expired,
-                "name": label("tablesdb.row.created", time.time() - 60, PRINCIPAL[:8]),
+                "name": label(
+                    "tablesdb.row.created", time.time() - 3600, PRINCIPAL[:8]
+                ),
                 "url": f"{PUBLIC_URL}/appwrite/webhooks/{expired}",
             },
         )
@@ -775,34 +834,61 @@ class SubscribeFlow(unittest.TestCase):
         secret = whsec()
         callback = receiver.endpoint((secret,))
         name, arguments = ROWS
-        past, future = time.time() - 60, time.time() + 3600
+        now = time.time()
+        past, recent, future = now - 3600, now - 60, now + 3600
         ours_expired = "sub_" + secrets.token_hex(16)
+        ours_recent = "sub_" + secrets.token_hex(16)
         ours_live = "sub_" + secrets.token_hex(16)
         theirs_expired = "sub_" + secrets.token_hex(16)
         renamed = "sub_" + secrets.token_hex(16)
+        # A long-expired subscription of ours whose client refreshes it while
+        # this subscribe is cleaning up.
+        late_secret = whsec()
+        late_callback = receiver.endpoint((late_secret,))
+        late = subscription_id(
+            PRINCIPAL, late_callback, name, {"project_id": TIDY, **arguments}
+        )
         seeded = {
-            # The user's webhooks, including one that copies our label.
+            # The user's webhooks, including ones that copy our label, one
+            # with an id of the right shape but not hex.
             "slack": "Slack alerts",
             "lookalike": label(name, past, PRINCIPAL[:8]),
+            "sub_" + "z" * 32: label(name, past, PRINCIPAL[:8]),
             renamed: "Renamed by a person",
-            # Another user's expired subscription, and one of ours still live.
+            # Another user's expired subscription, one of ours still live, and
+            # one of ours that expired within the 10 minute grace period.
             theirs_expired: label(name, past, OTHER_PRINCIPAL[:8]),
             ours_live: label(name, future, PRINCIPAL[:8]),
-            # Ours and expired: the only one cleanup removes.
+            ours_recent: label(name, recent, PRINCIPAL[:8]),
+            late: label(name, past, PRINCIPAL[:8]),
+            # Ours and long expired: the only one cleanup removes.
             ours_expired: label(name, past, PRINCIPAL[:8]),
         }
         for id, title in seeded.items():
             cloud.store(TIDY, {"$id": id, "name": title, "url": "https://x.example"})
         before = cloud.documents(TIDY)
 
+        # The late refresh lands after cleanup listed the project, right
+        # before it re-reads that webhook to delete it.
+        def refresh() -> None:
+            self.subscribe(
+                request(name, arguments, late_callback, late_secret, project=TIDY)
+            )
+
+        cloud.before("GET", rf"/v1/webhooks/{late}", refresh)
         result = self.subscribe(
             request(name, arguments, callback, secret, project=TIDY)
         )
         after = cloud.documents(TIDY)
         self.assertEqual(set(after), set(seeded) - {ours_expired} | {result["id"]})
-        for id in set(seeded) - {ours_expired}:
+        for id in set(seeded) - {ours_expired, late}:
             self.assertEqual(after[id], before[id], id)
+        # The refreshed subscription survived with its new expiry.
+        refreshed = LABEL.fullmatch(after[late]["name"])
+        assert refreshed is not None
+        self.assertGreater(moment(refreshed["until"]), now)
         self.unsubscribe(target(name, arguments, callback, project=TIDY))
+        self.unsubscribe(target(name, arguments, late_callback, project=TIDY))
 
         # A webhook that holds the subscription's id but not our name (renamed
         # in the Console) is neither rewritten nor deleted.
