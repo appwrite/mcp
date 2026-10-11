@@ -112,6 +112,11 @@ class SubscriptionIdTests(unittest.TestCase):
             "sub_short",
             "x" * 36,
             "sub_" + "g" * 31 + "!",
+            # Right length and charset for Appwrite, but not a SHA-256 prefix.
+            "sub_" + "z" * 32,
+            "sub_" + "A" * 32,
+            "sub_" + "0" * 31 + ".",
+            "sub_" + "0" * 33,
         ):
             with self.subTest(value=value):
                 self.assertFalse(valid_subscription_id(value))

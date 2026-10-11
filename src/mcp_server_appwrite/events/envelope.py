@@ -64,8 +64,12 @@ SUBSCRIPTION_PREFIX = "sub_"
 # Appwrite custom ids: at most 36 chars of [A-Za-z0-9._-], no leading special
 # char. "sub_" + 32 hex chars (128 bits of SHA-256) fills that exactly.
 SUBSCRIPTION_HASH_CHARS = 32
-SUBSCRIPTION_ID_MAX = 36
-SUBSCRIPTION_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+SUBSCRIPTION_ID_MAX = len(SUBSCRIPTION_PREFIX) + SUBSCRIPTION_HASH_CHARS
+SUBSCRIPTION_ID_PATTERN = re.compile(
+    rf"{SUBSCRIPTION_PREFIX}[0-9a-f]{{{SUBSCRIPTION_HASH_CHARS}}}"
+)
+"""Exactly what :func:`subscription_id` produces: the prefix and 32 lowercase
+hex characters."""
 PRINCIPAL_BYTES = 16
 
 # Longest envelope :meth:`Keyring.seal` produces, and the `authPassword` length
@@ -152,11 +156,7 @@ def subscription_id(
 
 def valid_subscription_id(value: str) -> bool:
     """Whether ``value`` is a subscription id this module could have produced."""
-    return (
-        len(value) == SUBSCRIPTION_ID_MAX
-        and value.startswith(SUBSCRIPTION_PREFIX)
-        and SUBSCRIPTION_ID_PATTERN.fullmatch(value) is not None
-    )
+    return SUBSCRIPTION_ID_PATTERN.fullmatch(value) is not None
 
 
 @dataclass(frozen=True)
