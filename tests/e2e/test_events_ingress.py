@@ -32,6 +32,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 from jsonschema import Draft202012Validator
 from support import (
     PUBLIC_URL,
@@ -120,11 +121,11 @@ def fixture(name: str) -> dict[str, Any]:
 
 
 def injected(
-    dispatcher: type[Dispatcher] = Dispatcher, **backlogs: int
+    dispatcher: type[Dispatcher] = Dispatcher, **limits: Any
 ) -> dict[str, Any]:
     """``build_app`` arguments: the production ingress, keyring and public URL
     from the environment, with an egress that may reach the local receiver.
-    ``backlogs`` override the ingress backlog limits."""
+    ``limits`` override the ingress backlog and read limits."""
     egress = Egress(allow_loopback=True, ssl_context=receiver.trust(), timeout=TIMEOUT)
     return {
         "ingress": Ingress(
@@ -132,7 +133,7 @@ def injected(
             egress,
             dispatcher(egress, POLICY),
             base=public_base_url(),
-            **backlogs,
+            **limits,
         )
     }
 
@@ -891,6 +892,56 @@ class DeliveryFlow(IngressFlow):
         self.assertEqual(
             collector().count(INGRESS, outcome="dropped", reason="backlog_full"),
             before + 2,
+        )
+
+    def test_body_reads_are_bounded(self):
+        # The route is public and the signature covers the whole body, so a
+        # body past 16 MiB, or one that stalls past the read timeout, is not
+        # read on: it is acknowledged as `unread` and nothing is delivered.
+        before = collector().count(INGRESS, outcome="dropped", reason="unread")
+        webhook, callback, _ = self.subscribe(*ROWS)
+        huge = {**fixture("row_created"), "body": "x" * (16 * 1024 * 1024)}
+        with Server(events_on(self.keys), lambda: injected(read_timeout=0.5)) as server:
+            appwrite = Appwrite(server)
+            # Declared too long, even when correctly signed.
+            self.dropped(appwrite.deliver(webhook, ROW_EVENT, huge), "unread")
+            url = f"{server.url}{WEBHOOK_PATH}{webhook.id}"
+            headers = {
+                "Authorization": "Basic "
+                + base64.b64encode(
+                    f"{webhook.user}:{webhook.password}".encode()
+                ).decode(),
+                "X-Appwrite-Webhook-Signature": "forged",
+                "X-Appwrite-Webhook-Project-Id": PROJECT,
+            }
+
+            def endless():
+                # Chunked, so no Content-Length announces the size.
+                chunk = b"x" * (1024 * 1024)
+                for _ in range(17):
+                    yield chunk
+
+            def stalled():
+                yield b'{"$id":'
+                time.sleep(1.5)
+                yield b'"row_8f2a"}'
+
+            for label, body in (("endless", endless), ("stalled", stalled)):
+                with self.subTest(body=label):
+                    response = httpx.post(
+                        url, content=body(), headers=headers, timeout=30
+                    )
+                    self.dropped(response, "unread")
+            # The server still serves real deliveries.
+            event_id = self.accepted(
+                appwrite.deliver(webhook, ROW_EVENT, fixture("row_created"))
+            )
+            self.delivered(callback, event_id)
+            appwrite.close()
+        self.nothing_more((callback, 1))
+        self.assertEqual(
+            collector().count(INGRESS, outcome="dropped", reason="unread"),
+            before + 3,
         )
 
 

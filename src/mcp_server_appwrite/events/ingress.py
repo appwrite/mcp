@@ -103,6 +103,16 @@ very large text columns) are still hashed to the end so the signature is
 checked, then dropped: the forwarded fields are IDs, but the JSON has to parse
 to find them."""
 
+READ_LIMIT_BYTES = 16 * 1024 * 1024
+"""Bytes of an Appwrite body read and hashed at most. The route is public and
+the signature covers the whole body, so past this the body is not read on and
+the request is acknowledged and dropped (``unread``) without verifying it."""
+
+READ_TIMEOUT_SECONDS = 10.0
+"""How long the whole body may take to arrive. Appwrite's worker gives up
+after 15 seconds and sends bodies in one go, so only a stalled or deliberately
+slow client hits this; it is dropped (``unread``) like an oversized body."""
+
 BACKLOG = 1024
 """Deliveries one process keeps in flight, retries and backoff included. A
 delivery to a failing callback lives for up to ~13 minutes, so without a bound
@@ -205,9 +215,11 @@ class Ingress:
         base: str,
         backlog: int = BACKLOG,
         subscription_backlog: int = SUBSCRIPTION_BACKLOG,
+        read_timeout: float = READ_TIMEOUT_SECONDS,
     ) -> None:
         if backlog < 1 or subscription_backlog < 1:
             raise ValueError("backlogs must be at least 1")
+        self._read_timeout = read_timeout
         self._keyring = keyring
         self._egress = egress
         self._dispatcher = dispatcher or Dispatcher(egress)
@@ -248,21 +260,36 @@ class Ingress:
                     self._group = None
                     group.cancel_scope.cancel()
 
-    async def read(self, request: Request, id: str, keys: Sequence[str]) -> Body:
+    async def read(self, request: Request, id: str, keys: Sequence[str]) -> Body | None:
         """Stream the body, hashing all of it under each of ``keys`` and
-        keeping at most :data:`BODY_LIMIT_BYTES`."""
+        keeping at most :data:`BODY_LIMIT_BYTES`.
+
+        ``None`` when the body is longer than :data:`READ_LIMIT_BYTES` or
+        takes longer than the read timeout to arrive: the route is public and
+        the signature can only be checked once the whole body is in, so the
+        read itself must be bounded."""
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > READ_LIMIT_BYTES:
+            return None
         url = self.url(id)
         digests = [appwrite_hmac(url, key) for key in keys]
         content = bytearray()
         complete = True
-        async for chunk in request.stream():
-            for digest in digests:
-                digest.update(chunk)
-            if complete and len(content) + len(chunk) > BODY_LIMIT_BYTES:
-                complete = False
-                content.clear()
-            elif complete:
-                content.extend(chunk)
+        total = 0
+        with anyio.move_on_after(self._read_timeout) as scope:
+            async for chunk in request.stream():
+                total += len(chunk)
+                if total > READ_LIMIT_BYTES:
+                    return None
+                for digest in digests:
+                    digest.update(chunk)
+                if complete and len(content) + len(chunk) > BODY_LIMIT_BYTES:
+                    complete = False
+                    content.clear()
+                elif complete:
+                    content.extend(chunk)
+        if scope.cancelled_caught:
+            return None
         signatures = tuple(
             base64.b64encode(digest.digest()).decode("ascii") for digest in digests
         )
@@ -286,9 +313,15 @@ class Ingress:
         # the one that sealed the envelope: two replicas refreshing the same
         # subscription across a key rotation can leave the webhook with an
         # envelope from one key and a signing key from the other.
+        signature = request.headers.get(SIGNATURE_HEADER, "").encode("utf-8")
+        if not signature:
+            return self._reject(id, Rejection.SIGNATURE)
         keys = [self._keyring.signing_key(id, key.id) for key in self._keyring.keys]
         body = await self.read(request, id, keys)
-        signature = request.headers.get(SIGNATURE_HEADER, "").encode("utf-8")
+        if body is None:
+            # Nothing is delivered, and a 200 keeps a real webhook with a
+            # huge row from being paused; it tells a forger nothing.
+            return self._drop(id, Drop.UNREAD)
         verified = False
         for expected in body.signatures:
             verified |= hmac.compare_digest(expected.encode("ascii"), signature)

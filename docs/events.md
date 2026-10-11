@@ -96,7 +96,10 @@ For each delivery the ingress:
    derived from the subscription id and a sealing key, and the signature is
    checked against the secret of every key in the ring, not only the one that
    sealed the envelope (see key rotation below). The body is hashed as it
-   streams in; up to 2 MiB of it is kept.
+   streams in; up to 2 MiB of it is kept. The route is public and the
+   signature covers the whole body, so the read itself is bounded: a request
+   without a signature is refused before the body is read, and a body past
+   16 MiB or one still arriving after 10 seconds is not read on.
 3. Opens the envelope for the subscription id and
    `X-Appwrite-Webhook-Project-Id`. The envelope is bound to both, so one copied
    to another webhook or project does not open.
@@ -167,6 +170,7 @@ request that fails authentication gets `401`.
 | Status filter does not match (`waiting`, `ready` for a `failed` filter) | `200` dropped `status` | no |
 | Body is not a JSON object | `200` dropped `malformed` | no |
 | Body over 2 MiB (signature still checked) | `200` dropped `too_large` | no |
+| Body over 16 MiB or slower than 10 s (signature never checked) | `200` dropped `unread` | no |
 | Delivery backlog full (process or subscription) | `200` dropped `backlog_full` | no |
 | No Basic auth, or the password is not an envelope | `401` `credentials` | no |
 | Signature missing or wrong | `401` `signature` | no |
