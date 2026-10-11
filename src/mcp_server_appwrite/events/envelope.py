@@ -7,17 +7,24 @@ returns, and sends back as HTTP Basic auth on every delivery:
 
 * The webhook ``$id`` is the deterministic :func:`subscription_id`, so a refresh
   is an upsert and an unsubscribe is a delete by id.
-* ``authPassword`` holds the envelope from :meth:`Keyring.seal`:
-  ``v1.<key id>.<base64url(nonce | ciphertext | tag)>``. The ciphertext is
-  AES-256-GCM over compact JSON of the subscription. The subscription id and the
-  project id are not in the plaintext; they are bound as associated data, so an
-  envelope copied onto another webhook or project fails to open. Appwrite only
-  sends Basic auth when ``authUsername`` is non-empty too, so the webhook needs
-  a fixed, non-secret username alongside it.
+* ``authPassword`` holds the envelope from :meth:`Keyring.seal`: a Subscription
+  Record v1 sealed with the ``mcp-subscription+jwe`` profile of
+  `mcp-event-subscriptions <https://github.com/ChiragAgg5k/mcp-event-subscriptions>`_
+  (JWE Compact, ``dir`` + ``A256GCM``). The envelope is bound to a
+  :class:`Context`: this server (``MCP_PUBLIC_URL``), the project as tenant and
+  the webhook id as resource, so an envelope copied onto another webhook,
+  project or deployment fails to open. Appwrite only sends Basic auth when
+  ``authUsername`` is non-empty too, so the webhook needs a fixed, non-secret
+  username alongside it.
 * The webhook ``secret`` is :meth:`Keyring.signing_key`, derived from the
   sealing key and the subscription id, so the ingress can check
   ``X-Appwrite-Webhook-Signature`` (:func:`verify_appwrite_signature`) without
   storage.
+
+This module is the adapter around the package: it builds and reads the record,
+supplies the expected context from trusted configuration only, and keeps what
+the profile leaves to adapters (subscription ids, the principal digest, the
+Appwrite signing key and the ``authPassword`` size budget).
 
 Sealing keys come from ``MCP_EVENTS_SEALING_KEYS`` (``<id>:<base64 32 bytes>``,
 comma separated, first one active). Every key in the ring opens envelopes, so a
@@ -34,31 +41,31 @@ import hmac
 import json
 import os
 import re
-import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Any
 
-from cryptography.exceptions import InvalidTag
+import mcp_event_subscriptions as profile
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 KEYS_ENV = "MCP_EVENTS_SEALING_KEYS"
-VERSION = "v1"
-SEPARATOR = "."
 KEY_SEPARATOR = ":"
 KEYS_SEPARATOR = ","
 KEY_BYTES = 32
 # A random 32-byte key has ~30 distinct byte values; fewer than this means a
 # repeated or hand-typed key (all zeros, "aaaa…", a short passphrase).
 KEY_MIN_DISTINCT_BYTES = 16
-KEY_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
-BASE64URL_PATTERN = re.compile(r"[A-Za-z0-9_-]*")
-NONCE_BYTES = 12
-TAG_BYTES = 16
+KEY_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,128}")
+"""The profile's ``kid`` syntax."""
+COMPACT_PARTS = 5
+"""``header..iv.ciphertext.tag``: JWE Compact with an empty encrypted key."""
+
+RECORD_VERSION = 1
+DELIVERY_MODE = "webhook"
 
 SUBSCRIPTION_PREFIX = "sub_"
 # Appwrite custom ids: at most 36 chars of [A-Za-z0-9._-], no leading special
@@ -74,13 +81,15 @@ PRINCIPAL_BYTES = 16
 
 # Longest envelope :meth:`Keyring.seal` produces, and the `authPassword` length
 # Appwrite must accept (appwrite/appwrite#14293; today ~99 chars). The realistic
-# worst case (300-char callback URL, current and previous 64-byte secrets, the
-# longest catalog arguments) measures 1034 chars; a typical subscription
-# (150-char URL, one 32-byte secret) about 650. See tests/unit/test_events_envelope.py.
+# worst case (300-char callback URL, a 64-byte secret, the longest catalog
+# arguments) measures 1580 chars; a typical subscription (150-char URL, a
+# 32-byte secret) about 1320. See tests/unit/test_events_envelope.py.
 ENVELOPE_BUDGET = 2048
 
-SEAL_INFO = b"mcp-events/seal/v1"
 SIGNATURE_INFO = b"mcp-events/appwrite-signature/v1"
+
+EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+MILLISECOND = timedelta(milliseconds=1)
 
 Argument = str | int | bool | None
 
@@ -89,23 +98,13 @@ class EnvelopeFailure(StrEnum):
     """Why an envelope did not open."""
 
     MALFORMED = "malformed"
-    VERSION = "unsupported_version"
+    """Not a JWE Compact token with a readable key id."""
     KEY = "unknown_key"
     AUTHENTICATION = "authentication_failed"
-    """Tampered, or sealed for a different subscription id or project."""
+    """Tampered, not the profile, or bound to another server, project or
+    webhook."""
     BINDING = "binding_mismatch"
     """Opened, but its contents do not hash to the subscription id."""
-
-
-class Field(StrEnum):
-    """Plaintext keys, one letter each to keep the envelope small."""
-
-    NAME = "n"
-    ARGUMENTS = "a"
-    CALLBACK = "c"
-    SECRETS = "s"
-    EXPIRES = "e"
-    PRINCIPAL = "p"
 
 
 class EnvelopeError(Exception):
@@ -114,6 +113,11 @@ class EnvelopeError(Exception):
     def __init__(self, failure: EnvelopeFailure, message: str) -> None:
         super().__init__(message)
         self.failure = failure
+
+
+class SubscriptionExpired(Exception):
+    """The envelope opened and is bound to this webhook, but its lease has
+    ended. The ingress acknowledges and drops the delivery."""
 
 
 class EnvelopeTooLarge(ValueError):
@@ -125,6 +129,11 @@ class EnvelopeTooLarge(ValueError):
             f"sealed subscription is {length} chars; the limit is {ENVELOPE_BUDGET}"
         )
         self.length = length
+
+
+class InvalidSubscription(ValueError):
+    """The subscription is not a valid Subscription Record v1, e.g. a callback
+    URL with credentials or a fragment, or a non-canonical secret."""
 
 
 class KeyringError(ValueError):
@@ -159,6 +168,18 @@ def valid_subscription_id(value: str) -> bool:
     return SUBSCRIPTION_ID_PATTERN.fullmatch(value) is not None
 
 
+def timestamp(milliseconds: int) -> str:
+    """UTC RFC 3339 with milliseconds and ``Z``, as the record's lease and
+    ``refreshBefore`` are written."""
+    moment = EPOCH + milliseconds * MILLISECOND
+    return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def milliseconds(stamp: str) -> int:
+    """Unix epoch milliseconds of a record timestamp."""
+    return (datetime.fromisoformat(stamp) - EPOCH) // MILLISECOND
+
+
 @dataclass(frozen=True)
 class Principal:
     """The OAuth caller a subscription belongs to. Only its digest is kept."""
@@ -175,8 +196,30 @@ class Principal:
 
 
 @dataclass(frozen=True)
+class Context:
+    """What an envelope is bound to. When opening, every field comes from
+    trusted configuration and routing, never from the envelope."""
+
+    server: str
+    """This deployment: ``MCP_PUBLIC_URL``."""
+    tenant: str
+    """The Appwrite project."""
+    resource: str
+    """The subscription id, which is also the webhook id."""
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "server": self.server,
+            "tenant": self.tenant,
+            "resource": self.resource,
+        }
+
+
+@dataclass(frozen=True)
 class Subscription:
-    """Everything the ingress needs to deliver one subscription's events."""
+    """Everything the ingress needs to deliver one subscription's events: a
+    typed view of the Subscription Record v1 that is sealed, plus the project
+    it is bound to."""
 
     id: str
     project: str
@@ -186,19 +229,18 @@ class Subscription:
     """Event arguments, sorted by key and read-only."""
     callback: str
     """Delivery URL."""
-    secrets: tuple[str, ...]
-    """``whsec_`` secrets: the current one first, the previous one during rotation."""
+    secret: str
+    """The client's ``whsec_`` secret."""
     expires: int
-    """Expiry as Unix epoch milliseconds."""
+    """Lease expiry as Unix epoch milliseconds."""
+    refresh: int
+    """``refreshBefore`` as Unix epoch milliseconds."""
     principal: str
     """:attr:`Principal.digest` of the subscriber."""
 
     def __post_init__(self) -> None:
         canonical = MappingProxyType(dict(sorted(self.arguments.items())))
         object.__setattr__(self, "arguments", canonical)
-        object.__setattr__(self, "secrets", tuple(self.secrets))
-        if not self.secrets:
-            raise ValueError("a subscription needs at least one secret")
         expected = subscription_id(
             self.principal, self.callback, self.name, self.arguments
         )
@@ -212,8 +254,9 @@ class Subscription:
         name: str,
         arguments: Mapping[str, Argument],
         callback: str,
-        secrets: tuple[str, ...],
+        secret: str,
         expires: int,
+        refresh: int,
         principal: str,
     ) -> Subscription:
         """Build a subscription, deriving its id."""
@@ -223,59 +266,56 @@ class Subscription:
             name=name,
             arguments=arguments,
             callback=callback,
-            secrets=secrets,
+            secret=secret,
             expires=expires,
+            refresh=refresh,
             principal=principal,
         )
 
-    def expired(self, now: int | None = None) -> bool:
-        """Whether the subscription has expired at ``now`` (epoch ms, default
-        the current time). Kept apart from opening so the ingress can answer an
-        expired delivery with a 2xx drop and an invalid one differently."""
-        current = now if now is not None else time.time_ns() // 1_000_000
-        return current >= self.expires
-
-
-@dataclass(frozen=True)
-class Envelope:
-    """The parsed ``<version>.<key id>.<payload>`` form of a sealed envelope."""
-
-    version: str
-    key: str
-    """Id of the sealing key; also selects the Appwrite signing key."""
-    payload: bytes
-    """``nonce | ciphertext | tag``."""
-
     @classmethod
-    def parse(cls, text: str) -> Envelope:
-        parts = text.split(SEPARATOR)
-        if len(parts) != 3:
-            raise EnvelopeError(EnvelopeFailure.MALFORMED, "envelope is malformed")
-        version, key, payload = parts
-        if version != VERSION:
-            raise EnvelopeError(
-                EnvelopeFailure.VERSION, f"unsupported envelope version {version!r}"
-            )
-        if KEY_ID_PATTERN.fullmatch(key) is None:
-            raise EnvelopeError(EnvelopeFailure.MALFORMED, "envelope key id is invalid")
-        try:
-            raw = _decode(payload)
-        except ValueError as error:
-            raise EnvelopeError(
-                EnvelopeFailure.MALFORMED, "envelope payload is not base64url"
-            ) from error
-        if len(raw) < NONCE_BYTES + TAG_BYTES:
-            raise EnvelopeError(EnvelopeFailure.MALFORMED, "envelope is truncated")
-        return cls(version=version, key=key, payload=raw)
+    def from_record(cls, record: Mapping[str, Any], project: str) -> Subscription:
+        """The subscription of a validated record. Raises ``ValueError`` when
+        its id does not match its contents."""
+        return cls(
+            id=record["id"],
+            project=project,
+            name=record["event"]["name"],
+            arguments=record["event"]["arguments"],
+            callback=record["delivery"]["url"],
+            secret=record["delivery"]["secret"],
+            expires=milliseconds(record["lease"]["expiresAt"]),
+            refresh=milliseconds(record["lease"]["refreshBefore"]),
+            principal=record["principal"],
+        )
 
-    def __str__(self) -> str:
-        return SEPARATOR.join((self.version, self.key, _encode(self.payload)))
+    @property
+    def record(self) -> dict[str, Any]:
+        """The Subscription Record v1 that is sealed."""
+        return {
+            "version": RECORD_VERSION,
+            "id": self.id,
+            "principal": self.principal,
+            "event": {"name": self.name, "arguments": dict(self.arguments)},
+            "delivery": {
+                "mode": DELIVERY_MODE,
+                "url": self.callback,
+                "secret": self.secret,
+            },
+            "lease": {
+                "expiresAt": timestamp(self.expires),
+                "refreshBefore": timestamp(self.refresh),
+            },
+            "extensions": {},
+        }
+
+    def context(self, server: str) -> Context:
+        return Context(server=server, tenant=self.project, resource=self.id)
 
 
 @dataclass(frozen=True)
 class SealingKey:
-    """One entry of the keyring. ``material`` is the configured 32 bytes;
-    separate encryption and signing keys are derived from it with HKDF."""
+    """One entry of the keyring: 32 random bytes, used as the JWE key and to
+    derive the Appwrite signing key with HKDF."""
 
     id: str
     material: bytes
@@ -297,12 +337,10 @@ class SealingKey:
             )
 
     @property
-    def encryption(self) -> bytes:
-        return _derive(self.material, SEAL_INFO)
-
-    @property
     def signing(self) -> bytes:
-        return _derive(self.material, SIGNATURE_INFO)
+        return HKDF(
+            algorithm=hashes.SHA256(), length=KEY_BYTES, salt=None, info=SIGNATURE_INFO
+        ).derive(self.material)
 
 
 @dataclass(frozen=True)
@@ -355,59 +393,64 @@ class Keyring:
     def active(self) -> SealingKey:
         return self.keys[0]
 
+    @property
+    def materials(self) -> dict[str, bytes]:
+        """The ring as the package takes it: key id to key bytes."""
+        return {key.id: key.material for key in self.keys}
+
     def get(self, key_id: str) -> SealingKey:
         for key in self.keys:
             if key.id == key_id:
                 return key
         raise EnvelopeError(EnvelopeFailure.KEY, f"unknown sealing key {key_id!r}")
 
-    def seal(self, subscription: Subscription) -> str:
-        """Seal ``subscription`` with the active key into an envelope string.
+    def seal(self, subscription: Subscription, server: str) -> str:
+        """Seal ``subscription`` with the active key, bound to ``server``, its
+        project and its id.
 
-        Raises :class:`EnvelopeTooLarge` above :data:`ENVELOPE_BUDGET`."""
-        key = self.active
-        nonce = os.urandom(NONCE_BYTES)
-        sealed = AESGCM(key.encryption).encrypt(
-            nonce,
-            _plaintext(subscription),
-            _associated(key.id, subscription.id, subscription.project),
-        )
-        envelope = str(Envelope(version=VERSION, key=key.id, payload=nonce + sealed))
+        Raises :class:`InvalidSubscription` for a record the profile refuses
+        and :class:`EnvelopeTooLarge` above :data:`ENVELOPE_BUDGET`."""
+        try:
+            envelope = profile.seal(
+                subscription.record,
+                self.materials,
+                active_key=self.active.id,
+                context=subscription.context(server).as_dict(),
+            )
+        except profile.RecordError as error:
+            raise InvalidSubscription(str(error)) from error
         if len(envelope) > ENVELOPE_BUDGET:
             raise EnvelopeTooLarge(len(envelope))
         return envelope
 
-    def open(self, envelope: str, id: str, project: str) -> Subscription:
-        """Open an envelope for the webhook ``id`` in ``project``.
+    def record(self, envelope: str, context: Context) -> dict[str, Any]:
+        """The Subscription Record v1 in an envelope bound to ``context``, as
+        the profile opens it.
 
-        Raises :class:`EnvelopeError` when it is malformed, names an unknown key
-        or version, was tampered with, or was sealed for another webhook or
-        project. Expiry is not checked here; see :meth:`Subscription.expired`."""
-        parsed = Envelope.parse(envelope)
-        key = self.get(parsed.key)
-        nonce, sealed = parsed.payload[:NONCE_BYTES], parsed.payload[NONCE_BYTES:]
+        Raises :class:`EnvelopeError` when it is malformed, names an unknown
+        key, was tampered with, or was sealed for another server, project or
+        webhook, and :class:`SubscriptionExpired` once its lease has ended."""
+        self.get(key_id(envelope))
         try:
-            plaintext = AESGCM(key.encryption).decrypt(
-                nonce, sealed, _associated(key.id, id, project)
+            return profile.open_envelope(
+                envelope, self.materials, expected_context=context.as_dict()
             )
-        except InvalidTag as error:
+        except profile.ExpiredSubscription as error:
+            raise SubscriptionExpired(str(error)) from error
+        except profile.EnvelopeError as error:
             raise EnvelopeError(
                 EnvelopeFailure.AUTHENTICATION,
                 "envelope was tampered with or belongs to another webhook",
             ) from error
+
+    def open(self, envelope: str, context: Context) -> Subscription:
+        """Open an envelope for the webhook and project in ``context``: the
+        checks of :meth:`record`, then that its contents hash to the
+        subscription id (``binding_mismatch`` otherwise)."""
+        record = self.record(envelope, context)
         try:
-            fields = json.loads(plaintext)
-            return Subscription(
-                id=id,
-                project=project,
-                name=fields[Field.NAME],
-                arguments=fields[Field.ARGUMENTS],
-                callback=fields[Field.CALLBACK],
-                secrets=tuple(fields[Field.SECRETS]),
-                expires=fields[Field.EXPIRES],
-                principal=fields[Field.PRINCIPAL],
-            )
-        except (ValueError, KeyError, TypeError) as error:
+            return Subscription.from_record(record, context.tenant)
+        except ValueError as error:
             raise EnvelopeError(
                 EnvelopeFailure.BINDING,
                 "envelope contents do not match the subscription id",
@@ -421,6 +464,27 @@ class Keyring:
         written with a matching envelope and secret."""
         key = self.get(key_id) if key_id is not None else self.active
         return hmac.new(key.signing, id.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def key_id(envelope: str) -> str:
+    """The ``kid`` in an envelope's protected header, read without opening it.
+
+    It only picks the key to try; the header is authenticated when the
+    envelope opens. Raises :class:`EnvelopeError` (``malformed``) for anything
+    that is not JWE Compact with a valid key id."""
+    parts = envelope.split(".")
+    if len(parts) != COMPACT_PARTS or parts[1]:
+        raise EnvelopeError(EnvelopeFailure.MALFORMED, "envelope is not JWE Compact")
+    try:
+        header = json.loads(_decode(parts[0]))
+    except ValueError as error:
+        raise EnvelopeError(
+            EnvelopeFailure.MALFORMED, "envelope header is not base64url JSON"
+        ) from error
+    kid = header.get("kid") if isinstance(header, dict) else None
+    if not isinstance(kid, str) or KEY_ID_PATTERN.fullmatch(kid) is None:
+        raise EnvelopeError(EnvelopeFailure.MALFORMED, "envelope key id is invalid")
+    return kid
 
 
 def appwrite_signature(url: str, body: bytes, key: str) -> str:
@@ -439,39 +503,16 @@ def verify_appwrite_signature(url: str, body: bytes, signature: str, key: str) -
     return hmac.compare_digest(expected.encode("ascii"), signature.encode("utf-8"))
 
 
-def _plaintext(subscription: Subscription) -> bytes:
-    return canonical_json(
-        {
-            Field.NAME: subscription.name,
-            Field.ARGUMENTS: dict(subscription.arguments),
-            Field.CALLBACK: subscription.callback,
-            Field.SECRETS: list(subscription.secrets),
-            Field.EXPIRES: subscription.expires,
-            Field.PRINCIPAL: subscription.principal,
-        }
-    )
-
-
-def _associated(key_id: str, id: str, project: str) -> bytes:
-    return canonical_json([VERSION, key_id, id, project])
-
-
-def _derive(material: bytes, info: bytes) -> bytes:
-    return HKDF(
-        algorithm=hashes.SHA256(), length=KEY_BYTES, salt=None, info=info
-    ).derive(material)
-
-
 def _encode(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
 
 def _decode(text: str) -> bytes:
-    if BASE64URL_PATTERN.fullmatch(text) is None:
+    if re.fullmatch(r"[A-Za-z0-9_-]*", text) is None:
         raise ValueError("invalid base64url")
     try:
         return base64.urlsafe_b64decode((text + "=" * (-len(text) % 4)).encode("ascii"))
-    except (binascii.Error, UnicodeEncodeError) as error:
+    except binascii.Error as error:
         raise ValueError("invalid base64url") from error
 
 

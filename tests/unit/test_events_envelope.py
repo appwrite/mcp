@@ -1,9 +1,13 @@
 """Envelope properties that no e2e flow can establish.
 
-Sealing, opening, tampering (401), project and webhook binding, key rotation
-across server restarts and expiry are covered end to end through the ingress in
-``tests/e2e/test_events_ingress.py`` (PR 4 of #127). What stays here:
+Sealing, opening, tampering (401), server, project and webhook binding, key
+rotation across server restarts and expiry are covered end to end through the
+ingress in ``tests/e2e/test_events_ingress.py`` (PR 4 of #127). What stays here:
 
+* The published ``mcp-subscription+jwe`` conformance vector from
+  mcp-event-subscriptions, opened through this adapter. Every envelope in the
+  e2e flows is sealed and opened by this server, so only the vector ties the
+  format to the profile.
 * The Appwrite signature against a vector computed by PHP, the way Appwrite's
   webhooks worker does it. The e2e harness signs deliveries with its own
   implementation of the same formula, so only this vector ties both to PHP.
@@ -15,24 +19,36 @@ across server restarts and expiry are covered end to end through the ingress in
 """
 
 import base64
+import json
 import os
 import unittest
+from pathlib import Path
 
 from mcp_server_appwrite.events.envelope import (
     ENVELOPE_BUDGET,
     SUBSCRIPTION_ID_MAX,
+    Context,
+    EnvelopeError,
+    EnvelopeFailure,
     EnvelopeTooLarge,
     Keyring,
     Principal,
     Subscription,
     appwrite_signature,
+    milliseconds,
     subscription_id,
     valid_subscription_id,
     verify_appwrite_signature,
 )
 
+VECTOR = Path(__file__).parent / "fixtures" / "jwe-v1.json"
+"""``test-vectors/encryption/jwe-v1.json`` from
+https://github.com/ChiragAgg5k/mcp-event-subscriptions (0.1.0a1), unchanged."""
+
 APPWRITE_ID = "a" * 36
+SERVER = "https://mcp.appwrite.io"
 EXPIRES = 1_760_000_000_000
+REFRESH = EXPIRES - 360_000
 
 
 def key(seed: int) -> bytes:
@@ -57,6 +73,40 @@ PRINCIPAL = Principal(
     subject="66b1c2d3e4f5a6b7c8d9",
     client="chatgpt-connector",
 ).digest
+
+
+class ProfileVectorTests(unittest.TestCase):
+    def test_opens_the_published_vector(self):
+        vector = json.loads(VECTOR.read_text())
+        record = vector["plaintext"]["subscription"]
+        keyring = ring(
+            (vector["protected"]["kid"], bytes.fromhex(vector["keyHex"])),
+            ("k1", key(1)),
+        )
+        context = Context(**vector["context"])
+
+        self.assertEqual(keyring.record(vector["token"], context), record)
+        # The vector's id is not one subscription_id() derives, so the adapter
+        # refuses it only for binding, after the profile accepted it.
+        with self.assertRaises(EnvelopeError) as raised:
+            keyring.open(vector["token"], context)
+        self.assertEqual(raised.exception.failure, EnvelopeFailure.BINDING)
+
+        # The vector's record is exactly what this adapter seals, given an id
+        # derived from its contents.
+        ours = Subscription.create(
+            project=context.tenant,
+            name=record["event"]["name"],
+            arguments=record["event"]["arguments"],
+            callback=record["delivery"]["url"],
+            secret=record["delivery"]["secret"],
+            expires=milliseconds(record["lease"]["expiresAt"]),
+            refresh=milliseconds(record["lease"]["refreshBefore"]),
+            principal=record["principal"],
+        )
+        self.assertEqual(
+            Subscription.from_record({**record, "id": ours.id}, context.tenant), ours
+        )
 
 
 class SubscriptionIdTests(unittest.TestCase):
@@ -179,78 +229,31 @@ class AppwriteSignatureTests(unittest.TestCase):
 
 
 class SizeBudgetTests(unittest.TestCase):
-    """Envelope lengths for realistic cases. The worst case must fit the budget
-    that appwrite/appwrite#14293 has to let `authPassword` hold."""
+    """The worst realistic case must fit the budget that appwrite/appwrite#14293
+    has to let `authPassword` hold, and nothing larger is ever sealed."""
 
-    def setUp(self):
-        self.keyring = ring(("k1", key(1)))
-
-    def seal(
-        self, name: str, arguments: dict[str, str], url: int, secrets: tuple[int, ...]
-    ) -> int:
-        callback = "https://" + "x" * (url - len("https://"))
+    def seal(self, url: int, size: int) -> int:
         sealed = Subscription.create(
             project=APPWRITE_ID,
-            name=name,
-            arguments=arguments,
-            callback=callback,
-            secrets=tuple(secret(size) for size in secrets),
+            name="functions.deployment.completed",
+            arguments={
+                "project_id": APPWRITE_ID,
+                "function_id": APPWRITE_ID,
+                "status": "failed",
+            },
+            callback="https://" + "x" * (url - len("https://")),
+            secret=secret(size),
             expires=EXPIRES,
+            refresh=REFRESH,
             principal=PRINCIPAL,
         )
-        return len(self.keyring.seal(sealed))
+        return len(ring(("k1", key(1))).seal(sealed, SERVER))
 
-    def test_worst_cases_fit_the_budget(self):
-        rows = {
-            "project_id": APPWRITE_ID,
-            "database_id": APPWRITE_ID,
-            "table_id": APPWRITE_ID,
-        }
-        deployments = {
-            "project_id": APPWRITE_ID,
-            "function_id": APPWRITE_ID,
-            "status": "failed",
-        }
-        cases = {
-            "users.user.created, 100-char URL, one 32-byte secret": (
-                "users.user.created",
-                {"project_id": APPWRITE_ID},
-                100,
-                (32,),
-            ),
-            "tablesdb.row.created, 150-char URL, one 32-byte secret": (
-                "tablesdb.row.created",
-                rows,
-                150,
-                (32,),
-            ),
-            "tablesdb.row.created, 300-char URL, two 64-byte secrets": (
-                "tablesdb.row.created",
-                rows,
-                300,
-                (64, 64),
-            ),
-            "functions.deployment.completed, 300-char URL, two 64-byte secrets": (
-                "functions.deployment.completed",
-                deployments,
-                300,
-                (64, 64),
-            ),
-        }
-        for label, (name, arguments, url, secrets) in cases.items():
-            with self.subTest(case=label):
-                self.assertLessEqual(
-                    self.seal(name, arguments, url, secrets), ENVELOPE_BUDGET
-                )
-
-    def test_seal_refuses_oversized_envelopes(self):
+    def test_worst_case_fits_and_larger_is_refused(self):
+        # 300-char callback URL, 64-byte secret, the longest catalog arguments.
+        self.assertLessEqual(self.seal(300, 64), ENVELOPE_BUDGET)
         with self.assertRaises(EnvelopeTooLarge):
-            self.seal(
-                "users.user.created",
-                {"project_id": APPWRITE_ID},
-                ENVELOPE_BUDGET,
-                (32,),
-            )
+            self.seal(ENVELOPE_BUDGET, 32)
 
 
 if __name__ == "__main__":

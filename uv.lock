@@ -623,6 +623,19 @@ wheels = [
 ]
 
 [[package]]
+name = "jwcrypto"
+version = "1.6.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cryptography" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/13/8f/e802d77957903483129813ce6fa01a72a906f9cdd454039d1ec1e6d1e44a/jwcrypto-1.6.1.tar.gz", hash = "sha256:a1e1570da5c2e35dbcd375ec1d2891a24de8eb35ee2c1fe8e91978efb72cfe90", size = 116287, upload-time = "2026-09-15T21:22:33.286Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/31/a4/ee780473e42a3edaf65da1ad37f5c601a9c740e215c1e09db36bf90f3f59/jwcrypto-1.6.1-py3-none-any.whl", hash = "sha256:77e856818e514cb3d64a1043b6885a7d52f5cc37773f5e944de02103c8d3a54f", size = 121267, upload-time = "2026-09-15T21:22:32.27Z" },
+]
+
+[[package]]
 name = "markdown-it-py"
 version = "3.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -666,6 +679,19 @@ cli = [
 ]
 
 [[package]]
+name = "mcp-event-subscriptions"
+version = "0.1.0a1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jsonschema" },
+    { name = "jwcrypto" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/db/2e/f6af884063973af62b006525f9accfd889b423af7548c4fc169ed27505a6/mcp_event_subscriptions-0.1.0a1.tar.gz", hash = "sha256:2c34ea0af0605d27ca23a842092275b57b482ab2d47288e10d3bfcd88fbef19d", size = 75263, upload-time = "2026-10-11T20:24:35.521Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b5/13/b3c37eb259cca28a19bcd374a54f3ce8ce903a6f8a61df23c324318e36f1/mcp_event_subscriptions-0.1.0a1-py3-none-any.whl", hash = "sha256:d0bf02ca46e462b4b9d2deaf790ba5828254edbc36033cf509a64e47da31330b", size = 7437, upload-time = "2026-10-11T20:24:34.194Z" },
+]
+
+[[package]]
 name = "mcp-server-appwrite"
 source = { editable = "." }
 dependencies = [
@@ -675,6 +701,7 @@ dependencies = [
     { name = "docstring-parser" },
     { name = "httpx" },
     { name = "mcp", extra = ["cli"] },
+    { name = "mcp-event-subscriptions" },
     { name = "numpy" },
     { name = "openai" },
     { name = "opentelemetry-api" },
@@ -715,6 +742,7 @@ requires-dist = [
     { name = "docstring-parser", specifier = ">=0.16" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "mcp", extras = ["cli"], specifier = ">=2.3,<3" },
+    { name = "mcp-event-subscriptions", specifier = ">=0.1.0a1,<0.2" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "openai", specifier = ">=1.40" },
     { name = "opentelemetry-api", specifier = ">=1.28" },
