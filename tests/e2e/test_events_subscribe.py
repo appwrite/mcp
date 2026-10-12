@@ -488,35 +488,43 @@ class SubscribeFlow(unittest.TestCase):
         k2 = Keyring.parse(f"{ROTATED},{KEYS}").signing_key(id)
         with Server(rotated, injected) as replica:
 
-            def new_replica_refreshes() -> None:
-                with Client(replica.url, TOKEN) as client:
+            def refresh(server: Server) -> dict[str, Any]:
+                with Client(server.url, TOKEN) as client:
                     _, message = client.call("events/subscribe", params)
-                assert "error" not in message, message
+                return message
 
             # A refresh writes the signing key before the envelope, so when
             # the envelope write fails the k1 envelope stays with the k2
             # signing key, never a k2 envelope with a k1 signing key that
             # outlives k1 in the ring.
             cloud.fail("PUT", rf"/v1/webhooks/{id}", 500)
-            with Client(replica.url, TOKEN) as client:
-                _, message = client.call("events/subscribe", params)
+            message = refresh(replica)
             self.assertEqual(message["error"]["code"], INTERNAL_ERROR, message)
             stored = cloud.documents(MAIN)[id]
             self.assertEqual(key_id(stored["httpPass"]), "k1")
             self.assertEqual(stored["signatureKey"], k2)
 
             # Both replicas refresh the same subscription and their writes
-            # interleave: old signing key, new signing key, new envelope, old
-            # envelope last.
-            cloud.before("PUT", rf"/v1/webhooks/{id}", new_replica_refreshes)
-            self.subscribe(params)
+            # interleave: new signing key, old signing key, old envelope, new
+            # envelope last. The k2 envelope keeps the k1 signing key, which
+            # is why step 3 waits a full TTL after step 2 reached every
+            # replica: no step-1 replica writes a k1 signing key after that.
+            def old_replica_refreshes() -> None:
+                message = refresh(self.server)
+                assert "error" not in message, message
+
+            cloud.before("PUT", rf"/v1/webhooks/{id}", old_replica_refreshes)
+            message = refresh(replica)
+            self.assertNotIn("error", message, message)
             stored = cloud.documents(MAIN)[id]
-            self.assertEqual(key_id(stored["httpPass"]), "k1")
-            self.assertEqual(stored["signatureKey"], k2)
+            self.assertEqual(key_id(stored["httpPass"]), "k2")
+            self.assertEqual(
+                stored["signatureKey"], Keyring.parse(KEYS).signing_key(id)
+            )
 
             # The load balancer can hand Appwrite's delivery to either
-            # replica. Both open the k1 envelope and both accept the k2
-            # signing key (the old replica holds k2 since step 1).
+            # replica. Both open the k2 envelope (the old replica holds k2
+            # since step 1) and both accept the k1 signing key.
             received = 4  # the handshakes of the subscribe and three refreshes
             for server in (replica, self.server):
                 with self.subTest(replica=server.url):

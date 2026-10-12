@@ -42,8 +42,8 @@ docker compose up --build
 > envelope, with the keys in `MCP_EVENTS_SEALING_KEYS` (`<id>:<base64 of 32
 > random bytes>`, comma separated, first one active). Generate a key with
 > `openssl rand -base64 32`. To rotate, add the new key last and roll that out,
-> then move it first, then remove the old one once the longest subscription TTL
-> (24h) has passed (see "Key rotation" in [events.md](events.md)).
+> then move it first, then remove the old one 25 hours after that reached every
+> replica (see "Key rotation" in [events.md](events.md)).
 
 **`uv` directly — HTTP:**
 

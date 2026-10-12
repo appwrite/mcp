@@ -395,17 +395,20 @@ A legitimate webhook cannot get a `401` in normal operation:
   2. Move the new key first (`k2:…,k1:…`). Refreshes now seal with `k2`. A
      replica still on step 1 opens them, so no delivery that reaches it is
      dropped as `retired_key`.
-  3. Once the longest subscription TTL (24 hours) has passed, remove the old
-     key (`k2:…`).
+  3. Once 25 hours have passed since step 2 reached every replica, remove the
+     old key (`k2:…`).
 
   Sealing with a key that some replica does not have yet would make that
   replica drop the subscription's deliveries as `retired_key`. Replicas that
   refresh the same subscription during step 2 can interleave their writes and
   leave an envelope from one key next to a signing secret from the other; that
   still verifies, because the signature is checked against every key in the
-  ring. After the old key is removed, only expired subscriptions still name
-  it. Their webhooks are orphans awaiting cleanup, so they get `200`
-  (`retired_key`) instead of being paused.
+  ring. Only a replica still on step 1 writes an old-key signing secret, so
+  every envelope paired with one was written before step 2 finished, give or
+  take one refresh, and expires within the longest TTL (24 hours) after that;
+  the extra hour covers refreshes in flight. After the old key is removed, only
+  expired subscriptions still name it. Their webhooks are orphans awaiting
+  cleanup, so they get `200` (`retired_key`) instead of being paused.
 - **Public URL.** The signature covers the registered URL, and every envelope
   is bound to `MCP_PUBLIC_URL`. Changing it breaks every subscription until it
   refreshes, so keep it fixed while subscriptions exist.
