@@ -34,7 +34,7 @@ Flags are for testing overrides only — permanent configuration belongs in
 | CLI | Env | What it does |
 | --- | --- | --- |
 | `--console-url` | `MCP_CONSOLE_URL` | Send OAuth login/consent to an alternative Appwrite Console (HTTP transport only). |
-| `--events` | `MCP_EVENTS` | Advertise MCP Events and serve `events/list` (HTTP transport only). See [events.md](events.md). |
+| `--events` | `MCP_EVENTS` | Advertise MCP Events, serve `events/list` and mount the Appwrite webhook ingress (HTTP transport only; needs `MCP_EVENTS_SEALING_KEYS`). See [events.md](events.md). |
 
 ### `--console-url` — test OAuth against a pre-release console
 
@@ -85,15 +85,19 @@ token exchange against the real authorization server.
 ### `--events` — MCP Events (in progress)
 
 Turns on [MCP Events](events.md): `server/discover` (and legacy `initialize`)
-advertise the events capability, and the server answers `events/list` with the
-event catalog. It is off by default while the feature is built
-([#127](https://github.com/appwrite/mcp/issues/127)); `events/subscribe` and
-delivery are not available yet. Any of `1`, `true`, `yes` or `on` enables it.
+advertise the events capability, the server answers `events/list` with the
+event catalog, and the Appwrite webhook ingress is mounted at
+`/appwrite/webhooks/{id}`. It is off by default while the feature is built
+([#127](https://github.com/appwrite/mcp/issues/127)); `events/subscribe` is not
+available yet. Any of `1`, `true`, `yes` or `on` enables it. With the flag on,
+`MCP_EVENTS_SEALING_KEYS` is required and the server refuses to start without
+it.
 
 **Enable it:**
 
 ```bash
 MCP_PUBLIC_URL=http://localhost:8000 \
+MCP_EVENTS_SEALING_KEYS="k1:$(openssl rand -base64 32)" \
   uv run mcp-server-appwrite --transport http --events 1
 ```
 
@@ -117,5 +121,12 @@ mcp server/discover | jq .result.capabilities
 mcp events/list | jq '.result.events[].name'
 ```
 
-With the flag off, neither capability appears and `events/list` returns
-`-32601` (method not found).
+The ingress answers an unsigned request with `401`:
+
+```bash
+curl -s -X POST http://localhost:8000/appwrite/webhooks/sub_0123456789abcdef0123456789abcdef
+# {"status":"rejected","reason":"credentials"}
+```
+
+With the flag off, neither capability appears, `events/list` returns `-32601`
+(method not found) and the ingress route returns `404`.

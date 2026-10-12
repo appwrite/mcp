@@ -2,7 +2,8 @@
 
 > **In progress.** Events are being built behind the `--events` flag
 > ([#127](https://github.com/appwrite/mcp/issues/127)). Today the server
-> advertises the capability and lists the catalog; subscribing and delivery are
+> advertises the capability, lists the catalog, and receives Appwrite webhooks
+> and forwards them as events; `events/subscribe` and `events/unsubscribe` are
 > not available yet.
 
 [MCP Events](https://developers.openai.com/plugins/build/mcp-events) let an MCP
@@ -76,6 +77,178 @@ they are kept behind constants in
 | Unsupported | `-32014` | |
 | CallbackEndpointError | `-32015` | `reason`: `challenge_failed`, `timeout`, `connection_refused`, `tls_error`, `http_4xx`, `http_5xx` |
 
+## Ingress
+
+Each subscription is one Appwrite webhook in the subscriber's project. It points
+at `{MCP_PUBLIC_URL}/appwrite/webhooks/{subscription id}` and carries the sealed
+subscription envelope as its Basic auth password, so Appwrite hands the
+subscription back with every delivery and the server keeps no store. The route
+is mounted only with the events flag on and the HTTP transport, and it is not
+behind the bearer-token gate: the Appwrite signature is its authentication.
+
+For each delivery the ingress:
+
+1. Reads the envelope from Basic auth and takes the sealing key id (`kid`) from
+   its JWE header.
+2. Verifies `X-Appwrite-Webhook-Signature`. Appwrite signs
+   `base64(HMAC-SHA1(url + body))` with the webhook secret, where `url` is the
+   URL the webhook was registered with. The ingress rebuilds that URL from
+   `MCP_PUBLIC_URL` and the path and ignores the inbound `Host`. The secret is
+   derived from the subscription id and a sealing key, and the signature is
+   checked against the secret of every key in the ring, not only the one that
+   sealed the envelope (see key rotation below). The body is hashed as it
+   streams in; up to 2 MiB of it is kept. The route is public and the
+   signature covers the whole body, so the read itself is bounded: a request
+   without a signature is refused before the body is read, a body past
+   16 MiB or one still arriving after 10 seconds is not read on, and a process
+   reads at most 32 bodies at once (`READS`; a request waits for a slot within
+   the same 10 seconds).
+3. Opens the envelope for this server (`MCP_PUBLIC_URL`), the project in
+   `X-Appwrite-Webhook-Project-Id` and the subscription id in the path (see
+   [Envelope](#envelope)), and checks its lease expiry.
+4. Checks that `X-Appwrite-Webhook-Events` contains one of the
+   subscription's Appwrite patterns, and projects the body onto the event's
+   payload schema. Only the declared fields are forwarded, never the raw body:
+   Appwrite sends whole rows, users with email and phone, and executions with
+   request headers and logs.
+5. Starts the delivery in a background task and answers `200` straight away,
+   well inside Appwrite's 15 second timeout. The delivery is signed with
+   Standard Webhooks and retried in-process (see `events/delivery.py`).
+
+### Envelope
+
+The envelope is the encrypted profile of
+[mcp-event-subscriptions](https://github.com/ChiragAgg5k/mcp-event-subscriptions)
+(`mcp-event-subscriptions` on PyPI): a
+[Subscription Record v1](https://github.com/ChiragAgg5k/mcp-event-subscriptions/blob/main/SPEC.md)
+sealed as JWE Compact with the
+[`mcp-subscription+jwe` profile](https://github.com/ChiragAgg5k/mcp-event-subscriptions/blob/main/profiles/encrypted-envelope.md)
+(`alg` `dir`, `enc` `A256GCM`, a random 96-bit IV). `events/envelope.py` is the
+adapter around the package.
+
+- **Record.** `version` 1, `id` (the subscription id), `principal` (a digest of
+  the OAuth `iss`, `sub` and `client_id`, never a token), `event.name` and
+  `event.arguments`, `delivery` (`mode` `webhook`, the callback `url` and its one
+  `whsec_` `secret`), `lease` (`expiresAt` and `refreshBefore` in UTC RFC 3339
+  with `Z`) and empty `extensions`.
+- **Context binding.** Every envelope is sealed for a context of `server`
+  (`MCP_PUBLIC_URL`), `tenant` (the project id) and `resource` (the
+  subscription id, which is also the webhook id). The ingress takes the expected
+  context only from its configuration, the routed webhook id and
+  `X-Appwrite-Webhook-Project-Id`, never from the envelope, so an envelope
+  copied to another webhook, project or deployment does not open. The record
+  must also hash back to the subscription id, or it does not open either.
+- **Keys.** Each key in `MCP_EVENTS_SEALING_KEYS` is 32 random bytes (keys that
+  are short, long or obviously not random stop the server at startup) and is
+  the JWE key directly. The webhook signing secret is derived from it with
+  HKDF-SHA256 under its own label, so the two never share a key.
+- **Size.** The envelope must fit Appwrite's `authPassword`, which
+  appwrite/appwrite#14293 has to raise to at least 2048 characters. Sealing
+  refuses anything longer (`ENVELOPE_BUDGET`). Measured with 36-character ids,
+  key id `k1` and server `https://mcp.appwrite.io`:
+
+  | Case | Envelope length |
+  | --- | --- |
+  | `tablesdb.row.created`, 59-character URL, 32-byte secret | 1108 |
+  | `users.user.created`, 100-character URL, 32-byte secret | 1115 |
+  | `tablesdb.row.created`, 150-character URL, 32-byte secret | 1322 |
+  | `functions.deployment.completed` + `status`, 300-character URL, 64-byte secret | 1551 |
+  | **Worst case:** `tablesdb.row.created`, 300-character URL, 64-byte secret | **1580** |
+  | `ENVELOPE_BUDGET` | 2048 |
+
+### Delivery backlog
+
+A delivery to a failing callback stays in flight through its retries, up to
+about 13 minutes. To keep memory bounded, a process holds at most **1024**
+deliveries in flight, and one subscription at most **64** of them
+(`BACKLOG` and `SUBSCRIPTION_BACKLOG` in `events/ingress.py`). A delivery that
+arrives while either limit is reached is still answered `200`, so Appwrite never
+pauses the subscriber's webhook, but it is dropped and counted as
+`mcp.events.ingress{outcome="dropped", reason="backlog_full"}`. Delivery is at
+most once anyway; the per-subscription limit keeps one busy subscription with a
+dead callback from crowding out everyone else.
+
+Outbound requests share one deadline (10 s) that also covers waiting for one of
+the four per-host slots, and each attempt is signed only once it holds a slot,
+so a queued request never goes out late or with a stale `webhook-timestamp`.
+
+`eventId` is `evt_` + a SHA-256 over `X-Appwrite-Webhook-Delivery-Id` and the
+subscription id. Appwrite keeps the delivery id across its own retries, so a
+retried webhook produces the same `eventId` and receivers can dedupe it. The
+event `timestamp` is when the event happened according to the body (completion
+for executions and deployments, creation otherwise), or the receive time when
+the body has none.
+
+### Mapping Appwrite bodies
+
+| Event | Appwrite body | Forwarded when |
+| --- | --- | --- |
+| `functions.execution.failed` | Execution: `resourceType` must be `functions` and `resourceId` the subscribed function | `status` is `failed`. Synchronous runs fire only `.create`, already finished. Asynchronous runs fire `.create` while `waiting` (dropped) and `.update` when done. |
+| `functions.deployment.completed`, `sites.deployment.completed` | Deployment: `resourceType` `functions` / `sites`, `resourceId` the subscribed resource | `status` is `ready` or `failed` (or the requested one). Activating a deployment fires the same event with the function or site model, which has no `resourceType` and is dropped. A duplicated deployment is still `waiting` and is dropped. |
+| `tablesdb.row.created` | Row: `$databaseId` and `$tableId`, when present, must match | always |
+| `storage.file.created` | File: `bucketId`, when present, must match | always |
+| `users.user.created` | User | always; only `user_id` and `created_at` are forwarded |
+
+Timestamps arrive either in the response-model format or as raw database values
+without a zone (`2026-10-09 09:38:26.634`, which is UTC), and are sometimes
+missing (asynchronous execution updates have no `$createdAt`). They are
+normalized to ISO 8601 UTC with milliseconds (`2026-10-09T09:38:26.634Z`) or
+`null`.
+
+### Always answer 2xx
+
+Appwrite counts every response `>= 400`, and after 10 in a row it pauses the
+webhook and emails the project owner. So anything that comes from the
+subscriber's own webhook is answered with `200`, delivered or not, and only a
+request that fails authentication gets `401`.
+
+| Case | Response | Delivered |
+| --- | --- | --- |
+| Valid, matching event | `200` `{"status":"accepted","eventId":…}` | yes |
+| Subscription expired (checked before the signature) | `200` dropped `expired` | no |
+| Envelope sealed with a key no longer in the ring | `200` dropped `retired_key` | no |
+| Event name not in the catalog | `200` dropped `unknown_event` | no |
+| Appwrite event outside the subscription's patterns | `200` dropped `event_mismatch` | no |
+| Body names another resource | `200` dropped `resource_mismatch` | no |
+| Body is not the expected model (deployment activation) | `200` dropped `shape` | no |
+| Status filter does not match (`waiting`, `ready` for a `failed` filter) | `200` dropped `status` | no |
+| Body is not a JSON object | `200` dropped `malformed` | no |
+| Body over 2 MiB (signature still checked) | `200` dropped `too_large` | no |
+| Body over 16 MiB, or slot wait and body slower than 10 s (signature never checked) | `200` dropped `unread` | no |
+| Delivery backlog full (process or subscription) | `200` dropped `backlog_full` | no |
+| No Basic auth, or the password is not an envelope | `401` `credentials` | no |
+| Signature missing or wrong | `401` `signature` | no |
+| Envelope tampered with, not the profile, or for another server, webhook or project | `401` `envelope` | no |
+
+A legitimate webhook cannot get a `401` in normal operation:
+
+- **Key rotation.** A new sealing key goes first in `MCP_EVENTS_SEALING_KEYS`
+  and the old one stays until the longest subscription TTL has passed, so
+  webhooks written with the old key still verify and open. Replicas that
+  refresh the same subscription during a rolling rotation can interleave their
+  writes and leave an envelope from one key next to a signing secret from the
+  other; that still verifies, because the signature is checked against every
+  key in the ring. After the old key is removed, only expired subscriptions
+  still name it. Their webhooks are orphans awaiting cleanup, so they get `200` (`retired_key`) instead of being paused.
+- **Public URL.** The signature covers the registered URL, and every envelope
+  is bound to `MCP_PUBLIC_URL`. Changing it breaks every subscription until it
+  refreshes, so keep it fixed while subscriptions exist.
+- **Edited webhooks.** Changing the webhook's password, secret or URL in the
+  Console does produce `401`s. The subscription is broken either way, and
+  Appwrite pausing it is the right result.
+
+Deliveries run in a task group owned by the app lifespan, next to the MCP
+session manager. One `Egress` and one `Dispatcher` serve the whole process and
+are closed on shutdown. A delivery still retrying when the process stops is
+lost: delivery is at most once, like Appwrite webhooks themselves.
+
+### Metrics
+
+| Metric | Attributes |
+| --- | --- |
+| `mcp.events.ingress` | `outcome` (`accepted`, `dropped`, `rejected`), `reason`, `event` |
+| `mcp.events.deliveries` | `event`, `outcome` (`delivered`, `rejected`, `abandoned`, `too_large`, `error`), `reason` |
+
 ## Testing
 
 Events are tested end to end in `tests/e2e/`: the real hosted app runs under
@@ -87,6 +260,13 @@ from CI. The suite needs no credentials and runs on every PR:
 ```bash
 uv run --group e2e python -m unittest discover -s tests/e2e -v
 ```
+
+The ingress flows also play the parties around the server on localhost:
+Appwrite's webhooks worker signs and posts recorded-shape bodies
+(`tests/e2e/fixtures/appwrite/`) to the real ingress, and deliveries go through
+the real dispatcher and egress to an HTTPS receiver that checks each one with
+the official `standardwebhooks` library. Counters are read from the server's
+real OTLP export.
 
 A live end-to-end run against Cloud staging (real OAuth tokens, real Appwrite
 webhooks) is planned once
