@@ -1,0 +1,48 @@
+{
+  "description": "PUBLIC TEST KEY AND FIXED IV: never use in production",
+  "keyHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "ivHex": "000102030405060708090a0b",
+  "protected": {
+    "alg": "dir",
+    "enc": "A256GCM",
+    "kid": "fixture-k1",
+    "typ": "mcp-subscription+jwe",
+    "cty": "application/json"
+  },
+  "context": {
+    "server": "https://mcp.example.com",
+    "tenant": "project_demo",
+    "resource": "sub_example"
+  },
+  "plaintext": {
+    "profile": "mcp-subscription-envelope-v1",
+    "context": {
+      "server": "https://mcp.example.com",
+      "tenant": "project_demo",
+      "resource": "sub_example"
+    },
+    "subscription": {
+      "version": 1,
+      "id": "sub_example",
+      "principal": "principal_demo",
+      "event": {
+        "name": "functions.execution.failed",
+        "arguments": {
+          "project_id": "project_demo",
+          "function_id": "fn_demo"
+        }
+      },
+      "delivery": {
+        "mode": "webhook",
+        "url": "https://receiver.example.com/events",
+        "secret": "whsec_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+      },
+      "lease": {
+        "expiresAt": "2030-01-01T01:00:00Z",
+        "refreshBefore": "2030-01-01T00:54:00Z"
+      },
+      "extensions": {}
+    }
+  },
+  "token": "eyJhbGciOiJkaXIiLCJjdHkiOiJhcHBsaWNhdGlvbi9qc29uIiwiZW5jIjoiQTI1NkdDTSIsImtpZCI6ImZpeHR1cmUtazEiLCJ0eXAiOiJtY3Atc3Vic2NyaXB0aW9uK2p3ZSJ9..AAECAwQFBgcICQoL.PCC1dKuRp2P5Y63wk5sdHuyj9VeVWWVeSxKH2ngRYd9xfMveg-Nh_QbSGp-qvQpQmi0Q_mD5jLdc5wR8YIKYnpxZ6Bm8vARNPiDPAI7hesoCqLkQGQk2C4mi-qkVn5vw59oplMsnoXb7PgSQJRZRUskSANiAt0zqOZY4o6-DAHjePm-20fq9YirNatJIuD-hRJ2TQVx-_Wi2JMoTn76AmPbl5zfThO4TyAe42OWi8d7_pqVN4Ilfnha6o7UUsZXJMTviiWi-iYh2E5CnzRCfxoYdsTVsb_a1MKHVgzkJ3b8rboHptHlbYhAs2U_NZhgZwKuEV7ES_Nd7SV1R4-g28Wfr3b_vvytbHqkXdZlIQmu3xKaorujuwl5KGzRkgMlpfC_8LcygoGOwBkF4a-fHpvWvNSo6tvVsuldoePRJLIanyhZOqVpaj82_H0UwvD9OsWql6_Zx5nwWyhxEt5M4jTZFnLrxCxauTcCGXruXDEnpmD1DzJd1r_yRXbOyJHdX3eajrPNuvLKPFp8WUiV2pZ8nTt7nVDe6TnmxKD7EgS1kVnUCp_NrUNPNvg2agNHILQchMDChTICGyobPvNA9HQIKx6_LJP4JySDCZcGn5XxZu0Zi8s4uDXn1ioohz9yWNc1bZPHhur056GHrh96IoqqO46oOnswQhi-hbJPYYyaUWNDIj2v-Km2ZkQ9TfALR99NXGFRZosbmCyNexzVy7whqW-jOa5J9VaYkz6UBedd30uo.11BkPstaF5zWAYhg92Q1gA"
+}
