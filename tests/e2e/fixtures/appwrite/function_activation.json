@@ -1,0 +1,34 @@
+{
+  "$id": "fn_billing",
+  "$createdAt": "2026-09-01T08:00:00.000+00:00",
+  "$updatedAt": "2026-10-09T09:40:00.000+00:00",
+  "execute": [
+    "any"
+  ],
+  "name": "billing",
+  "enabled": true,
+  "live": true,
+  "logging": true,
+  "runtime": "node-22",
+  "deploymentRetention": 0,
+  "deploymentId": "68e79f00aa11bb22cc33",
+  "deploymentCreatedAt": "2026-10-09T09:30:00.000+00:00",
+  "latestDeploymentId": "68e79f00aa11bb22cc33",
+  "latestDeploymentCreatedAt": "2026-10-09T09:30:00.000+00:00",
+  "latestDeploymentStatus": "ready",
+  "scopes": [
+    "users.read"
+  ],
+  "vars": [
+    {
+      "key": "STRIPE_KEY",
+      "value": "sk_live_secret"
+    }
+  ],
+  "events": [],
+  "schedule": "",
+  "timeout": 15,
+  "entrypoint": "src/main.js",
+  "commands": "npm install",
+  "version": "v5"
+}

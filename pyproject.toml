@@ -13,6 +13,9 @@ dependencies = [
     "starlette>=0.40.0",
     "uvicorn[standard]>=0.30.0",
     "httpx>=0.27.0",
+    "cryptography>=44.0.0",
+    "httpcore>=1.0",
+    "mcp-event-subscriptions>=0.1.0a1,<0.2",
     "pyjwt[crypto]>=2.9.0",
     "numpy>=2.0",
     "openai>=1.40",
@@ -35,6 +38,11 @@ dev = [
     "black==26.3.1",
     "ruff==0.15.18",
     "pyright==1.1.411",
+]
+# tests/e2e: the hosted server driven over real HTTP; no credentials needed.
+e2e = [
+    "jsonschema>=4.26",
+    "standardwebhooks>=1.1.0",
 ]
 
 [project.scripts]

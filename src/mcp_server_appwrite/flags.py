@@ -45,12 +45,30 @@ CONSOLE_URL = Flag(
     ),
 )
 
-FLAGS: tuple[Flag, ...] = (CONSOLE_URL,)
+EVENTS = Flag(
+    name="events",
+    env="MCP_EVENTS",
+    help=(
+        "Set to 1 to advertise MCP Events and serve the events/* methods. "
+        "HTTP transport only."
+    ),
+)
+
+FLAGS: tuple[Flag, ...] = (CONSOLE_URL, EVENTS)
+
+ENABLED_VALUES = frozenset({"1", "true", "yes", "on"})
+"""Values that switch an on/off flag on (case-insensitive)."""
 
 
 def value(flag: Flag) -> str | None:
     """The flag's current value (normalized), or ``None`` when unset."""
     return os.getenv(flag.env, "").strip().rstrip("/") or None
+
+
+def enabled(flag: Flag) -> bool:
+    """Whether an on/off flag is switched on. Anything outside
+    :data:`ENABLED_VALUES`, including unset, means off."""
+    return (value(flag) or "").lower() in ENABLED_VALUES
 
 
 def register_cli_args(parser: argparse.ArgumentParser) -> None:
