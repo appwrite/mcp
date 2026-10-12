@@ -34,6 +34,7 @@ Flags are for testing overrides only — permanent configuration belongs in
 | CLI | Env | What it does |
 | --- | --- | --- |
 | `--console-url` | `MCP_CONSOLE_URL` | Send OAuth login/consent to an alternative Appwrite Console (HTTP transport only). |
+| `--events` | `MCP_EVENTS` | Advertise MCP Events and serve `events/list` (HTTP transport only). See [events.md](events.md). |
 
 ### `--console-url` — test OAuth against a pre-release console
 
@@ -80,3 +81,41 @@ claude mcp add --transport http appwrite-test http://localhost:8000/
 Then run `/mcp` in Claude Code and authenticate — the browser should open the
 override console's sign-in page, and after consent the client completes the
 token exchange against the real authorization server.
+
+### `--events` — MCP Events (in progress)
+
+Turns on [MCP Events](events.md): `server/discover` (and legacy `initialize`)
+advertise the events capability, and the server answers `events/list` with the
+event catalog. It is off by default while the feature is built
+([#127](https://github.com/appwrite/mcp/issues/127)); `events/subscribe` and
+delivery are not available yet. Any of `1`, `true`, `yes` or `on` enables it.
+
+**Enable it:**
+
+```bash
+MCP_PUBLIC_URL=http://localhost:8000 \
+  uv run mcp-server-appwrite --transport http --events 1
+```
+
+**Quick checks** (any valid Appwrite OAuth access token works as `$TOKEN`):
+
+```bash
+mcp() {
+  curl -s http://localhost:8000/ \
+    -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json, text/event-stream' \
+    -H 'MCP-Protocol-Version: 2026-07-28' \
+    -H "Mcp-Method: $1" \
+    -d '{"jsonrpc":"2.0","id":1,"method":"'"$1"'","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
+}
+
+# Both shapes: capabilities.events and capabilities.extensions["io.modelcontextprotocol/events"]
+mcp server/discover | jq .result.capabilities
+
+# The catalog
+mcp events/list | jq '.result.events[].name'
+```
+
+With the flag off, neither capability appears and `events/list` returns
+`-32601` (method not found).

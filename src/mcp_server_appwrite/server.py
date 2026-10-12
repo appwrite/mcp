@@ -74,6 +74,7 @@ from .context import (
 )
 from .docs_search import DocsSearch
 from .error_classification import HostedBinaryResponseTooLarge, is_response_parse_error
+from .events import protocol as events
 from .operator import Operator, _parse_tool_name
 from .service import Service
 from .tool_manager import ToolManager
@@ -1502,7 +1503,7 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
                 return tool.input_schema
         return None
 
-    return Server(
+    server = Server(
         "Appwrite MCP Server",
         version=SERVER_VERSION,
         instructions=instructions,
@@ -1516,6 +1517,9 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
         on_subscriptions_listen=subscriptions,
         get_tool_input_schema=tool_input_schema,
     )
+    if events.enabled(transport):
+        events.register(server)
+    return server
 
 
 def _jsonrpc_error_code(exc: Exception) -> int:

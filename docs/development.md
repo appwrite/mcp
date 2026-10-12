@@ -58,7 +58,12 @@ APPWRITE_API_KEY=<YOUR_API_KEY> \
 | Suite | Command | Needs credentials |
 | --- | --- | --- |
 | Unit | `uv run python -m unittest discover -s tests/unit -v` | No |
+| E2E | `uv run --group e2e python -m unittest discover -s tests/e2e -v` | No |
 | Integration | `uv run --extra integration python -m unittest discover -s tests/integration -v` | Yes |
+
+E2E tests boot the real hosted HTTP app on a random localhost port and drive it
+over real HTTP like an MCP client. Only the OAuth token verifier is stubbed, so
+they need no credentials and run on every PR.
 
 Integration tests create and delete **real** Appwrite resources. They
 authenticate via `APPWRITE_PROJECT_ID`, `APPWRITE_API_KEY`, `APPWRITE_ENDPOINT`
