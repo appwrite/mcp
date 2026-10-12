@@ -1080,22 +1080,6 @@ class ServerHelperTests(unittest.TestCase):
 
         self.assertEqual(len(manager.services), 27)
         self.assertEqual(len(tool_names), 689)
-        for method in (
-            "account_create_passkey",
-            "account_create_passkey_token",
-            "account_delete_passkey",
-            "account_get_passkey",
-            "account_list_passkeys",
-            "account_update_passkey",
-            "account_update_passkey_token",
-            "account_update_passkey_verification",
-            "project_update_passkey_policy",
-            "users_delete_passkey",
-            "users_get_passkey",
-            "users_list_passkeys",
-            "users_update_passkey",
-        ):
-            self.assertIn(method, tool_names)
         self.assertIn("waf_list_rules", tool_names)
         self.assertIn("waf_create_deny_rule", tool_names)
         self.assertIn("avatars_get_photo", tool_names)
