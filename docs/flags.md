@@ -35,6 +35,7 @@ Flags are for testing overrides only — permanent configuration belongs in
 | --- | --- | --- |
 | `--console-url` | `MCP_CONSOLE_URL` | Send OAuth login/consent to an alternative Appwrite Console (HTTP transport only). |
 | `--events` | `MCP_EVENTS` | Advertise MCP Events, serve `events/list` and mount the Appwrite webhook ingress (HTTP transport only; needs `MCP_EVENTS_SEALING_KEYS`). See [events.md](events.md). |
+| `--events-push` | `MCP_EVENTS_PUSH` | Also offer push delivery (`events/stream`) for MCP Events (needs `--events` and `MCP_EVENTS_REDIS_URL`). See [events.md](events.md#push-delivery). |
 
 ### `--console-url` — test OAuth against a pre-release console
 
@@ -134,3 +135,46 @@ curl -s -X POST http://localhost:8000/appwrite/webhooks/sub_0123456789abcdef0123
 With the flag off, neither capability appears, `events/list`,
 `events/subscribe` and `events/unsubscribe` return `-32601` (method not found)
 and the ingress route returns `404`.
+
+### `--events-push` — push delivery (in progress)
+
+Adds [push delivery](events.md#push-delivery) to MCP Events: `events/list`
+advertises `"delivery": ["webhook", "push"]` and the server serves
+`events/stream`, a long-lived request that streams the subscription's events
+back ([#137](https://github.com/appwrite/mcp/issues/137)). It needs `--events`
+and a Redis-protocol server (Dragonfly in the cluster, or Redis) at
+`MCP_EVENTS_REDIS_URL`, which carries events from the replica Appwrite delivers
+to the one holding the stream. With the flag on but no URL, the server logs it and serves webhook delivery only. Off by default, so
+webhook delivery can stay live while push rolls out.
+
+**Enable it:**
+
+```bash
+redis-server --port 6379 &
+MCP_PUBLIC_URL=http://localhost:8000 \
+MCP_EVENTS_SEALING_KEYS="k1:$(openssl rand -base64 32)" \
+MCP_EVENTS_REDIS_URL=redis://localhost:6379/0 \
+  uv run mcp-server-appwrite --transport http --events 1 --events-push 1
+```
+
+Or `docker compose up --build`, whose Dragonfly is wired in; set `MCP_EVENTS=1`,
+`MCP_EVENTS_PUSH=1` and `MCP_EVENTS_SEALING_KEYS` in `.env`.
+
+**Quick checks**, with the `mcp` helper above:
+
+```bash
+# "push" is advertised
+mcp events/list | jq '.result.events[0].delivery'
+
+# A stream: active first, then events and a heartbeat every 25 s (Ctrl-C to close)
+curl -sN http://localhost:8000/ \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2026-07-28' \
+  -H 'Mcp-Method: events/stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"events/stream","params":{"name":"users.user.created","arguments":{"project_id":"<project>"},"cursor":null,"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
+```
+
+With the flag off, `events/list` advertises webhook only and `events/stream`
+returns `-32601` (method not found).

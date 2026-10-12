@@ -54,7 +54,16 @@ EVENTS = Flag(
     ),
 )
 
-FLAGS: tuple[Flag, ...] = (CONSOLE_URL, EVENTS)
+EVENTS_PUSH = Flag(
+    name="events-push",
+    env="MCP_EVENTS_PUSH",
+    help=(
+        "Set to 1 to also offer push delivery (events/stream) for MCP Events. "
+        "Needs the events flag and MCP_EVENTS_REDIS_URL."
+    ),
+)
+
+FLAGS: tuple[Flag, ...] = (CONSOLE_URL, EVENTS, EVENTS_PUSH)
 
 ENABLED_VALUES = frozenset({"1", "true", "yes", "on"})
 """Values that switch an on/off flag on (case-insensitive)."""

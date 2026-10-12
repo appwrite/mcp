@@ -76,6 +76,20 @@ jobs:
         with:
           version: "0.11.22"
 
+      - name: Install Dragonfly
+        # The push delivery flows start their own bus, on the Dragonfly
+        # version the clusters run.
+        env:
+          VERSION: v2.0.0
+          SHA256: 31060f32858f99a751cae8b54b7b5b556a9b7eb855c30b79bfc3ab7acb26928a
+        run: |
+          curl -fsSL -o dragonfly.tar.gz "https://github.com/dragonflydb/dragonfly/releases/download/$VERSION/dragonfly-x86_64.tar.gz"
+          echo "$SHA256  dragonfly.tar.gz" | sha256sum -c -
+          tar -xzf dragonfly.tar.gz dragonfly-x86_64
+          sudo install dragonfly-x86_64 /usr/local/bin/dragonfly
+          rm dragonfly.tar.gz dragonfly-x86_64
+          dragonfly --version
+
       - name: Install dependencies
         run: uv sync --frozen --group e2e
 

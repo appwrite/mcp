@@ -7,13 +7,20 @@
 > lets a webhook's `authPassword` hold the sealed subscription.
 
 [MCP Events](https://developers.openai.com/plugins/build/mcp-events) let an MCP
-client such as ChatGPT subscribe to things that happen in an Appwrite project
-and receive a signed webhook when they occur, for example "when a function
-execution fails in project X, read the logs and open a fix".
+client subscribe to things that happen in an Appwrite project and hear about
+them when they occur, for example "when a function execution fails in project
+X, read the logs and open a fix".
 
-Events are served only by the hosted HTTP server (`mcp.appwrite.io`), and v1
-delivers only by webhook. Each subscription is backed by one Appwrite webhook in
-the subscriber's project, so the MCP server keeps no subscription store.
+Events are served only by the hosted HTTP server (`mcp.appwrite.io`), in two
+delivery modes:
+
+| Mode | Method | For |
+| --- | --- | --- |
+| `webhook` | `events/subscribe` | Clients with a public HTTPS endpoint, such as ChatGPT: a signed POST per event. |
+| `push` | `events/stream` | Clients on a user's machine, such as Codex CLI or [`pi-mcp-events`](https://github.com/mikekelly/pi-mcp-events): events arrive on a request the client holds open. Behind its own flag; see [Push delivery](#push-delivery). |
+
+Each subscription is backed by one Appwrite webhook in the subscriber's
+project, so the MCP server keeps no subscription store.
 
 ## Testing flag
 
@@ -68,7 +75,7 @@ they are kept behind constants in
 | NotFound | `-32011` | `kind` |
 | Forbidden | `-32012` | |
 | ResourceExhausted | `-32013` | `limit`, `max` |
-| Unsupported | `-32014` | |
+| Unsupported | `-32014` | `feature`, `value` (`{"feature": "deliveryMode", "value": "push"}` when `events/subscribe` is asked for push) |
 | CallbackEndpointError | `-32015` | `reason`: `challenge_failed`, `timeout`, `connection_refused`, `tls_error`, `http_4xx`, `http_5xx` |
 
 Failures on our side, including Appwrite answering `5xx`, are `-32603`.
@@ -93,7 +100,8 @@ subscriptions.
 `events/subscribe`, in order:
 
 1. Looks the event up (`-32011`, `data.kind = "event"`) and checks its
-   arguments (`-32602`). `delivery.mode` must be `webhook` (`-32014`). The
+   arguments (`-32602`). `delivery.mode` must be `webhook` (`-32014`; push
+   goes through [`events/stream`](#push-delivery)). The
    callback must be `https`, without credentials, and resolve only to public
    addresses (`-32602`). The secret must be `whsec_` + base64 of 24 to 64 bytes
    (`-32602`).
@@ -163,7 +171,7 @@ so `maxAgeMs` is accepted and has no effect.
 | Field | Value |
 | --- | --- |
 | `$id` | The subscription id |
-| `name` | `MCP events \| <event> \| until <expiry, UTC> \| owner <first 8 characters of the principal digest>` |
+| `name` | `MCP events \| <event> \| until <expiry, UTC> \| owner <first 8 characters of the principal digest>` (`MCP events push \| …` for a [push stream](#push-delivery)) |
 | `url` | `{MCP_PUBLIC_URL}/appwrite/webhooks/{id}` |
 | `events` | The event's Appwrite patterns |
 | `tls` | `true` |
@@ -243,6 +251,114 @@ caller never hold a slot.
 The server already advertises these. A user can narrow them at consent, and
 the error message names the scope to grant.
 
+## Push delivery
+
+```
+events/stream {name, arguments, cursor, maxAgeMs?}
+  -> notifications/events/active    {cursor: null, truncated: false}
+     notifications/events/event     {eventId, name, timestamp, data, cursor: null}
+     notifications/events/heartbeat {cursor: null}             every 25 s
+     notifications/events/error     {error}                    the stream stays open
+     notifications/events/terminated {error}                   the stream ends
+```
+
+A push subscription is one long-lived `events/stream` request. On Streamable
+HTTP it is a POST whose SSE response carries only that subscription's
+notifications, each with the request id in
+`params._meta["io.modelcontextprotocol/subscriptionId"]`. Heartbeats are SSE
+`data:` frames, not comments. The client cancels by aborting the request; no
+result is sent then. When the server ends the stream (termination, shutdown, token
+expiry) it sends the empty result `{"_meta": {}}` as the final frame.
+
+Push sits behind the `--events-push` flag
+([flags.md](flags.md#--events-push--push-delivery-in-progress)) and needs a
+Redis-protocol server (`MCP_EVENTS_REDIS_URL`): Dragonfly in the cluster, or
+Redis; the bus uses only `PUBLISH`, `SUBSCRIBE` and `PING`. `events/list` advertises
+`"delivery": ["webhook", "push"]` only when both are there; otherwise it
+advertises `["webhook"]` and `events/stream` is `-32601`.
+
+### Lifecycle
+
+1. **Validate.** Exactly like `events/subscribe`, minus the callback, secret
+   and handshake: the event (`-32011`), its arguments, `cursor` (a string or
+   `null`) and `maxAgeMs` (`-32602`), a user behind the token and the webhook
+   write scope (`-32012`). An invalid subscription is an immediate JSON-RPC
+   error and no stream is opened (on the 2026-07-28 protocol the answer is
+   plain JSON, unless Appwrite takes longer than the SDK's 15-second SSE
+   deferral to refuse it; on 2025-era protocols it is a single SSE frame).
+2. **Listen.** The stream gets a random subscription id (`sub_` + 32 hex
+   characters): push is connection-scoped, so two streams with the same
+   arguments are two subscriptions. The replica starts listening on the bus
+   under that id before anything else, so no event is missed.
+3. **Create the webhook.** One Appwrite webhook per stream, written like a
+   [managed webhook](#the-managed-webhook) with the caller's token after the
+   same authorization read, webhook listing and cleanup as a subscribe
+   (`-32011` for a missing resource, `-32012` without access, `-32013` at the
+   plan limit). Its name starts `MCP events push`, its envelope's record says
+   `delivery: {"mode": "push"}`, with no callback or secret, and its lease is 5
+   minutes. A client that aborts while the webhook is being created waits for
+   the create, so the cleanup that follows always finds it.
+4. **Serve.** `active` first, then every event from the bus, a heartbeat every
+   25 seconds, and a lease renewal every 2 minutes: the authorization read
+   again, then the signing key and the webhook rewritten with a new envelope,
+   as on a refresh, all with the token of the `events/stream` request.
+5. **Close.** On client abort, termination, shutdown or token expiry, the
+   replica stops listening and deletes the webhook (best effort, within 10
+   seconds).
+
+A stream renews with the token it was opened with, so it ends a minute before
+that token expires, the way shutdown ends it: with its final result and no
+`terminated`. The client reconnects with a fresh token; `terminated` with
+`-32012` would tell it to give the subscription up.
+
+| Renewal answer | Result |
+| --- | --- |
+| Forbidden (`401`/`403`: access or a scope was revoked) | `terminated` with `-32012` |
+| NotFound: the resource is gone (`data.kind = "resource"`) or the webhook was deleted in the Console (`data.kind = "subscription"`) | `terminated` with `-32011` |
+| Anything else (`5xx`, no answer within 30 seconds) | `error`, retried after 15 seconds; `terminated` with `-32603` only once the lease has run out |
+
+Losing the bus connection sends an `error`; once it is back, `active` with
+`truncated: true` marks the gap. Each listener pings Redis every 10 seconds and
+counts its connection lost after 5 seconds without an answer, so a Redis that
+vanished without closing the connection is noticed too. Events have no replay, so `cursor` is always
+`null` and `maxAgeMs` is accepted with no effect: events during a reconnect are
+lost, which the spec allows for emit-only event types.
+
+If the replica dies instead, its webhooks stay behind with their short lease.
+Once that runs out the ingress drops their deliveries as `expired`, and the
+subscriber's next subscribe or stream in the project deletes them a minute
+later (a webhook subscription gets 10 minutes; a live stream renews long before
+its lease runs out, so a lapsed push webhook belongs to a stream that is gone).
+On the Free plan that gives the slot back within about six minutes. A rolling deploy drops every stream, as expected: on
+SIGTERM the server ends its streams cleanly (each deletes its webhook and sends
+its final result) and the clients reconnect to another replica.
+
+### Routing between replicas
+
+A stream lives on one replica, but Appwrite's webhook POST lands on any replica
+behind the gateway. The ingress therefore hands push events to a bus: Redis
+pub/sub on channel `mcp:events:<subscription id>`. The ingress publishes the
+projected event (the same `EventOccurrence` a webhook delivery carries, never
+the Appwrite body), and the replica holding the stream subscribes to its channel
+while the stream is open. Pub/sub is fire-and-forget, which matches events
+without replay. An event published while no replica listens is acknowledged and
+dropped as `no_listener`; when Redis is unreachable it is dropped as
+`bus_error`. Publishing is one Redis call with a 2-second timeout, so the
+ingress never waits on a stream. The bus is one module
+(`events/bus.py`) behind a small `Bus` interface.
+
+### Limits
+
+| Limit | Value | Beyond it |
+| --- | --- | --- |
+| Open streams per user, per replica | 25 | `-32013`, `data: {"limit": "streams", "max": 25}` |
+| Open streams per replica | 1000 (each holds one Redis connection) | `-32013`, `data: {"limit": "server_streams", "max": 1000}` |
+| Appwrite calls of the events methods at once, per replica | 40, a thread pool of their own so stream reconnects after a deploy cannot starve tool calls | they wait |
+| Webhooks per project | the plan's (Free: 2); each open stream uses one | `-32013`, `data: {"limit": "webhooks", "max": …}` |
+
+Heartbeats every 25 seconds keep idle streams alive through proxies with a
+30-second or longer idle timeout.
+
 ## Ingress
 
 Each subscription is one Appwrite webhook in the subscriber's project. It points
@@ -277,9 +393,12 @@ For each delivery the ingress:
    payload schema. Only the declared fields are forwarded, never the raw body:
    Appwrite sends whole rows, users with email and phone, and executions with
    request headers and logs.
-5. Starts the delivery in a background task and answers `200` straight away,
-   well inside Appwrite's 15 second timeout. The delivery is signed with
-   Standard Webhooks and retried in-process (see `events/delivery.py`).
+5. For a webhook subscription, starts the delivery in a background task and
+   answers `200` straight away, well inside Appwrite's 15 second timeout. The
+   delivery is signed with Standard Webhooks and retried in-process (see
+   `events/delivery.py`). For a push subscription, publishes the event to the
+   replica holding its stream (see [Routing between
+   replicas](#routing-between-replicas)) and answers `200`.
 
 ### Envelope
 
@@ -294,16 +413,17 @@ adapter around the package.
 
 - **Record.** `version` 1, `id` (the subscription id), `principal` (a digest of
   the OAuth `iss`, `sub` and `client_id`, never a token), `event.name` and
-  `event.arguments`, `delivery` (`mode` `webhook`, the callback `url` and its one
-  `whsec_` `secret`), `lease` (`expiresAt` and `refreshBefore` in UTC RFC 3339
-  with `Z`) and empty `extensions`.
+  `event.arguments`, `delivery` (`mode` `webhook` with the callback `url` and its
+  one `whsec_` `secret`, or `mode` `push` alone), `lease` (`expiresAt` and
+  `refreshBefore` in UTC RFC 3339 with `Z`) and empty `extensions`.
 - **Context binding.** Every envelope is sealed for a context of `server`
   (`MCP_PUBLIC_URL`), `tenant` (the project id) and `resource` (the
   subscription id, which is also the webhook id). The ingress takes the expected
   context only from its configuration, the routed webhook id and
   `X-Appwrite-Webhook-Project-Id`, never from the envelope, so an envelope
-  copied to another webhook, project or deployment does not open. The record
-  must also hash back to the subscription id, or it does not open either.
+  copied to another webhook, project or deployment does not open. A webhook
+  record must also hash back to the subscription id, or it does not open
+  either; a push record's random id is bound by the context alone.
 - **Keys.** Each key in `MCP_EVENTS_SEALING_KEYS` is 32 random bytes (keys that
   are short, long or obviously not random stop the server at startup) and is
   the JWE key directly. The webhook signing secret is derived from it with
@@ -382,6 +502,8 @@ request that fails authentication gets `401`.
 | Body over 2 MiB (signature still checked) | `200` dropped `too_large` | no |
 | Body over 16 MiB, or slot wait and body slower than 10 s (signature never checked) | `200` dropped `unread` | no |
 | Delivery backlog full (process or subscription) | `200` dropped `backlog_full` | no |
+| Push subscription whose stream is not open on any replica | `200` dropped `no_listener` | no |
+| Push event, but the bus (Redis) is unreachable | `200` dropped `bus_error` | no |
 | No Basic auth, or the password is not an envelope | `401` `credentials` | no |
 | Signature missing or wrong | `401` `signature` | no |
 | Envelope tampered with, not the profile, or for another server, webhook or project | `401` `envelope` | no |
@@ -428,11 +550,13 @@ lost: delivery is at most once, like Appwrite webhooks themselves.
 | Metric | Attributes |
 | --- | --- |
 | `mcp.events.ingress` | `outcome` (`accepted`, `dropped`, `rejected`), `reason`, `event` |
-| `mcp.events.deliveries` | `event`, `outcome` (`delivered`, `rejected`, `abandoned`, `too_large`, `error`), `reason` |
-| `mcp.events.subscriptions` | `operation` (`subscribe`, `unsubscribe`, `cleanup`), `outcome` (`created`, `refreshed`, `removed`, `absent`, `error`), `event`, `reason` (the JSON-RPC code of an error) |
+| `mcp.events.deliveries` | `mode` (`webhook`, `push`), `event`, `outcome` (`delivered`, `rejected`, `abandoned`, `too_large`, `error`), `reason` |
+| `mcp.events.subscriptions` | `operation` (`subscribe`, `unsubscribe`, `cleanup`, `stream`), `outcome` (`created`, `refreshed`, `removed`, `absent`, `opened`, `closed`, `terminated`, `expired`, `error`), `event`, `reason` (the JSON-RPC code of an error) |
+| `mcp.events.streams` (up-down counter) | `event`: the streams open right now |
 
-`events/subscribe` and `events/unsubscribe` are also counted in
-`mcp.messages.received` and `mcp.jsonrpc.errors`, like `tools/call`. Errors on
+`events/subscribe`, `events/unsubscribe` and `events/stream` are also counted
+in `mcp.messages.received` and `mcp.jsonrpc.errors`, like `tools/call` (for a
+stream, the duration is how long it was open). Errors on
 our side (`-32603`) go to Sentry with the same tags as `tools/call` plus
 `event.name` and `appwrite.project_id`. Errors the caller caused are counted but
 not reported.
@@ -459,6 +583,12 @@ the real dispatcher and egress to an HTTPS receiver that answers the
 verification handshake and checks every request with the official
 `standardwebhooks` library. Counters are read from the server's real OTLP
 export.
+
+Push streams run against a real bus the suite starts on a random port:
+`dragonfly` when it is on `PATH`, as in CI (pinned to the version the clusters
+run), otherwise `redis-server` (`brew install redis` or
+`apt-get install redis-server`). Two server instances share it, so a stream
+opened on one receives what Appwrite delivers to the other.
 
 A live end-to-end run against Cloud staging (real OAuth tokens, real Appwrite
 webhooks) is planned once

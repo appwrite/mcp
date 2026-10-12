@@ -45,6 +45,10 @@ docker compose up --build
 > then move it first, then remove the old one 25 hours after that reached every
 > replica (see "Key rotation" in [events.md](events.md)).
 
+> MCP Events push delivery (`--events-push`) routes events between replicas
+> through a Redis-protocol server (Dragonfly in the cluster) at
+> `MCP_EVENTS_REDIS_URL`. Compose runs Dragonfly and points the server at it; see [flags.md](flags.md#--events-push--push-delivery-in-progress).
+
 **`uv` directly — HTTP:**
 
 ```bash
@@ -72,6 +76,10 @@ APPWRITE_API_KEY=<YOUR_API_KEY> \
 E2E tests boot the real hosted HTTP app on a random localhost port and drive it
 over real HTTP like an MCP client. Only the OAuth token verifier is stubbed, so
 they need no credentials and run on every PR.
+
+The push-delivery flows also start a real bus on a random port: `dragonfly` when
+it is on `PATH`, as in CI, otherwise `redis-server` (`brew install redis` or
+`apt-get install redis-server`; Dragonfly has no macOS build).
 
 Integration tests create and delete **real** Appwrite resources. They
 authenticate via `APPWRITE_PROJECT_ID`, `APPWRITE_API_KEY`, `APPWRITE_ENDPOINT`

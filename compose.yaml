@@ -18,6 +18,13 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-development}
+      MCP_EVENTS: ${MCP_EVENTS:-}
+      MCP_EVENTS_PUSH: ${MCP_EVENTS_PUSH:-}
+      MCP_EVENTS_SEALING_KEYS: ${MCP_EVENTS_SEALING_KEYS:-}
+      MCP_EVENTS_REDIS_URL: redis://dragonfly:6379/0
+    depends_on:
+      dragonfly:
+        condition: service_healthy
     healthcheck:
       test:
         [
@@ -30,3 +37,14 @@ services:
       timeout: 3s
       retries: 3
       start_period: 10s
+
+  # Carries push events between replicas (MCP_EVENTS_PUSH), as in the cluster;
+  # any Redis-protocol server works. See docs/events.md.
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:v2.0.0
+    command: ["dragonfly", "--logtostderr", "--dbfilename=", "--proactor_threads=2"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5

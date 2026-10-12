@@ -54,7 +54,8 @@ RESOURCE_EXHAUSTED = -32013
 """A quota was hit; ``data.limit`` and ``data.max`` describe it. SEP-3415: -32025."""
 
 UNSUPPORTED = -32014
-"""A delivery mode or option this server does not offer. SEP-3415: -32026."""
+"""A delivery mode or option this server does not offer; ``data.feature`` and
+``data.value`` name it. SEP-3415: -32026."""
 
 CALLBACK_ENDPOINT = -32015
 """The callback URL failed verification; ``data.reason`` says how. SEP-3415: -32027."""
@@ -97,8 +98,8 @@ class EventsError(MCPError):
         return cls(RESOURCE_EXHAUSTED, message, {"limit": limit, "max": maximum})
 
     @classmethod
-    def unsupported(cls, message: str) -> EventsError:
-        return cls(UNSUPPORTED, message)
+    def unsupported(cls, message: str, *, feature: str, value: object) -> EventsError:
+        return cls(UNSUPPORTED, message, {"feature": feature, "value": value})
 
     @classmethod
     def callback_endpoint(cls, message: str, *, reason: CallbackFailure) -> EventsError:

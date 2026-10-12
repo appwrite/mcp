@@ -50,6 +50,11 @@ deletes that webhook if it is a managed one. A missing webhook is still
 success, so unsubscribe is idempotent; a missing project is ``-32012``, as on
 subscribe. The id is bound to the principal, so a
 caller can only ever reach their own subscriptions.
+
+Push subscriptions (:mod:`.streams`) use the same checks and webhooks without a
+callback: :meth:`Subscriptions.open` creates the webhook of a stream,
+:meth:`Subscriptions.renew` extends its lease and :meth:`Subscriptions.close`
+deletes it.
 """
 
 from __future__ import annotations
@@ -61,6 +66,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+import anyio
 import httpx
 from anyio import to_thread
 from appwrite_console.client import Client
@@ -76,6 +82,7 @@ from .egress import SECURE_SCHEME, DestinationError
 from .envelope import (
     EnvelopeTooLarge,
     InvalidSubscription,
+    Mode,
     Principal,
     Subscription,
     subscription_id,
@@ -83,10 +90,7 @@ from .envelope import (
 )
 from .errors import CallbackFailure, EventsError
 from .ingress import Ingress
-from .webhooks import Label, Webhooks, managed, owner
-
-WEBHOOK = "webhook"
-"""The only delivery mode served (v1 is webhook-only, like ChatGPT)."""
+from .webhooks import NOT_FOUND, Label, Webhooks, managed, owner
 
 TTL_DEFAULT_MS = 60 * 60 * 1000
 """Granted when the client suggests no TTL, or asks for none (``ttlMs: null``):
@@ -111,6 +115,17 @@ CLEANUP_GRACE_MS = 10 * 60 * 1000
 cleans it up. A client still refreshing that subscription would have done so
 well before; past this it has gone, and its deliveries are already dropped."""
 
+PUSH_CLEANUP_GRACE_MS = 60 * 1000
+"""The same for the webhook of a push stream. An open stream renews its lease
+long before it runs out and ends the stream once it has, so a push webhook past
+its lease belongs to a stream that is gone (its replica died). The short grace
+gives the Free plan's slots back soon after."""
+
+THREADS = 40
+"""Appwrite calls of the events methods running at once. They have their own
+pool so a burst of stream reconnects after a deploy cannot starve tool calls,
+and the other way round."""
+
 PROJECT = "project_id"
 
 SCOPE_PREFIX = "project:"
@@ -123,6 +138,7 @@ class Operation(StrEnum):
     SUBSCRIBE = "subscribe"
     UNSUBSCRIBE = "unsubscribe"
     CLEANUP = "cleanup"
+    STREAM = "stream"
 
 
 class Outcome(StrEnum):
@@ -130,6 +146,10 @@ class Outcome(StrEnum):
     REFRESHED = "refreshed"
     REMOVED = "removed"
     ABSENT = "absent"
+    OPENED = "opened"
+    CLOSED = "closed"
+    TERMINATED = "terminated"
+    EXPIRED = "expired"
 
 
 class AppwriteError(StrEnum):
@@ -205,11 +225,10 @@ class State:
 
 @dataclass(frozen=True)
 class Target:
-    """What a subscribe or unsubscribe request names, validated."""
+    """The event and arguments a request names, validated."""
 
     event: Event
     arguments: dict[str, str]
-    delivery: Mapping[str, Any]
 
     @property
     def project(self) -> str:
@@ -230,19 +249,36 @@ class Subscriptions:
         self._ingress = ingress
         self._client = client
         self._clock = clock
+        self._limiter: anyio.CapacityLimiter | None = None
 
     def _now(self) -> int:
         return int(self._clock() * 1000)
 
+    async def _run(
+        self, function: Callable[..., Any], *args: Any, abandon: bool = True
+    ) -> Any:
+        """``function(*args)`` on the events thread pool. With ``abandon``, a
+        cancelled caller stops waiting for it; otherwise the cancellation
+        takes effect once it returns."""
+        if self._limiter is None:
+            self._limiter = anyio.CapacityLimiter(THREADS)
+        return await to_thread.run_sync(
+            function, *args, abandon_on_cancel=abandon, limiter=self._limiter
+        )
+
     async def subscribe(self, params: SubscribeParams) -> dict[str, Any]:
-        target = _target(params.name, params.arguments, params.delivery)
-        mode = target.delivery.get("mode", WEBHOOK)
-        if mode != WEBHOOK:
+        target = resolve_target(params.name, params.arguments)
+        delivery = _delivery(params.delivery)
+        mode = delivery.get("mode", Mode.WEBHOOK)
+        if mode != Mode.WEBHOOK:
             raise EventsError.unsupported(
-                f"Delivery mode {mode!r} is not supported; use 'webhook'"
+                f"events/subscribe delivers only by {Mode.WEBHOOK!r}; "
+                "for push, open an events/stream",
+                feature="deliveryMode",
+                value=mode,
             )
-        callback = _callback(target.delivery)
-        secret = target.delivery.get("secret")
+        callback = _callback(delivery)
+        secret = delivery.get("secret")
         if not isinstance(secret, str):
             raise EventsError.invalid_params("delivery.secret is required")
         try:
@@ -250,9 +286,9 @@ class Subscriptions:
         except InvalidSecretError as error:
             raise EventsError.invalid_params(f"delivery.secret: {error}") from error
         suggested = _ttl(params)
-        _max_age(params.max_age_ms)
-        principal = _principal()
-        _writable()
+        check_max_age(params.max_age_ms)
+        principal = current_principal()
+        require_writable()
 
         grant = Grant.of(suggested, self._now())
         subscription = Subscription.create(
@@ -265,27 +301,12 @@ class Subscriptions:
             refresh=grant.refresh,
             principal=principal,
         )
-        try:
-            envelope = self._ingress.keyring.seal(subscription, self._ingress.server)
-        except EnvelopeTooLarge as error:
-            raise EventsError.invalid_params(
-                "delivery.url is too long to fit in the subscription"
-            ) from error
-        except InvalidSubscription as error:
-            raise EventsError.invalid_params(
-                "delivery is not a valid subscription: the url must be https "
-                "without credentials or a fragment, and the secret canonical "
-                "padded base64"
-            ) from error
+        envelope = self._seal(subscription)
         await self._check(callback)
 
-        state = await to_thread.run_sync(
-            self._prepare, target, subscription, abandon_on_cancel=True
-        )
+        state = await self._run(self._prepare, target, subscription)
         await self._verify(subscription)
-        outcome = await to_thread.run_sync(
-            self._write, state, target, subscription, envelope, abandon_on_cancel=True
-        )
+        outcome = await self._run(self._write, state, target, subscription, envelope)
         telemetry.record_subscription(Operation.SUBSCRIBE, outcome, target.event.name)
         _log(f"{subscription.id}: {outcome} {target.event.name} until {grant.expires}")
         return {
@@ -296,18 +317,55 @@ class Subscriptions:
         }
 
     async def unsubscribe(self, params: UnsubscribeParams) -> dict[str, Any]:
-        target = _target(params.name, params.arguments, params.delivery)
-        url = target.delivery.get("url")
+        target = resolve_target(params.name, params.arguments)
+        url = _delivery(params.delivery).get("url")
         if not isinstance(url, str) or not url:
             raise EventsError.invalid_params("delivery.url is required")
-        principal = _principal()
+        principal = current_principal()
         id = subscription_id(principal, url, target.event.name, target.arguments)
-        outcome = await to_thread.run_sync(
-            self._remove, target, id, abandon_on_cancel=True
-        )
+        outcome = await self._run(self._remove, target, id)
         telemetry.record_subscription(Operation.UNSUBSCRIBE, outcome, target.event.name)
         _log(f"{id}: unsubscribe {outcome}")
         return {}
+
+    async def open(self, target: Target, subscription: Subscription) -> None:
+        """Create the webhook of push subscription ``subscription``, after the
+        checks a subscribe makes (authorization, webhook scopes, cleanup of
+        the caller's expired subscriptions).
+
+        Not abandoned when cancelled: a client that aborts while the webhook
+        is being created waits for the create, so the stream's cleanup always
+        comes after it and never leaves the webhook behind."""
+        envelope = self._seal(subscription)
+        state = await self._run(self._prepare, target, subscription, abandon=False)
+        await self._run(
+            self._write, state, target, subscription, envelope, abandon=False
+        )
+
+    async def renew(self, target: Target, subscription: Subscription) -> None:
+        """Rewrite a push subscription's webhook with its new lease. Repeats
+        the authorization read, so access revoked mid-stream surfaces here."""
+        envelope = self._seal(subscription)
+        await self._run(self._renew, target, subscription, envelope)
+
+    async def close(self, target: Target, id: str) -> bool:
+        """Delete the webhook of push subscription ``id``; whether it was
+        there."""
+        return await self._run(self._delete, target, id)
+
+    def _seal(self, subscription: Subscription) -> str:
+        try:
+            return self._ingress.keyring.seal(subscription, self._ingress.server)
+        except EnvelopeTooLarge as error:
+            raise EventsError.invalid_params(
+                "delivery.url is too long to fit in the subscription"
+            ) from error
+        except InvalidSubscription as error:
+            raise EventsError.invalid_params(
+                "delivery is not a valid subscription: the url must be https "
+                "without credentials or a fragment, and the secret canonical "
+                "padded base64"
+            ) from error
 
     async def _check(self, url: str) -> None:
         """Refuse a callback whose host is not public before anything is sent
@@ -328,6 +386,8 @@ class Subscriptions:
             ) from error
 
     async def _verify(self, subscription: Subscription) -> None:
+        if subscription.callback is None or subscription.secret is None:
+            raise ValueError("only a webhook subscription has a callback to verify")
         callback = Callback(subscription.callback, subscription.id, subscription.secret)
         try:
             await self._ingress.dispatcher.verify(callback)
@@ -385,15 +445,7 @@ class Subscriptions:
         envelope: str,
     ) -> Outcome:
         webhooks, count = state.webhooks, state.count
-        label = Label(
-            target.event.name, subscription.expires, owner(subscription.principal)
-        )
-        fields: dict[str, Any] = {
-            "url": self._ingress.url(subscription.id),
-            "label": label,
-            "events": target.event.patterns(target.arguments),
-            "password": envelope,
-        }
+        fields = self._fields(target, subscription, envelope)
         secret = self._ingress.keyring.signing_key(subscription.id)
         if not state.exists:
             try:
@@ -423,6 +475,48 @@ class Subscriptions:
             raise _webhook_error(error, target.project, count) from error
         return Outcome.REFRESHED
 
+    def _fields(
+        self, target: Target, subscription: Subscription, envelope: str
+    ) -> dict[str, Any]:
+        """What a subscription's webhook is written with, besides its id and
+        signing key."""
+        label = Label(
+            target.event.name,
+            subscription.expires,
+            owner(subscription.principal),
+            push=subscription.mode is Mode.PUSH,
+        )
+        return {
+            "url": self._ingress.url(subscription.id),
+            "label": label,
+            "events": target.event.patterns(target.arguments),
+            "password": envelope,
+        }
+
+    def _renew(self, target: Target, subscription: Subscription, envelope: str) -> None:
+        webhooks = Webhooks(self._authorize(target))
+        secret = self._ingress.keyring.signing_key(subscription.id)
+        try:
+            # The signing key goes first, as on a refresh.
+            webhooks.sign(subscription.id, secret)
+            webhooks.update(
+                subscription.id, **self._fields(target, subscription, envelope)
+            )
+        except AppwriteException as error:
+            if error.type == NOT_FOUND:
+                raise EventsError.not_found(
+                    f"The subscription's webhook {subscription.id} was deleted",
+                    kind="subscription",
+                ) from error
+            raise _webhook_error(error, target.project, 0) from error
+
+    def _delete(self, target: Target, id: str) -> bool:
+        webhooks = Webhooks(self._project_client(target.project))
+        try:
+            return webhooks.delete(id)
+        except AppwriteException as error:
+            raise _webhook_error(error, target.project, 0) from error
+
     def _clean(
         self, webhooks: Webhooks, existing: list[Any], subscription: Subscription
     ) -> int:
@@ -432,20 +526,21 @@ class Subscriptions:
 
         Appwrite has no conditional delete, so a refresh of a candidate can
         race this. Two guards keep that from deleting a live subscription:
-        only webhooks expired for longer than :data:`CLEANUP_GRACE_MS` are
-        candidates, and each is read again right before the delete and kept
+        only webhooks expired for longer than :data:`CLEANUP_GRACE_MS`
+        (:data:`PUSH_CLEANUP_GRACE_MS` for a push stream's) are candidates, and each is read again right before the delete and kept
         if its name or ``$updatedAt`` changed since the listing. What remains
         is a refresh landing between that read and the delete, of a
         subscription its client left expired for over ten minutes; the client
         then gets its webhook back on the following refresh."""
         tag = owner(subscription.principal)
-        cutoff = self._now() - CLEANUP_GRACE_MS
+        now = self._now()
         removed = 0
         for webhook in existing:
             label = managed(webhook)
             if label is None or webhook.id == subscription.id:
                 continue
-            if label.owner != tag or not label.expired(cutoff):
+            grace = PUSH_CLEANUP_GRACE_MS if label.push else CLEANUP_GRACE_MS
+            if label.owner != tag or not label.expired(now - grace):
                 continue
             try:
                 current = webhooks.get(webhook.id)
@@ -480,12 +575,16 @@ class Subscriptions:
             raise _webhook_error(error, target.project, 0) from error
 
 
-def _target(name: object, arguments: object, delivery: object) -> Target:
+def resolve_target(name: object, arguments: object) -> Target:
+    """The catalog event ``name`` and its validated ``arguments``."""
     event = lookup(name)
-    validated = event.validate(arguments)
+    return Target(event, event.validate(arguments))
+
+
+def _delivery(delivery: object) -> Mapping[str, Any]:
     if not isinstance(delivery, Mapping):
         raise EventsError.invalid_params("delivery must be an object")
-    return Target(event, validated, delivery)
+    return delivery
 
 
 def _callback(delivery: Mapping[str, Any]) -> str:
@@ -512,7 +611,7 @@ def _ttl(params: SubscribeParams) -> int | None:
     return value
 
 
-def _max_age(value: object) -> None:
+def check_max_age(value: object) -> None:
     """``maxAgeMs`` bounds replay. Appwrite webhooks have none, so it is only
     checked for shape."""
     if value is None:
@@ -523,7 +622,7 @@ def _max_age(value: object) -> None:
         )
 
 
-def _writable() -> None:
+def require_writable() -> None:
     """Refuse a token whose granted scopes cannot write webhooks before the
     callback gets a verification POST.
 
@@ -546,7 +645,7 @@ def _scopes_message() -> str:
     )
 
 
-def _principal() -> str:
+def current_principal() -> str:
     """Digest of the OAuth principal behind the current request."""
     token = get_access_token()
     claims = (token.claims or {}) if token is not None else {}

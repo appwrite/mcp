@@ -18,6 +18,10 @@ Builds a single-tenant Starlette ASGI app for the served Appwrite project:
   with the events flag on. Unauthenticated by bearer token: the Appwrite
   signature authenticates it (see :mod:`.events.ingress`).
 
+Push delivery (``events/stream``, :mod:`.events.streams`) runs on the MCP
+endpoint itself. Streams never finish on their own, so :class:`Uvicorn` closes
+them when the server is asked to stop instead of waiting for them.
+
 Auth uses the SDK primitives (``BearerAuthBackend`` + ``AuthContextMiddleware``) so the
 validated token is reachable from tool handlers via ``get_access_token()``.
 """
@@ -32,9 +36,11 @@ import logging
 import re
 import sys
 from importlib.resources import files
+from types import FrameType
 from urllib.parse import urlsplit
 
 import httpx
+import uvicorn
 from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser, BearerAuthBackend
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
@@ -53,7 +59,7 @@ from starlette.responses import (
 from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from . import error_monitoring, telemetry
+from . import error_monitoring, flags, telemetry
 from .auth import (
     AppwriteTokenVerifier,
     authorization_server_metadata,
@@ -68,10 +74,13 @@ from .auth import (
 from .constants import CORS_HEADERS, SERVER_VERSION
 from .events import protocol as events_protocol
 from .events.ingress import Ingress
+from .events.streams import Settings, Streams
+from .events.subscriptions import Subscriptions
 from .server import (
     build_catalog_tools_manager,
     build_mcp_server,
     build_operator,
+    resolve_client,
 )
 
 
@@ -461,18 +470,31 @@ async def favicon_ico_endpoint(request: Request) -> RedirectResponse:
     return RedirectResponse("/favicon.svg", status_code=307)
 
 
-def build_app(ingress: Ingress | None = None) -> Starlette:
+def build_app(
+    ingress: Ingress | None = None, settings: Settings = Settings()
+) -> Starlette:
     """The hosted app. ``ingress`` replaces the events ingress built from the
-    environment; it is mounted only when events are enabled."""
+    environment; it is mounted only when events are enabled. ``settings``
+    tunes the push streams. ``app.state.streams`` holds the push streams,
+    or ``None`` when push is off."""
     error_monitoring.init_error_monitoring("http", SERVER_VERSION)
     telemetry.init_telemetry("http", SERVER_VERSION)
     tools_manager = build_catalog_tools_manager()
     operator = build_operator(tools_manager, store_results=False)
+    streams: Streams | None = None
     if events_protocol.enabled("http"):
         ingress = ingress or Ingress.from_env()
+        if ingress.bus is not None and events_protocol.push_enabled("http", ingress):
+            streams = Streams(
+                Subscriptions(ingress, resolve_client), ingress.bus, settings=settings
+            )
+        elif flags.enabled(flags.EVENTS_PUSH):
+            _log("events-push is on but MCP_EVENTS_REDIS_URL is not set: webhook only")
     else:
         ingress = None
-    server = build_mcp_server(operator, transport="http", ingress=ingress)
+    server = build_mcp_server(
+        operator, transport="http", ingress=ingress, streams=streams
+    )
 
     # Streamable HTTP with SSE responses (the MCP SDK/ecosystem default). Stateless,
     # so each request opens and closes its own short-lived stream — no session to pin.
@@ -557,12 +579,30 @@ def build_app(ingress: Ingress | None = None) -> Starlette:
         Middleware(AuthContextMiddleware),
     ]
 
-    return Starlette(routes=routes, middleware=middleware, lifespan=lifespan)
+    app = Starlette(routes=routes, middleware=middleware, lifespan=lifespan)
+    app.state.streams = streams
+    return app
+
+
+class Uvicorn(uvicorn.Server):
+    """uvicorn for the hosted app. Asked to stop, it first closes the app's
+    push streams: uvicorn waits for open requests before it shuts down, and a
+    stream only ends when it is closed. Each one deletes its webhook and sends
+    its final result, and its client reconnects to another replica."""
+
+    def __init__(self, config: uvicorn.Config, app: Starlette) -> None:
+        super().__init__(config)
+        self._streams: Streams | None = app.state.streams
+
+    def handle_exit(self, sig: int, frame: FrameType | None) -> None:
+        if self._streams is not None:
+            self._streams.close()
+        super().handle_exit(sig, frame)
 
 
 def run_http(*, host: str = "0.0.0.0", port: int = 8000) -> None:
-    import uvicorn
     from uvicorn.config import LOGGING_CONFIG
+    from uvicorn.main import STARTUP_FAILURE
 
     app = build_app()
     log_config = copy.deepcopy(LOGGING_CONFIG)
@@ -572,4 +612,9 @@ def run_http(*, host: str = "0.0.0.0", port: int = 8000) -> None:
     log_config["handlers"]["access"]["filters"] = ["hide_healthz"]
 
     _log(f"Serving on http://{host}:{port}/  (also available at /mcp)")
-    uvicorn.run(app, host=host, port=port, log_config=log_config)
+    config = uvicorn.Config(app, host=host, port=port, log_config=log_config)
+    server = Uvicorn(config, app)
+    server.run()
+    if not server.started:
+        # As uvicorn.run does, so a failed startup is not a clean exit.
+        sys.exit(STARTUP_FAILURE)

@@ -25,10 +25,14 @@ For each delivery:
    hashed as it streams in, by at most :data:`READS` requests at once.
 4. Map the Appwrite event onto the subscribed catalog event and project the
    body down to the event's payload fields (:mod:`.projection`).
-5. Take a backlog slot (:data:`BACKLOG` per process, :data:`SUBSCRIPTION_BACKLOG`
-   per subscription), start the delivery in the background and answer ``200``
-   at once, well inside Appwrite's 15 second timeout. With no slot free the
-   event is acknowledged and dropped (``backlog_full``).
+5. For a webhook subscription, take a backlog slot (:data:`BACKLOG` per
+   process, :data:`SUBSCRIPTION_BACKLOG` per subscription), start the delivery
+   in the background and answer ``200`` at once, well inside Appwrite's 15
+   second timeout. With no slot free the event is acknowledged and dropped
+   (``backlog_full``). For a push subscription, publish the event on the
+   :mod:`.bus` for the replica holding its ``events/stream``: one bounded Redis
+   call, never waiting on the stream. With no stream open anywhere it is
+   dropped (``no_listener``).
 
 Status codes follow one rule: **anything that came from the subscriber's own
 webhook is answered with 2xx.** Appwrite counts every ``>= 400`` answer and,
@@ -82,6 +86,7 @@ from starlette.routing import Route
 
 from .. import error_monitoring, telemetry
 from ..auth import public_base_url
+from .bus import Bus, BusError, RedisBus
 from .catalog import CATALOG
 from .delivery import (
     Callback,
@@ -95,6 +100,7 @@ from .envelope import (
     Context,
     EnvelopeError,
     Keyring,
+    Mode,
     SubscriptionExpired,
     appwrite_hmac,
     canonical_json,
@@ -220,8 +226,8 @@ class Ingress:
     """The Appwrite webhook endpoint and the deliveries it starts.
 
     Create one per process. :meth:`run` must wrap the app's lifetime: it owns
-    the task group deliveries run in and closes the shared :class:`Egress` on
-    the way out.
+    the task group deliveries run in and closes the shared :class:`Egress` and
+    the :class:`~.bus.Bus` on the way out.
     """
 
     def __init__(
@@ -235,6 +241,7 @@ class Ingress:
         subscription_backlog: int = SUBSCRIPTION_BACKLOG,
         reads: int = READS,
         read_timeout: float = READ_TIMEOUT_SECONDS,
+        bus: Bus | None = None,
     ) -> None:
         if backlog < 1 or subscription_backlog < 1 or reads < 1:
             raise ValueError("backlogs and reads must be at least 1")
@@ -244,6 +251,7 @@ class Ingress:
         self._egress = egress
         self._dispatcher = dispatcher or Dispatcher(egress)
         self._base = base.rstrip("/")
+        self._bus = bus
         self._group: TaskGroup | None = None
         self._backlog = backlog
         self._subscription_backlog = subscription_backlog
@@ -255,9 +263,15 @@ class Ingress:
     @classmethod
     def from_env(cls) -> Ingress:
         """Sealing keys from ``MCP_EVENTS_SEALING_KEYS``, the public URL from
-        ``MCP_PUBLIC_URL``. Raises :class:`~.envelope.KeyringError` when the
-        keys are missing, so a misconfigured server fails at startup."""
-        return cls(Keyring.from_env(), Egress(), base=public_base_url())
+        ``MCP_PUBLIC_URL`` and the bus from ``MCP_EVENTS_REDIS_URL``. Raises
+        :class:`~.envelope.KeyringError` when the keys are missing, so a
+        misconfigured server fails at startup."""
+        return cls(
+            Keyring.from_env(),
+            Egress(),
+            base=public_base_url(),
+            bus=RedisBus.from_env(),
+        )
 
     @property
     def keyring(self) -> Keyring:
@@ -270,6 +284,11 @@ class Ingress:
     @property
     def dispatcher(self) -> Dispatcher:
         return self._dispatcher
+
+    @property
+    def bus(self) -> Bus | None:
+        """Where push events go; ``None`` when no bus is configured."""
+        return self._bus
 
     @property
     def server(self) -> str:
@@ -288,14 +307,18 @@ class Ingress:
     async def run(self) -> AsyncIterator[None]:
         """Serve deliveries for the duration of the block; cancel what is still
         in flight and close the egress client afterwards."""
-        async with self._egress:
-            async with anyio.create_task_group() as group:
-                self._group = group
-                try:
-                    yield
-                finally:
-                    self._group = None
-                    group.cancel_scope.cancel()
+        try:
+            async with self._egress:
+                async with anyio.create_task_group() as group:
+                    self._group = group
+                    try:
+                        yield
+                    finally:
+                        self._group = None
+                        group.cancel_scope.cancel()
+        finally:
+            if self._bus is not None:
+                await self._bus.aclose()
 
     async def read(self, request: Request, id: str, keys: Sequence[str]) -> Body | None:
         """Stream the body, hashing all of it under each of ``keys`` and
@@ -406,12 +429,6 @@ class Ingress:
         except Dropped as dropped:
             return self._drop(id, dropped.reason, event.name)
 
-        try:
-            callback = Callback(
-                subscription.callback, subscription.id, subscription.secret
-            )
-        except InvalidSecretError:
-            return self._drop(id, Drop.MALFORMED, event.name)
         delivery = (
             request.headers.get(DELIVERY_HEADER)
             or hashlib.sha256(body.content).hexdigest()
@@ -422,6 +439,14 @@ class Ingress:
             timestamp=projection.occurred or _now(),
             data=projection.data,
         )
+        if subscription.callback is None or subscription.secret is None:
+            return await self._publish(subscription.id, occurrence)
+        try:
+            callback = Callback(
+                subscription.callback, subscription.id, subscription.secret
+            )
+        except InvalidSecretError:
+            return self._drop(id, Drop.MALFORMED, event.name)
         if self._group is None:
             raise RuntimeError("Ingress.run() is not active")
         if not self._admit(subscription.id):
@@ -429,6 +454,22 @@ class Ingress:
         self._group.start_soon(self._deliver, callback, occurrence)
         telemetry.record_ingress(Outcome.ACCEPTED, None, event.name)
         return JSONResponse({"status": Outcome.ACCEPTED, "eventId": occurrence.id})
+
+    async def _publish(self, id: str, event: Event) -> Response:
+        """Hand a push event to the replica holding its stream."""
+        if self._bus is None:
+            return self._drop(id, Drop.NO_LISTENER, event.name)
+        try:
+            received = await self._bus.publish(id, event)
+        except BusError as error:
+            # Counted and logged, not reported: an outage would report every
+            # delivery. The streams report it when they cannot listen.
+            _log(f"{id}: {error}")
+            return self._drop(id, Drop.BUS_ERROR, event.name)
+        if not received:
+            return self._drop(id, Drop.NO_LISTENER, event.name)
+        telemetry.record_ingress(Outcome.ACCEPTED, None, event.name)
+        return JSONResponse({"status": Outcome.ACCEPTED, "eventId": event.id})
 
     def _admit(self, subscription: str) -> bool:
         """Take a backlog slot for one delivery of ``subscription``, unless the
@@ -460,7 +501,7 @@ class Ingress:
         try:
             result = await self._dispatcher.deliver(callback, event)
         except PayloadTooLargeError:
-            telemetry.record_event_delivery(event.name, "too_large", None)
+            telemetry.record_event_delivery(event.name, "too_large", None, Mode.WEBHOOK)
             _log(f"{callback.subscription}: {event.id} too large; not sent")
             return
         except Exception as error:
@@ -469,11 +510,13 @@ class Ingress:
             error_monitoring.capture_exception(
                 error, tags={"mcp.events.subscription": callback.subscription}
             )
-            telemetry.record_event_delivery(event.name, "error", None)
+            telemetry.record_event_delivery(event.name, "error", None, Mode.WEBHOOK)
             _log(f"{callback.subscription}: {event.id} failed: {error!r}")
             return
         reason = result.reason.value if result.reason is not None else None
-        telemetry.record_event_delivery(event.name, result.outcome, reason)
+        telemetry.record_event_delivery(
+            event.name, result.outcome, reason, Mode.WEBHOOK
+        )
         _log(
             f"{callback.subscription}: {event.id} {result.outcome} after "
             f"{result.attempts} attempt(s) in {time.monotonic() - started:.1f}s"
