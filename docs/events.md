@@ -214,12 +214,15 @@ Webhooks receivers do.
 | `403 additional_resource_not_allowed` (plan limit) | `-32013`, `data: {"limit": "webhooks", "max": <webhooks in the project>}` |
 | `5xx`, or anything else | `-32603` |
 
-Creating a webhook is a single call. A refresh rewrites the webhook and then
-sets its signing key, which the update endpoint does not take. If that second
-call fails, the webhook keeps its new envelope and its previous signing key.
-That key was derived from a key still in the ring, and the ingress accepts the
-signing key of every ring key, so deliveries continue; the error (`-32603`)
-tells the client to retry.
+Creating a webhook is a single call. A refresh sets the signing key first,
+because the update endpoint does not take it, and then rewrites the webhook
+with the new envelope. If that second call fails, the webhook keeps its previous
+envelope with the new signing key. The ingress accepts the signing key of every
+ring key, and the previous envelope's sealing key stays in the ring until that
+envelope expires, so deliveries continue; the error (`-32603`) tells the client
+to retry. In the other order, a failure could leave a new envelope with a
+signing key derived from a sealing key that is retired while the envelope is
+still live, and deliveries would be rejected until the next refresh.
 
 ### Free plan
 

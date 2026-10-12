@@ -35,10 +35,15 @@ Appwrite never returns. Deliveries already in flight were opened from the old
 envelope and keep signing with the old secret through their retries.
 
 Errors from Appwrite map onto the events codes; see :func:`_access_error` and
-:func:`_webhook_error`. Creating is one call. A refresh whose second call (the
-signing key) fails keeps the webhook with its new envelope and previous signing
-key, which still verifies because the ingress accepts the key of every sealing
-key in the ring, and reports the error so the client retries.
+:func:`_webhook_error`. Creating is one call. A refresh writes the signing key
+first and the envelope second, so a webhook never holds a signing key derived
+from an older sealing key than its envelope's. When the second call fails, the
+webhook keeps its previous envelope with the new signing key: the ingress
+accepts the key of every sealing key in the ring, and the previous envelope's
+sealing key stays in the ring until that envelope expires, so the webhook keeps
+delivering until then. The error is reported so the client retries. The other
+order could leave a new envelope with a signing key derived from a sealing key
+that is retired while that envelope is still live.
 
 ``events/unsubscribe`` recomputes the id from the principal and the request and
 deletes that webhook if it is a managed one. A missing webhook is still
@@ -404,19 +409,17 @@ class Subscriptions:
                 raise _webhook_error(error, target.project, count) from error
             if current is not None and managed(current) is None:
                 raise _foreign(subscription.id, target.project)
-        try:
-            webhooks.update(subscription.id, **fields)
-        except AppwriteException as error:
-            raise _webhook_error(error, target.project, count) from error
+        # The signing key goes first; see the module docstring for why.
         try:
             webhooks.sign(subscription.id, secret)
         except AppwriteException as error:
-            # The new envelope is written and the previous signing key stays.
-            # That key was derived from a key still in the ring (keys stay
-            # until every subscription sealed with them has expired), and the
-            # ingress checks signatures against every ring key, so the webhook
-            # keeps delivering. Report the failure so the client retries, but
-            # do not turn a transient error into a lost subscription.
+            raise _webhook_error(error, target.project, count) from error
+        try:
+            webhooks.update(subscription.id, **fields)
+        except AppwriteException as error:
+            # The new signing key is written and the previous envelope stays.
+            # Report the failure so the client retries, but do not turn a
+            # transient error into a lost subscription.
             raise _webhook_error(error, target.project, count) from error
         return Outcome.REFRESHED
 

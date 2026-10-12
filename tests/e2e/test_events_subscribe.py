@@ -479,14 +479,13 @@ class SubscribeFlow(unittest.TestCase):
     def test_refreshes_interleaved_across_a_key_rotation_still_deliver(self):
         # Step 2 of a rotation, rolling out: this server (the old replica,
         # ring k1,k2) still seals with k1; the new replica (ring k2,k1) seals
-        # with k2. Both refresh the same subscription and their writes
-        # interleave: old envelope, new envelope, new signing key, old signing
-        # key last.
+        # with k2.
         secret = whsec()
         callback = receiver.endpoint((secret,))
         params = request(*ROWS, callback, secret)
         id = self.subscribe(params)["id"]
         rotated = {**environment(), "MCP_EVENTS_SEALING_KEYS": f"{ROTATED},{KEYS}"}
+        k2 = Keyring.parse(f"{ROTATED},{KEYS}").signing_key(id)
         with Server(rotated, injected) as replica:
 
             def new_replica_refreshes() -> None:
@@ -494,18 +493,31 @@ class SubscribeFlow(unittest.TestCase):
                     _, message = client.call("events/subscribe", params)
                 assert "error" not in message, message
 
-            cloud.before("PATCH", rf"/v1/webhooks/{id}/secret", new_replica_refreshes)
+            # A refresh writes the signing key before the envelope, so when
+            # the envelope write fails the k1 envelope stays with the k2
+            # signing key, never a k2 envelope with a k1 signing key that
+            # outlives k1 in the ring.
+            cloud.fail("PUT", rf"/v1/webhooks/{id}", 500)
+            with Client(replica.url, TOKEN) as client:
+                _, message = client.call("events/subscribe", params)
+            self.assertEqual(message["error"]["code"], INTERNAL_ERROR, message)
+            stored = cloud.documents(MAIN)[id]
+            self.assertEqual(key_id(stored["httpPass"]), "k1")
+            self.assertEqual(stored["signatureKey"], k2)
+
+            # Both replicas refresh the same subscription and their writes
+            # interleave: old signing key, new signing key, new envelope, old
+            # envelope last.
+            cloud.before("PUT", rf"/v1/webhooks/{id}", new_replica_refreshes)
             self.subscribe(params)
             stored = cloud.documents(MAIN)[id]
-            self.assertEqual(key_id(stored["httpPass"]), "k2")
-            self.assertEqual(
-                stored["signatureKey"], Keyring.parse(KEYS).signing_key(id)
-            )
+            self.assertEqual(key_id(stored["httpPass"]), "k1")
+            self.assertEqual(stored["signatureKey"], k2)
 
             # The load balancer can hand Appwrite's delivery to either
-            # replica. Both open the k2 envelope (the old one holds k2 since
-            # step 1) and both accept the k1 signing key.
-            received = 3  # the handshakes of the subscribe and both refreshes
+            # replica. Both open the k1 envelope and both accept the k2
+            # signing key (the old replica holds k2 since step 1).
+            received = 4  # the handshakes of the subscribe and three refreshes
             for server in (replica, self.server):
                 with self.subTest(replica=server.url):
                     appwrite = Appwrite(server)
@@ -520,7 +532,7 @@ class SubscribeFlow(unittest.TestCase):
                     self.assertEqual(delivery.headers["webhook-id"], event_id)
                     self.assertEqual(delivery.verified, (True,))
         self.unsubscribe(target(*ROWS, callback))
-        self.nothing_more(callback, 5)
+        self.nothing_more(callback, 6)
 
     def test_every_event_subscribes_and_is_authorized(self):
         managed = set(self.ours())
@@ -804,11 +816,12 @@ class SubscribeFlow(unittest.TestCase):
                 )
                 self.assertEqual(set(self.ours()), managed)
 
-        # A refresh whose signing-key update fails is an internal error, but
-        # the webhook stays: its previous signing key still verifies, so a
-        # transient failure does not end the subscription.
+        # A refresh whose webhook update fails is an internal error, but the
+        # webhook stays: its previous envelope still opens and the signing key
+        # written before it verifies, so a transient failure does not end the
+        # subscription.
         result = self.subscribe(request(*ROWS, callback, secret))
-        cloud.fail("PATCH", r"/v1/webhooks/[^/]+/secret", 500)
+        cloud.fail("PUT", r"/v1/webhooks/[^/]+", 500)
         self.refused(
             "events/subscribe", request(*ROWS, callback, secret), INTERNAL_ERROR
         )
