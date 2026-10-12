@@ -407,8 +407,10 @@ A legitimate webhook cannot get a `401` in normal operation:
   every envelope paired with one was written before step 2 finished, give or
   take one refresh, and expires within the longest TTL (24 hours) after that;
   the extra hour covers refreshes in flight. After the old key is removed, only
-  expired subscriptions still name it. Their webhooks are orphans awaiting
-  cleanup, so they get `200` (`retired_key`) instead of being paused.
+  expired subscriptions still name it or hold a secret derived from it. Their
+  webhooks are orphans awaiting cleanup, so they get `200` (`retired_key`, or
+  `expired` because expiry is checked before the signature) instead of being
+  paused.
 - **Public URL.** The signature covers the registered URL, and every envelope
   is bound to `MCP_PUBLIC_URL`. Changing it breaks every subscription until it
   refreshes, so keep it fixed while subscriptions exist.
