@@ -87,11 +87,6 @@ class EventsEnabledFlow(unittest.TestCase):
                 self.assertEqual(status, 400, message)
                 self.assertEqual(message["error"]["code"], -32602)
 
-            for method in ("events/subscribe", "events/unsubscribe"):
-                with self.subTest(step=method):
-                    _, message = client.call(method)
-                    self.assertEqual(message["error"]["code"], -32601)
-
     def check_catalog(self, result):
         self.assertEqual(result["resultType"], "complete")
         self.assertNotIn("nextCursor", result)
@@ -175,8 +170,9 @@ class EventsDisabledFlow(unittest.TestCase):
                 self.assertEqual(status, 200, message)
                 self.assertNotIn("events", message["result"]["capabilities"])
 
-                _, message = client.call("events/list")
-                self.assertEqual(message["error"]["code"], -32601)
+                for method in ("events/list", "events/subscribe", "events/unsubscribe"):
+                    _, message = client.call(method)
+                    self.assertEqual(message["error"]["code"], -32601, method)
 
                 # The Appwrite webhook ingress is not mounted either.
                 response = httpx.post(

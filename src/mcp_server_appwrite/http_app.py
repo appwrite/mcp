@@ -468,7 +468,11 @@ def build_app(ingress: Ingress | None = None) -> Starlette:
     telemetry.init_telemetry("http", SERVER_VERSION)
     tools_manager = build_catalog_tools_manager()
     operator = build_operator(tools_manager, store_results=False)
-    server = build_mcp_server(operator, transport="http")
+    if events_protocol.enabled("http"):
+        ingress = ingress or Ingress.from_env()
+    else:
+        ingress = None
+    server = build_mcp_server(operator, transport="http", ingress=ingress)
 
     # Streamable HTTP with SSE responses (the MCP SDK/ecosystem default). Stateless,
     # so each request opens and closes its own short-lived stream — no session to pin.
@@ -482,11 +486,6 @@ def build_app(ingress: Ingress | None = None) -> Starlette:
         await session_manager.handle_request(scope, receive, send)
 
     mcp_endpoint = RequireBearer(MCPIdentityMiddleware(handle_mcp))
-
-    if events_protocol.enabled("http"):
-        ingress = ingress or Ingress.from_env()
-    else:
-        ingress = None
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):

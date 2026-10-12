@@ -14,6 +14,9 @@ events that feed it. Everything about an event is data:
   with ``appwrite_call_tool``.
 * ``status`` — the payload status filter. Appwrite webhooks filter only by event
   name, so the ingress applies this one before delivering.
+* ``access`` — the Appwrite read that proves a caller may watch the event.
+  ``events/subscribe`` makes it with the caller's own token on every subscribe
+  and refresh, so a refresh doubles as a periodic access check.
 
 The JSON Schemas served by ``events/list`` are derived from those fields, and
 :meth:`Event.validate` enforces exactly what the input schema promises.
@@ -27,6 +30,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Any
+
+from appwrite_console.query import Query
 
 from .errors import EventsError
 
@@ -139,6 +144,27 @@ class StatusFilter:
         return wanted is None or wanted == status
 
 
+@dataclass(frozen=True)
+class Access:
+    """The least-privilege Appwrite read that proves access to an event's
+    resource: ``GET {path}`` in the subscribed project, which needs ``scope``.
+
+    ``path`` and ``resource`` (how errors name what was read) have
+    ``{argument}`` placeholders like the pattern templates; ``params`` go in
+    the query string."""
+
+    path: str
+    scope: str
+    resource: str
+    params: Mapping[str, Any] = MappingProxyType({})
+
+    def resolve(self, arguments: Mapping[str, str]) -> str:
+        return self.path.format(**arguments)
+
+    def describe(self, arguments: Mapping[str, str]) -> str:
+        return self.resource.format(**arguments)
+
+
 PROJECT = Argument("project_id", "Appwrite project ID to watch.")
 """Required by every event; it is never part of the Appwrite pattern because
 project webhooks are already scoped to one project."""
@@ -152,6 +178,7 @@ class Event:
     description: str
     templates: tuple[str, ...]
     payload: tuple[PayloadField, ...]
+    access: Access
     arguments: tuple[Argument, ...] = ()
     status: StatusFilter | None = None
 
@@ -221,6 +248,10 @@ _DEPLOYMENT_STATUS = Argument(
     choices=(Status.READY, Status.FAILED),
 )
 
+_FUNCTION = Access(
+    "/functions/{function_id}", "functions.read", "function {function_id}"
+)
+
 _DEPLOYMENT_FILTER = StatusFilter(
     accepted=(Status.READY, Status.FAILED), argument=_DEPLOYMENT_STATUS.name
 )
@@ -277,6 +308,7 @@ EVENTS: tuple[Event, ...] = (
             ),
             _timestamp("created_at", "When the execution started."),
         ),
+        access=_FUNCTION,
         status=StatusFilter(accepted=(Status.FAILED,)),
     ),
     Event(
@@ -288,6 +320,7 @@ EVENTS: tuple[Event, ...] = (
         ),
         templates=("functions.{function_id}.deployments.*.update",),
         payload=_deployment_payload("function_id", "function"),
+        access=_FUNCTION,
         status=_DEPLOYMENT_FILTER,
     ),
     Event(
@@ -299,6 +332,7 @@ EVENTS: tuple[Event, ...] = (
         ),
         templates=("sites.{site_id}.deployments.*.update",),
         payload=_deployment_payload("site_id", "site"),
+        access=Access("/sites/{site_id}", "sites.read", "site {site_id}"),
         status=_DEPLOYMENT_FILTER,
     ),
     Event(
@@ -314,6 +348,11 @@ EVENTS: tuple[Event, ...] = (
             PayloadField("table_id", "string", "ID of the table."),
             PayloadField("row_id", "string", "ID of the new row."),
             _timestamp("created_at", "When the row was created."),
+        ),
+        access=Access(
+            "/tablesdb/{database_id}/tables/{table_id}",
+            "tables.read",
+            "table {table_id} in database {database_id}",
         ),
     ),
     Event(
@@ -332,6 +371,9 @@ EVENTS: tuple[Event, ...] = (
             ),
             _timestamp("created_at", "When the file was uploaded."),
         ),
+        access=Access(
+            "/storage/buckets/{bucket_id}", "buckets.read", "bucket {bucket_id}"
+        ),
     ),
     Event(
         name="users.user.created",
@@ -340,6 +382,14 @@ EVENTS: tuple[Event, ...] = (
         payload=(
             PayloadField("user_id", "string", "ID of the new user."),
             _timestamp("created_at", "When the user was created."),
+        ),
+        # Listing one user is the narrowest read that proves the caller may
+        # see users; the agent needs users.read to act on the event anyway.
+        access=Access(
+            "/users",
+            "users.read",
+            "users",
+            MappingProxyType({"queries": [Query.limit(1)], "total": False}),
         ),
     ),
 )

@@ -28,8 +28,10 @@ Appwrite signing key and the ``authPassword`` size budget).
 
 Sealing keys come from ``MCP_EVENTS_SEALING_KEYS`` (``<id>:<base64 32 bytes>``,
 comma separated, first one active). Every key in the ring opens envelopes, so a
-rotation adds the new key in front and drops the old one once every subscription
-has refreshed (the TTL cap bounds how long that takes).
+rotation first adds the new key behind the active one on every replica, then
+moves it in front, and drops the old one once every subscription has refreshed
+(the TTL cap bounds how long that takes). Sealing with a key some replica does
+not hold yet would make that replica drop the deliveries as ``retired_key``.
 """
 
 from __future__ import annotations
