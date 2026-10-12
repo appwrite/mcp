@@ -205,7 +205,7 @@ request that fails authentication gets `401`.
 | Case | Response | Delivered |
 | --- | --- | --- |
 | Valid, matching event | `200` `{"status":"accepted","eventId":…}` | yes |
-| Subscription expired | `200` dropped `expired` | no |
+| Subscription expired (checked before the signature) | `200` dropped `expired` | no |
 | Envelope sealed with a key no longer in the ring | `200` dropped `retired_key` | no |
 | Event name not in the catalog | `200` dropped `unknown_event` | no |
 | Appwrite event outside the subscription's patterns | `200` dropped `event_mismatch` | no |
