@@ -8,7 +8,12 @@ not behind the bearer-token gate: the Appwrite signature is the authentication.
 For each delivery:
 
 1. Take the envelope from Basic auth and read the key id in its JWE header.
-2. Verify ``X-Appwrite-Webhook-Signature``: Appwrite signs
+2. Open the envelope for this server (``MCP_PUBLIC_URL``), the project in
+   ``X-Appwrite-Webhook-Project-Id`` and the subscription id in the path. The
+   expected binding comes only from configuration and routing, never from the
+   envelope. Opening also checks the lease expiry, and comes first so an
+   expired subscription is acknowledged whatever signing key its webhook holds.
+3. Verify ``X-Appwrite-Webhook-Signature``: Appwrite signs
    ``HMAC-SHA1(url + body)`` with the webhook secret, where ``url`` is the URL
    the webhook was registered with. The ingress rebuilds that URL from
    ``MCP_PUBLIC_URL`` and the path and never trusts the inbound ``Host``. The
@@ -18,10 +23,6 @@ For each delivery:
    rolling key rotation can interleave their writes and leave an envelope
    sealed with one key next to a secret derived from the other. The body is
    hashed as it streams in, by at most :data:`READS` requests at once.
-3. Open the envelope for this server (``MCP_PUBLIC_URL``), the project in
-   ``X-Appwrite-Webhook-Project-Id`` and the subscription id in the path. The
-   expected binding comes only from configuration and routing, never from the
-   envelope. Opening also checks the lease expiry.
 4. Map the Appwrite event onto the subscribed catalog event and project the
    body down to the event's payload fields (:mod:`.projection`).
 5. Take a backlog slot (:data:`BACKLOG` per process, :data:`SUBSCRIPTION_BACKLOG`
@@ -39,11 +40,13 @@ parse, a bad signature, or an envelope that does not open for this webhook and
 project. A legitimate webhook cannot produce those in normal operation:
 
 * After a sealing-key rotation the old key stays in the ring until every
-  subscription sealed with it has expired, so its signature still verifies and
-  its envelope still opens. Once the old key is dropped, only expired
-  subscriptions still name it; their deliveries are dropped with ``200``
-  (``retired_key``) rather than rejected, because the webhook is an orphan that
-  has not been cleaned up yet, not an attacker.
+  subscription sealed with it, or holding a secret derived from it, has
+  expired, so its signature still verifies and its envelope still opens. Once
+  the old key is dropped, only expired subscriptions still name it; their
+  deliveries are dropped with ``200`` (``retired_key``, or ``expired`` for an
+  envelope from a newer key next to an old-key secret) rather than rejected,
+  because the webhook is an orphan that has not been cleaned up yet, not an
+  attacker.
 * Changing ``MCP_PUBLIC_URL`` changes the signed URL and the server every
   envelope is bound to, and breaks every existing subscription until it
   refreshes. Do not change it while subscriptions exist.
@@ -328,6 +331,24 @@ class Ingress:
         except EnvelopeError:
             return self._drop(id, Drop.RETIRED_KEY)
 
+        # The envelope opens before the signature is checked, so an expired
+        # subscription is acknowledged whatever signing key its webhook still
+        # holds: after a rotation an orphan can pair an expired envelope with
+        # a signing key whose sealing key has left the ring, and a 401 would
+        # get it paused and its owner emailed. Opening authenticates the
+        # envelope, so a forger learns nothing from it.
+        context = Context(
+            server=self._base,
+            tenant=request.headers.get(PROJECT_HEADER, ""),
+            resource=id,
+        )
+        try:
+            subscription = self._keyring.open(envelope, context)
+        except SubscriptionExpired:
+            return self._drop(id, Drop.EXPIRED)
+        except EnvelopeError:
+            return self._reject(id, Rejection.ENVELOPE)
+
         # The signing key is checked against every key in the ring, not only
         # the one that sealed the envelope: two replicas refreshing the same
         # subscription across a key rotation can leave the webhook with an
@@ -347,17 +368,6 @@ class Ingress:
         if not verified:
             return self._reject(id, Rejection.SIGNATURE)
 
-        context = Context(
-            server=self._base,
-            tenant=request.headers.get(PROJECT_HEADER, ""),
-            resource=id,
-        )
-        try:
-            subscription = self._keyring.open(envelope, context)
-        except SubscriptionExpired:
-            return self._drop(id, Drop.EXPIRED)
-        except EnvelopeError:
-            return self._reject(id, Rejection.ENVELOPE)
         event = CATALOG.get(subscription.name)
         if event is None:
             return self._drop(id, Drop.UNKNOWN_EVENT)

@@ -1036,13 +1036,31 @@ class RotationFlow(IngressFlow):
                 appwrite.deliver(old, ROW_EVENT, fixture("row_created")),
                 "retired_key",
             )
+            # The mixed webhook left behind after its subscription expired:
+            # its signing key's sealing key is gone, and it is still an orphan
+            # to acknowledge, not a forgery to reject.
+            orphan, orphan_callback, _ = self.subscribe(
+                *ROWS,
+                keys=KEY_TWO,
+                signing=KEY_ONE,
+                expires=int(time.time() * 1000) - 1,
+            )
+            self.dropped(
+                appwrite.deliver(orphan, ROW_EVENT, fixture("row_created")),
+                "expired",
+            )
             self.delivered(
                 new_callback,
                 self.accepted(appwrite.deliver(new, ROW_EVENT, fixture("row_created"))),
                 count=2,
             )
             appwrite.close()
-        self.nothing_more((old_callback, 2), (new_callback, 2), (mixed_callback, 1))
+        self.nothing_more(
+            (old_callback, 2),
+            (new_callback, 2),
+            (mixed_callback, 1),
+            (orphan_callback, 0),
+        )
 
 
 class ProductionEgressFlow(IngressFlow):
