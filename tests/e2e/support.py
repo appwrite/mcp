@@ -28,10 +28,15 @@ The parties around the server are real servers on localhost too:
   ``standardwebhooks`` library and echoes verification challenges.
 * :class:`Collector` is an OTLP/HTTP metrics endpoint. Every server exports to
   it, so tests read the counters the server really emits.
+* :class:`Redis` is a real Dragonfly (production's bus), or ``redis-server``
+  where Dragonfly has no build, on a random port: the bus that push streams
+  share across server instances. :meth:`Client.stream` opens an
+  ``events/stream`` and reads its SSE frames as they arrive.
 """
 
 from __future__ import annotations
 
+import atexit
 import base64
 import datetime
 import hashlib
@@ -39,10 +44,14 @@ import hmac
 import itertools
 import json
 import os
+import queue
 import re
 import secrets
+import shutil
+import signal
 import socket
 import ssl
+import subprocess
 import tempfile
 import threading
 import time
@@ -66,11 +75,12 @@ from opentelemetry import metrics
 from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import (
     ExportMetricsServiceRequest,
 )
+from sse_starlette.sse import AppStatus
 from standardwebhooks import Webhook as StandardWebhook
 from standardwebhooks.webhooks import WebhookVerificationError
 
 from mcp_server_appwrite import auth
-from mcp_server_appwrite.http_app import build_app
+from mcp_server_appwrite.http_app import Uvicorn, build_app
 
 TOKEN = "e2e-access-token"
 """The bearer token the stubbed verifier accepts, for :data:`SUBJECT`."""
@@ -97,6 +107,10 @@ GRANTED: dict[str, list[str]] = {}
 """The OAuth ``scope`` claim of a token, for tests that set one; others carry
 none."""
 
+EXPIRES: dict[str, int] = {}
+"""The ``exp`` claim (Unix seconds) of a token, for tests that set one; others
+never expire."""
+
 PROTOCOL_VERSION = "2026-07-28"
 LEGACY_PROTOCOL_VERSION = "2025-11-25"
 
@@ -109,6 +123,8 @@ STARTUP_SECONDS = 15.0
 CONTROLLED = (
     "APPWRITE_ENDPOINT",
     "MCP_EVENTS",
+    "MCP_EVENTS_PUSH",
+    "MCP_EVENTS_REDIS_URL",
     "MCP_EVENTS_SEALING_KEYS",
     "MCP_PUBLIC_URL",
     "MCP_CONSOLE_URL",
@@ -135,6 +151,7 @@ async def _verify_token(_verifier: Any, token: str) -> AccessToken | None:
         token=token,
         client_id=CLIENT_ID,
         scopes=list(GRANTED.get(token, [])),
+        expires_at=EXPIRES.get(token),
         subject=subject,
         claims=claims,
     )
@@ -161,7 +178,7 @@ class Server:
         }
         self._build = build
         self._patches: list[Any] = []
-        self._server: uvicorn.Server | None = None
+        self._server: Uvicorn | None = None
         self._thread: threading.Thread | None = None
         self.url = ""
 
@@ -196,7 +213,7 @@ class Server:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
         config = uvicorn.Config(app, log_level="warning", access_log=False, ws="none")
-        self._server = uvicorn.Server(config)
+        self._server = Uvicorn(config, app)
         self._thread = threading.Thread(
             target=self._server.run, kwargs={"sockets": [listener]}, daemon=True
         )
@@ -219,20 +236,25 @@ class Server:
         self._stop_patches()
 
     def _shutdown(self) -> None:
+        """Stop the way a pod is stopped: uvicorn's SIGTERM handling."""
         if self._server is not None:
-            self._server.should_exit = True
+            self._server.handle_exit(signal.SIGTERM, None)
         if self._thread is not None:
             self._thread.join(STARTUP_SECONDS)
         self._server = None
         self._thread = None
+        # sse_starlette, which serves the SDK's 2025-era SSE responses, patches
+        # uvicorn's exit handler to drain every SSE stream in the process. A
+        # pod runs one server; here the next server would inherit the drain.
+        AppStatus.should_exit = False
 
     def _stop_patches(self) -> None:
         for patch in reversed(self._patches):
             patch.stop()
         self._patches = []
 
-    def client(self) -> Client:
-        return Client(self.url)
+    def client(self, token: str = TOKEN) -> Client:
+        return Client(self.url, token)
 
 
 def message(response: httpx.Response) -> dict[str, Any]:
@@ -291,6 +313,32 @@ class Client:
         response = self._http.post(path, json=body, headers=headers)
         return response.status_code, message(response)
 
+    def stream(
+        self, params: Mapping[str, Any], *, legacy: bool = False, path: str = "/"
+    ) -> Stream:
+        """Open an ``events/stream``: as a 2026-07-28 request, or with
+        ``legacy`` as a 2025-11-25 one, the way handshake-era clients send it
+        after ``initialize``."""
+        id = next(self._ids)
+        body: dict[str, Any] = {
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "events/stream",
+            "params": dict(params),
+        }
+        headers = {**self._headers}
+        if legacy:
+            headers["MCP-Protocol-Version"] = LEGACY_PROTOCOL_VERSION
+        else:
+            body["params"]["_meta"] = {
+                "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
+                "io.modelcontextprotocol/clientInfo": {"name": "e2e", "version": "1"},
+                "io.modelcontextprotocol/clientCapabilities": {},
+            }
+            headers["MCP-Protocol-Version"] = PROTOCOL_VERSION
+            headers["Mcp-Method"] = "events/stream"
+        return Stream(self._http.base_url, path, id, body, headers)
+
     def initialize(self, *, path: str = "/") -> tuple[int, dict[str, Any]]:
         """A 2025-11-25 ``initialize`` handshake."""
         body = {
@@ -305,6 +353,171 @@ class Client:
         }
         response = self._http.post(path, json=body, headers=self._headers)
         return response.status_code, message(response)
+
+
+_END = object()
+
+
+class Stream:
+    """One open ``events/stream``, read on a thread of its own.
+
+    :meth:`next` returns its JSON-RPC messages in order: the notifications,
+    then the final result or error. A response that is not an SSE stream (an
+    immediate error) is one message. :meth:`close` aborts the request, which is
+    how a client cancels a stream."""
+
+    def __init__(
+        self,
+        base: httpx.URL,
+        path: str,
+        id: int,
+        body: Mapping[str, Any],
+        headers: Mapping[str, str],
+    ) -> None:
+        self.id = id
+        self.status = 0
+        self.content_type = ""
+        self._http = httpx.Client(base_url=base, timeout=httpx.Timeout(30.0, read=None))
+        self._messages: queue.Queue[Any] = queue.Queue()
+        self._opened = threading.Event()
+        self._thread = threading.Thread(
+            target=self._read, args=(path, body, headers), daemon=True
+        )
+        self._thread.start()
+
+    def _read(
+        self, path: str, body: Mapping[str, Any], headers: Mapping[str, str]
+    ) -> None:
+        try:
+            with self._http.stream(
+                "POST", path, json=body, headers=headers
+            ) as response:
+                self.status = response.status_code
+                self.content_type = response.headers.get("content-type", "")
+                self._opened.set()
+                if not self.content_type.startswith("text/event-stream"):
+                    self._messages.put(json.loads(response.read()))
+                    return
+                for line in response.iter_lines():
+                    if line.startswith("data:"):
+                        self._messages.put(json.loads(line[5:]))
+        except (httpx.HTTPError, RuntimeError, ValueError):
+            pass
+        finally:
+            self._opened.set()
+            self._messages.put(_END)
+
+    def next(self, timeout: float = 10.0) -> dict[str, Any]:
+        """The next message; fails when the stream ended or ``timeout`` passed."""
+        try:
+            message = self._messages.get(timeout=timeout)
+        except queue.Empty:
+            raise AssertionError(f"no message within {timeout}s") from None
+        if message is _END:
+            self._messages.put(_END)
+            raise AssertionError("the stream ended")
+        return message
+
+    def until(self, method: str, timeout: float = 10.0) -> dict[str, Any]:
+        """Skip heartbeats until a ``method`` notification arrives."""
+        deadline = time.monotonic() + timeout
+        while True:
+            message = self.next(max(deadline - time.monotonic(), 0.01))
+            if message.get("method") == method:
+                return message
+            if message.get("method") != "notifications/events/heartbeat":
+                raise AssertionError(f"expected {method}, got {message}")
+
+    def ended(self, timeout: float = 10.0) -> bool:
+        """Whether the response finished within ``timeout``."""
+        self._thread.join(timeout)
+        return not self._thread.is_alive()
+
+    def close(self) -> None:
+        self._http.close()
+        self._thread.join(5.0)
+
+    def __enter__(self) -> Stream:
+        self._opened.wait(30.0)
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+
+class Redis:
+    """A Redis-protocol server on ``127.0.0.1:<random port>``, without
+    persistence: ``dragonfly`` when it is on ``PATH``, as in CI, otherwise
+    ``redis-server``.
+
+    :meth:`stop` and :meth:`start` take it down and bring it back on the same
+    port, for outages."""
+
+    def __init__(self) -> None:
+        dragonfly = shutil.which("dragonfly")
+        redis = shutil.which("redis-server")
+        if dragonfly is not None:
+            self._arguments = [dragonfly, "--dbfilename=", "--proactor_threads=2"]
+        elif redis is not None:
+            self._arguments = [redis, "--save", "", "--appendonly", "no"]
+        else:
+            raise RuntimeError(
+                "push streams need dragonfly or redis-server on PATH: "
+                "`brew install redis` or `apt-get install redis-server`"
+            )
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        self.port = listener.getsockname()[1]
+        listener.close()
+        self.url = f"redis://127.0.0.1:{self.port}/0"
+        self._process: subprocess.Popen[bytes] | None = None
+        self.start()
+
+    def start(self) -> None:
+        self._process = subprocess.Popen(
+            [*self._arguments, "--port", str(self.port), "--bind", "127.0.0.1"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        deadline = time.monotonic() + STARTUP_SECONDS
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", self.port), 0.2) as probe:
+                    probe.sendall(b"PING\r\n")
+                    if probe.recv(16).startswith(b"+PONG"):
+                        return
+            except OSError:
+                time.sleep(0.02)
+        raise RuntimeError(f"{self._arguments[0]} did not start")
+
+    def stop(self) -> None:
+        if self._process is not None:
+            self._process.kill()
+            self._process.wait()
+            self._process = None
+
+    def pause(self) -> None:
+        """Freeze the server with its connections open: a peer that is gone
+        without a reset, as after a node loss."""
+        if self._process is not None:
+            self._process.send_signal(signal.SIGSTOP)
+
+    def resume(self) -> None:
+        if self._process is not None:
+            self._process.send_signal(signal.SIGCONT)
+
+
+_redis: Redis | None = None
+
+
+def redis() -> Redis:
+    """The process-wide Redis every push server shares."""
+    global _redis
+    with _collector_lock:
+        if _redis is None:
+            _redis = Redis()
+            atexit.register(_redis.stop)
+        return _redis
 
 
 class _QuietServer(ThreadingHTTPServer):
@@ -954,6 +1167,11 @@ class Cloud:
                 "attempts": 0,
                 **document,
             }
+
+    def remove(self, project: str, id: str) -> None:
+        """Delete a webhook, as a person in the Console would."""
+        with self._lock:
+            del self._projects[project].webhooks[id]
 
     def documents(self, project: str) -> dict[str, dict[str, Any]]:
         """The stored webhook documents, write-only fields included."""

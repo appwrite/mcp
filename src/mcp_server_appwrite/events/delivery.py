@@ -152,16 +152,19 @@ class Event:
     timestamp: str
     data: Mapping[str, Any]
 
+    def occurrence(self) -> dict[str, Any]:
+        """The ``EventOccurrence`` sent to the subscriber. Appwrite webhooks
+        cannot replay, so there is never a cursor."""
+        return {
+            "eventId": self.id,
+            "name": self.name,
+            "timestamp": self.timestamp,
+            "data": dict(self.data),
+            "cursor": None,
+        }
+
     def encode(self) -> bytes:
-        return encode(
-            {
-                "eventId": self.id,
-                "name": self.name,
-                "timestamp": self.timestamp,
-                "data": dict(self.data),
-                "cursor": None,
-            }
-        )
+        return encode(self.occurrence())
 
 
 @dataclass(frozen=True)

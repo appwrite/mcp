@@ -6,7 +6,9 @@ into that webhook's ``authPassword``, which Appwrite stores encrypted, never
 returns, and sends back as HTTP Basic auth on every delivery:
 
 * The webhook ``$id`` is the deterministic :func:`subscription_id`, so a refresh
-  is an upsert and an unsubscribe is a delete by id.
+  is an upsert and an unsubscribe is a delete by id. A push subscription (one
+  ``events/stream``) gets a random :func:`stream_id` instead: it lives as long
+  as its stream, so two streams with the same arguments are two subscriptions.
 * ``authPassword`` holds the envelope from :meth:`Keyring.seal`: a Subscription
   Record v1 sealed with the ``mcp-subscription+jwe`` profile of
   `mcp-event-subscriptions <https://github.com/ChiragAgg5k/mcp-event-subscriptions>`_
@@ -43,6 +45,7 @@ import hmac
 import json
 import os
 import re
+import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -67,7 +70,6 @@ COMPACT_PARTS = 5
 """``header..iv.ciphertext.tag``: JWE Compact with an empty encrypted key."""
 
 RECORD_VERSION = 1
-DELIVERY_MODE = "webhook"
 
 SUBSCRIPTION_PREFIX = "sub_"
 # Appwrite custom ids: at most 36 chars of [A-Za-z0-9._-], no leading special
@@ -94,6 +96,15 @@ EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 MILLISECOND = timedelta(milliseconds=1)
 
 Argument = str | int | bool | None
+
+
+class Mode(StrEnum):
+    """How a subscription's events reach the subscriber."""
+
+    WEBHOOK = profile.WEBHOOK
+    """Signed POSTs to the subscriber's callback URL."""
+    PUSH = profile.PUSH
+    """Notifications on the ``events/stream`` the subscriber holds open."""
 
 
 class EnvelopeFailure(StrEnum):
@@ -165,6 +176,12 @@ def subscription_id(
     return SUBSCRIPTION_PREFIX + digest[:SUBSCRIPTION_HASH_CHARS]
 
 
+def stream_id() -> str:
+    """A fresh id for a push subscription, in the :func:`subscription_id`
+    format so its webhook is recognized as managed."""
+    return SUBSCRIPTION_PREFIX + secrets.token_hex(SUBSCRIPTION_HASH_CHARS // 2)
+
+
 def valid_subscription_id(value: str) -> bool:
     """Whether ``value`` is a subscription id this module could have produced."""
     return SUBSCRIPTION_ID_PATTERN.fullmatch(value) is not None
@@ -229,11 +246,11 @@ class Subscription:
     """Event name, e.g. ``tablesdb.row.created``."""
     arguments: Mapping[str, Argument]
     """Event arguments, sorted by key and read-only."""
-    callback: str
-    """Delivery URL."""
-    secret: str = field(repr=False)
-    """The client's ``whsec_`` secret. Kept out of ``repr`` so logging a
-    subscription never leaks it."""
+    callback: str | None
+    """Delivery URL; ``None`` for a push subscription."""
+    secret: str | None = field(repr=False)
+    """The client's ``whsec_`` secret, ``None`` for a push subscription. Kept
+    out of ``repr`` so logging a subscription never leaks it."""
     expires: int
     """Lease expiry as Unix epoch milliseconds."""
     refresh: int
@@ -244,11 +261,23 @@ class Subscription:
     def __post_init__(self) -> None:
         canonical = MappingProxyType(dict(sorted(self.arguments.items())))
         object.__setattr__(self, "arguments", canonical)
+        if (self.callback is None) != (self.secret is None):
+            raise ValueError("a webhook subscription needs a callback and a secret")
+        if self.callback is None:
+            # A push subscription's id is random, so only its shape is checked;
+            # the envelope's context binds it to the webhook.
+            if not valid_subscription_id(self.id):
+                raise ValueError("push subscription id is invalid")
+            return
         expected = subscription_id(
             self.principal, self.callback, self.name, self.arguments
         )
         if self.id != expected:
             raise ValueError("subscription id does not match its contents")
+
+    @property
+    def mode(self) -> Mode:
+        return Mode.PUSH if self.callback is None else Mode.WEBHOOK
 
     @classmethod
     def create(
@@ -262,7 +291,7 @@ class Subscription:
         refresh: int,
         principal: str,
     ) -> Subscription:
-        """Build a subscription, deriving its id."""
+        """Build a webhook subscription, deriving its id."""
         return cls(
             id=subscription_id(principal, callback, name, arguments),
             project=project,
@@ -276,16 +305,40 @@ class Subscription:
         )
 
     @classmethod
+    def stream(
+        cls,
+        project: str,
+        name: str,
+        arguments: Mapping[str, Argument],
+        expires: int,
+        refresh: int,
+        principal: str,
+    ) -> Subscription:
+        """Build a push subscription with a fresh :func:`stream_id`."""
+        return cls(
+            id=stream_id(),
+            project=project,
+            name=name,
+            arguments=arguments,
+            callback=None,
+            secret=None,
+            expires=expires,
+            refresh=refresh,
+            principal=principal,
+        )
+
+    @classmethod
     def from_record(cls, record: Mapping[str, Any], project: str) -> Subscription:
         """The subscription of a validated record. Raises ``ValueError`` when
         its id does not match its contents."""
+        delivery = record["delivery"]
         return cls(
             id=record["id"],
             project=project,
             name=record["event"]["name"],
             arguments=record["event"]["arguments"],
-            callback=record["delivery"]["url"],
-            secret=record["delivery"]["secret"],
+            callback=delivery.get("url"),
+            secret=delivery.get("secret"),
             expires=milliseconds(record["lease"]["expiresAt"]),
             refresh=milliseconds(record["lease"]["refreshBefore"]),
             principal=record["principal"],
@@ -294,16 +347,15 @@ class Subscription:
     @property
     def record(self) -> dict[str, Any]:
         """The Subscription Record v1 that is sealed."""
+        delivery: dict[str, Any] = {"mode": self.mode.value}
+        if self.mode is Mode.WEBHOOK:
+            delivery |= {"url": self.callback, "secret": self.secret}
         return {
             "version": RECORD_VERSION,
             "id": self.id,
             "principal": self.principal,
             "event": {"name": self.name, "arguments": dict(self.arguments)},
-            "delivery": {
-                "mode": DELIVERY_MODE,
-                "url": self.callback,
-                "secret": self.secret,
-            },
+            "delivery": delivery,
             "lease": {
                 "expiresAt": timestamp(self.expires),
                 "refreshBefore": timestamp(self.refresh),

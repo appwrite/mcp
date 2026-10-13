@@ -9,7 +9,8 @@ and how it is recognized later:
   :func:`.envelope.subscription_id`), so a refresh is an update and an
   unsubscribe a delete by id.
 * ``name`` is a :class:`Label`, for example
-  ``MCP events | tablesdb.row.created | until 2026-10-09T11:00:00Z | owner OPxPhaa1``.
+  ``MCP events | tablesdb.row.created | until 2026-10-09T11:00:00Z | owner OPxPhaa1``
+  (``MCP events push | …`` for the webhook of a push stream).
   Appwrite stores ``authPassword`` write-only, so the sealed envelope (and the
   expiry inside it) can never be read back. The label repeats the two facts a
   later subscribe needs to clean up without opening it: when the subscription
@@ -47,6 +48,7 @@ USERNAME = "mcp-events"
 Appwrite send the envelope (the password) as Basic auth."""
 
 PREFIX = "MCP events"
+PUSH_PREFIX = "MCP events push"
 SEPARATOR = " | "
 """ASCII on purpose: Appwrite's worker sends the name back in the
 ``X-Appwrite-Webhook-Name`` header of every delivery."""
@@ -86,11 +88,14 @@ class Label:
     """Expiry as Unix epoch milliseconds. Written rounded up to the second, so
     the label never claims an earlier expiry than the envelope."""
     owner: str
+    push: bool = False
+    """Whether it backs a push stream, which renews a short lease while open."""
 
     def __str__(self) -> str:
         seconds = math.ceil(self.expires / 1000)
         stamp = datetime.fromtimestamp(seconds, UTC).strftime(STAMP)
-        return SEPARATOR.join((PREFIX, self.event, UNTIL + stamp, OWNER + self.owner))
+        prefix = PUSH_PREFIX if self.push else PREFIX
+        return SEPARATOR.join((prefix, self.event, UNTIL + stamp, OWNER + self.owner))
 
     @classmethod
     def parse(cls, name: str) -> Label | None:
@@ -99,7 +104,7 @@ class Label:
         if len(parts) != 4:
             return None
         prefix, event, until, tag = parts
-        if prefix != PREFIX or not until.startswith(UNTIL):
+        if prefix not in (PREFIX, PUSH_PREFIX) or not until.startswith(UNTIL):
             return None
         if not tag.startswith(OWNER):
             return None
@@ -111,7 +116,7 @@ class Label:
         except ValueError:
             return None
         expires = int(stamp.replace(tzinfo=UTC).timestamp()) * 1000
-        return cls(event=event, expires=expires, owner=tag)
+        return cls(event=event, expires=expires, owner=tag, push=prefix == PUSH_PREFIX)
 
     def expired(self, now: int) -> bool:
         return now >= self.expires

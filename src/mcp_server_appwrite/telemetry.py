@@ -292,7 +292,15 @@ def _build_instruments(meter: Any, transport: str, version: str) -> None:
     _instruments["events_deliveries"] = meter.create_counter(
         "mcp.events.deliveries",
         unit="{event}",
-        description="MCP event deliveries to subscriber callbacks by outcome.",
+        description=(
+            "MCP event deliveries by mode (webhook callbacks, push streams) "
+            "and outcome."
+        ),
+    )
+    _instruments["events_streams"] = meter.create_up_down_counter(
+        "mcp.events.streams",
+        unit="{stream}",
+        description="Open events/stream push subscriptions.",
     )
     _instruments["events_subscriptions"] = meter.create_counter(
         "mcp.events.subscriptions",
@@ -737,10 +745,18 @@ def record_subscription(
     )
 
 
-def record_event_delivery(event: str, outcome: str, reason: str | None) -> None:
-    """How one MCP event delivery to a subscriber callback ended."""
+def record_event_delivery(
+    event: str, outcome: str, reason: str | None, mode: str
+) -> None:
+    """How one MCP event delivery ended: to a subscriber callback (``mode``
+    ``webhook``) or on an ``events/stream`` (``push``)."""
     _safe_add(
         "events_deliveries",
         1,
-        {"event": event, "outcome": outcome, "reason": reason},
+        {"event": event, "outcome": outcome, "reason": reason, "mode": mode},
     )
+
+
+def record_stream(event: str, delta: int) -> None:
+    """An ``events/stream`` opened (``delta`` 1) or closed (-1)."""
+    _safe_add("events_streams", delta, {"event": event})

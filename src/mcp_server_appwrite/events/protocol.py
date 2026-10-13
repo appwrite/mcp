@@ -10,16 +10,20 @@ outside and keeps the workaround in one place:
   today: ``capabilities.events = {}`` for ChatGPT and
   ``capabilities.extensions["io.modelcontextprotocol/events"]`` for SEP-3415.
   Delete the middleware once the SDK models the capability.
-* **Methods.** ``events/list``, ``events/subscribe`` and ``events/unsubscribe``
-  are registered with ``Server.add_request_handler``; the SDK adds
-  ``resultType: "complete"`` to custom-method results on the 2026-07-28
-  protocol. Subscribe and unsubscribe are counted like ``tools/call``
-  (``mcp.messages.received`` / ``mcp.jsonrpc.errors``), and failures on our
-  side go to Sentry with the same tags; errors the caller caused (bad input,
-  no access, a quota, an unreachable callback) are counted but not reported.
+* **Methods.** ``events/list``, ``events/subscribe``, ``events/unsubscribe``
+  and, with push on, ``events/stream`` (:mod:`.streams`) are registered with
+  ``Server.add_request_handler``; the SDK adds ``resultType: "complete"`` to
+  custom-method results on the 2026-07-28 protocol. All but the listing are
+  counted like ``tools/call`` (``mcp.messages.received`` /
+  ``mcp.jsonrpc.errors``), and failures on our side go to Sentry with the same
+  tags; errors the caller caused (bad input, no access, a quota, an
+  unreachable callback) are counted but not reported.
 
 Events are served only on the hosted HTTP transport and only behind the
-``events`` flag (``MCP_EVENTS``); see :func:`enabled`.
+``events`` flag (``MCP_EVENTS``); see :func:`enabled`. Push delivery also needs
+the ``events-push`` flag (``MCP_EVENTS_PUSH``) and a bus
+(``MCP_EVENTS_REDIS_URL``); see :func:`push_enabled`. ``events/list``
+advertises ``push`` only then.
 """
 
 from __future__ import annotations
@@ -36,9 +40,12 @@ from pydantic import ConfigDict
 
 from .. import error_monitoring, flags, telemetry
 from .catalog import CATALOG, EVENTS, Event
+from .envelope import Mode
 from .errors import EventsError
+from .ingress import Ingress
+from .streams import METHOD as STREAM_METHOD
+from .streams import StreamParams, Streams
 from .subscriptions import (
-    WEBHOOK,
     Operation,
     SubscribeParams,
     Subscriptions,
@@ -80,23 +87,34 @@ def enabled(transport: str) -> bool:
     return transport == TRANSPORT and flags.enabled(flags.EVENTS)
 
 
-def describe(event: Event) -> dict[str, Any]:
+def push_enabled(transport: str, ingress: Ingress) -> bool:
+    """Whether this server should also offer push delivery (``events/stream``):
+    the events and events-push flags are on and ``ingress`` has a bus."""
+    return (
+        enabled(transport)
+        and flags.enabled(flags.EVENTS_PUSH)
+        and ingress.bus is not None
+    )
+
+
+def describe(event: Event, push: bool) -> dict[str, Any]:
     """One ``events/list`` entry."""
+    delivery = [Mode.WEBHOOK.value, *([Mode.PUSH.value] if push else [])]
     return {
         "name": event.name,
         "description": event.description,
-        "delivery": [WEBHOOK],
+        "delivery": delivery,
         "inputSchema": event.input_schema,
         "payloadSchema": event.payload_schema,
     }
 
 
-def list_events(cursor: str | None = None) -> dict[str, Any]:
+def list_events(cursor: str | None = None, *, push: bool = False) -> dict[str, Any]:
     """The ``events/list`` result. The catalog fits in one page, so a cursor
     can only be one this server never issued."""
     if cursor is not None:
         raise EventsError.invalid_params("Invalid cursor")
-    return {"events": [describe(event) for event in EVENTS]}
+    return {"events": [describe(event, push) for event in EVENTS]}
 
 
 def advertise(result: dict[str, Any]) -> dict[str, Any]:
@@ -123,25 +141,25 @@ class CapabilityMiddleware:
         return result
 
 
-async def _handle_list(
-    context: ServerRequestContext[Any, Any], params: ListParams
-) -> dict[str, Any]:
-    return list_events(params.cursor)
-
-
 Identify = Callable[[ServerRequestContext[Any, Any]], Mapping[str, Any]]
 """Sentry tags naming the client behind a request (``mcp.client.name``, …)."""
 
-_Params = TypeVar("_Params", SubscribeParams, UnsubscribeParams)
+_Params = TypeVar("_Params", SubscribeParams, UnsubscribeParams, StreamParams)
+
+Handler = Callable[[ServerRequestContext[Any, Any], _Params], Awaitable[dict[str, Any]]]
 
 
 def _observed(
     method: str,
     operation: Operation,
-    handler: Callable[[_Params], Awaitable[dict[str, Any]]],
+    handler: Handler[_Params],
     identify: Identify,
-) -> Callable[[ServerRequestContext[Any, Any], _Params], Awaitable[dict[str, Any]]]:
-    """``handler`` with the telemetry and error reporting ``tools/call`` has."""
+    *,
+    successes: bool = True,
+) -> Handler[_Params]:
+    """``handler`` with the telemetry and error reporting ``tools/call`` has.
+    Without ``successes`` only errors are counted here: ``events/stream``
+    counts its own success once the stream is open."""
 
     async def handle(
         context: ServerRequestContext[Any, Any], params: _Params
@@ -150,7 +168,7 @@ def _observed(
         name = params.name
         event = name if isinstance(name, str) and name in CATALOG else None
         try:
-            result = await handler(params)
+            result = await handler(context, params)
         except Exception as error:
             # A bug is reported, and its text never sent to the client.
             failure = (
@@ -172,7 +190,8 @@ def _observed(
             if failure is error:
                 raise
             raise failure from error
-        telemetry.record_message(method, "success", time.monotonic() - started)
+        if successes:
+            telemetry.record_message(method, "success", time.monotonic() - started)
         return result
 
     return handle
@@ -182,7 +201,7 @@ def _report(
     error: Exception,
     method: str,
     event: str | None,
-    params: SubscribeParams | UnsubscribeParams,
+    params: SubscribeParams | UnsubscribeParams | StreamParams,
     context: ServerRequestContext[Any, Any],
     identify: Identify,
 ) -> None:
@@ -208,26 +227,52 @@ def _report(
 
 
 def register(
-    server: Server[Any], subscriptions: Subscriptions, identify: Identify
+    server: Server[Any],
+    subscriptions: Subscriptions,
+    identify: Identify,
+    streams: Streams | None = None,
 ) -> None:
     """Advertise events and serve ``events/list``, ``events/subscribe`` and
-    ``events/unsubscribe`` on ``server``."""
-    server.add_request_handler(LIST_METHOD, ListParams, _handle_list)
+    ``events/unsubscribe`` on ``server``, and ``events/stream`` when
+    ``streams`` is given."""
+    push = streams is not None
+
+    async def handle_list(
+        context: ServerRequestContext[Any, Any], params: ListParams
+    ) -> dict[str, Any]:
+        return list_events(params.cursor, push=push)
+
+    async def subscribe(
+        context: ServerRequestContext[Any, Any], params: SubscribeParams
+    ) -> dict[str, Any]:
+        return await subscriptions.subscribe(params)
+
+    async def unsubscribe(
+        context: ServerRequestContext[Any, Any], params: UnsubscribeParams
+    ) -> dict[str, Any]:
+        return await subscriptions.unsubscribe(params)
+
+    server.add_request_handler(LIST_METHOD, ListParams, handle_list)
     server.add_request_handler(
         SUBSCRIBE_METHOD,
         SubscribeParams,
-        _observed(
-            SUBSCRIBE_METHOD, Operation.SUBSCRIBE, subscriptions.subscribe, identify
-        ),
+        _observed(SUBSCRIBE_METHOD, Operation.SUBSCRIBE, subscribe, identify),
     )
     server.add_request_handler(
         UNSUBSCRIBE_METHOD,
         UnsubscribeParams,
-        _observed(
-            UNSUBSCRIBE_METHOD,
-            Operation.UNSUBSCRIBE,
-            subscriptions.unsubscribe,
-            identify,
-        ),
+        _observed(UNSUBSCRIBE_METHOD, Operation.UNSUBSCRIBE, unsubscribe, identify),
     )
+    if streams is not None:
+        server.add_request_handler(
+            STREAM_METHOD,
+            StreamParams,
+            _observed(
+                STREAM_METHOD,
+                Operation.STREAM,
+                streams.stream,
+                identify,
+                successes=False,
+            ),
+        )
     server.middleware.append(CapabilityMiddleware())

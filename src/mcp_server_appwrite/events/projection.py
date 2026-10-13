@@ -71,6 +71,11 @@ class Drop(StrEnum):
     BACKLOG_FULL = "backlog_full"
     """The process or the subscription already has the most deliveries in
     flight it may hold."""
+    NO_LISTENER = "no_listener"
+    """A push subscription whose stream is not open on any replica (it just
+    closed, or its client is reconnecting). Events have no replay."""
+    BUS_ERROR = "bus_error"
+    """A push event that could not be handed to the bus."""
 
 
 class Dropped(Exception):
