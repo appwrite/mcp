@@ -1,10 +1,8 @@
 # Events
 
-> **Not a supported feature yet.** Events sit behind the `--events` testing
-> flag ([#127](https://github.com/appwrite/mcp/issues/127)), which is off in
-> production. They cannot work on Appwrite Cloud until
-> [appwrite/appwrite#14293](https://github.com/appwrite/appwrite/issues/14293)
-> lets a webhook's `authPassword` hold the sealed subscription.
+> **Live on [mcp.appwrite.io](https://mcp.appwrite.io/)**, with webhook and
+> push delivery. Self-hosted HTTP deployments turn them on with the `--events`
+> and `--events-push` flags. The `stdio` transport has no Events.
 
 [MCP Events](https://developers.openai.com/plugins/build/mcp-events) let an MCP
 client subscribe to things that happen in an Appwrite project and hear about
@@ -22,10 +20,10 @@ delivery modes:
 Each subscription is backed by one Appwrite webhook in the subscriber's
 project, so the MCP server keeps no subscription store.
 
-## Testing flag
+## Flag
 
-For testers only: [flags.md](flags.md#--events--mcp-events-in-progress) shows
-how to turn the flag on locally and check it with `curl`.
+[flags.md](flags.md#--events--mcp-events) shows how to turn the flag on locally
+and check it with `curl`.
 
 With the flag on, the server advertises the capability in both shapes that
 clients read today:
@@ -271,7 +269,7 @@ result is sent then. When the server ends the stream (termination, shutdown, tok
 expiry) it sends the empty result `{"_meta": {}}` as the final frame.
 
 Push sits behind the `--events-push` flag
-([flags.md](flags.md#--events-push--push-delivery-in-progress)) and needs a
+([flags.md](flags.md#--events-push--push-delivery)) and needs a
 Redis-protocol server (`MCP_EVENTS_REDIS_URL`): Dragonfly in the cluster, or
 Redis; the bus uses only `PUBLISH`, `SUBSCRIBE` and `PING`. `events/list` advertises
 `"delivery": ["webhook", "push"]` only when both are there; otherwise it
@@ -429,7 +427,7 @@ adapter around the package.
   the JWE key directly. The webhook signing secret is derived from it with
   HKDF-SHA256 under its own label, so the two never share a key.
 - **Size.** The envelope must fit Appwrite's `authPassword`, which
-  appwrite/appwrite#14293 has to raise to at least 2048 characters. Sealing
+  appwrite/appwrite#14293 raised to 2048 characters. Sealing
   refuses anything longer (`ENVELOPE_BUDGET`). Measured with 36-character ids,
   key id `k1` and server `https://mcp.appwrite.io`:
 
@@ -590,7 +588,6 @@ run), otherwise `redis-server` (`brew install redis` or
 `apt-get install redis-server`). Two server instances share it, so a stream
 opened on one receives what Appwrite delivers to the other.
 
-A live end-to-end run against Cloud staging (real OAuth tokens, real Appwrite
-webhooks) is planned once
-[appwrite/appwrite#14293](https://github.com/appwrite/appwrite/issues/14293)
-ships; until then the server's surroundings are played locally.
+Live runs against Cloud staging and production (real OAuth tokens, real
+Appwrite webhooks) are done by hand; CI plays the server's surroundings
+locally.

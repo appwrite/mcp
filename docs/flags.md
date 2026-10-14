@@ -83,17 +83,14 @@ Then run `/mcp` in Claude Code and authenticate — the browser should open the
 override console's sign-in page, and after consent the client completes the
 token exchange against the real authorization server.
 
-### `--events` — MCP Events (in progress)
+### `--events` — MCP Events
 
 Turns on [MCP Events](events.md): `server/discover` (and legacy `initialize`)
 advertise the events capability, the server answers `events/list`,
 `events/subscribe` and `events/unsubscribe`, and the Appwrite webhook ingress
-is mounted at `/appwrite/webhooks/{id}`. It is a testing flag, off by default
-and in production, while the feature is built
-([#127](https://github.com/appwrite/mcp/issues/127)): subscriptions cannot work
-on Appwrite Cloud until
-[appwrite/appwrite#14293](https://github.com/appwrite/appwrite/issues/14293)
-ships. Any of `1`, `true`, `yes` or `on` enables it. With the flag on,
+is mounted at `/appwrite/webhooks/{id}`
+([#127](https://github.com/appwrite/mcp/issues/127)). Off by default; on at
+`mcp.appwrite.io`. Any of `1`, `true`, `yes` or `on` enables it. With the flag on,
 `MCP_EVENTS_SEALING_KEYS` is required and the server refuses to start without
 it.
 
@@ -136,7 +133,7 @@ With the flag off, neither capability appears, `events/list`,
 `events/subscribe` and `events/unsubscribe` return `-32601` (method not found)
 and the ingress route returns `404`.
 
-### `--events-push` — push delivery (in progress)
+### `--events-push` — push delivery
 
 Adds [push delivery](events.md#push-delivery) to MCP Events: `events/list`
 advertises `"delivery": ["webhook", "push"]` and the server serves
@@ -144,8 +141,8 @@ advertises `"delivery": ["webhook", "push"]` and the server serves
 back ([#137](https://github.com/appwrite/mcp/issues/137)). It needs `--events`
 and a Redis-protocol server (Dragonfly in the cluster, or Redis) at
 `MCP_EVENTS_REDIS_URL`, which carries events from the replica Appwrite delivers
-to the one holding the stream. With the flag on but no URL, the server logs it and serves webhook delivery only. Off by default, so
-webhook delivery can stay live while push rolls out.
+to the one holding the stream. With the flag on but no URL, the server logs it and serves webhook delivery only. Off by default; on at
+`mcp.appwrite.io`.
 
 **Enable it:**
 
