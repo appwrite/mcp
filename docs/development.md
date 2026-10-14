@@ -47,7 +47,7 @@ docker compose up --build
 
 > MCP Events push delivery (`--events-push`) routes events between replicas
 > through a Redis-protocol server (Dragonfly in the cluster) at
-> `MCP_EVENTS_REDIS_URL`. Compose runs Dragonfly and points the server at it; see [flags.md](flags.md#--events-push--push-delivery-in-progress).
+> `MCP_EVENTS_REDIS_URL`. Compose runs Dragonfly and points the server at it; see [flags.md](flags.md#--events-push--push-delivery).
 
 **`uv` directly — HTTP:**
 
