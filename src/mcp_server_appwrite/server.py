@@ -83,6 +83,7 @@ from .instructions import build_instructions, load_description
 from .operator import Operator, _parse_tool_name
 from .service import Service
 from .tool_manager import ToolManager
+from .zero import Zero
 
 
 def _discover_service_classes() -> dict[str, type]:
@@ -1324,7 +1325,9 @@ def build_mcp_server(
     given, serves push delivery (``events/stream``)."""
     _configure_uploads(transport)
     instructions = build_instructions(
-        transport, docs_enabled=bool(getattr(operator, "docs_enabled", False))
+        transport,
+        docs_enabled=bool(getattr(operator, "docs_enabled", False)),
+        zero=bool(getattr(operator, "zero_enabled", False)),
     )
     subscriptions = ListenHandler(InMemorySubscriptionBus())
 
@@ -1740,6 +1743,7 @@ def build_operator(
     client: Client | None = None,
     *,
     store_results: bool = True,
+    zero: Zero | None = None,
 ) -> Operator:
     """Wire the operator surface to the per-request execution path. The execution
     callback re-binds each call to a per-request client via `resolve_client` in
@@ -1772,6 +1776,7 @@ def build_operator(
         docs_search=docs_search,
         require_target_context=client is None,
         store_results=store_results,
+        zero=zero,
     )
 
 
@@ -1826,17 +1831,32 @@ def build_catalog_tools_manager() -> ToolManager:
 
 
 async def run_stdio() -> None:
-    """Serve a local stdio MCP using APPWRITE_* API-key configuration."""
+    """Serve a local stdio MCP using APPWRITE_* API-key configuration, or in
+    Zero mode (see ``zero.py``) when no project or API key is configured."""
     _log_startup("Loading Appwrite configuration")
-    config = load_appwrite_config()
-    client = build_client(config)
-    _log_startup(f"Using Appwrite endpoint: {config.endpoint}")
+    load_environment()
+    zero = None
+    if os.getenv("APPWRITE_PROJECT_ID") or os.getenv("APPWRITE_API_KEY"):
+        config = load_appwrite_config()
+        client = build_client(config)
+        endpoint = config.endpoint
+    else:
+        endpoint = _normalize_endpoint(os.getenv("APPWRITE_ENDPOINT", DEFAULT_ENDPOINT))
+        client = _configure_mcp_client_headers(Client())
+        client.set_endpoint(endpoint)
+        zero = Zero(client, endpoint)
+    _log_startup(f"Using Appwrite endpoint: {endpoint}")
     _log_startup("Registering Appwrite services")
     tools_manager = register_services(client, profile=API_KEY_PROFILE)
-    _log_startup("Starting Appwrite service validation")
-    validate_services(tools_manager)
+    if zero is None:
+        _log_startup("Starting Appwrite service validation")
+        validate_services(tools_manager)
+    else:
+        _log_startup(
+            "No APPWRITE_PROJECT_ID or APPWRITE_API_KEY: starting in Zero mode"
+        )
     _log_startup("Building Appwrite operator surface")
-    operator = build_operator(tools_manager, client=client)
+    operator = build_operator(tools_manager, client=client, zero=zero)
     server = build_mcp_server(operator, transport="stdio")
 
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):

@@ -27,6 +27,7 @@ from .constants import (
     SEARCH_LIMIT,
     UPDATE_HINTS,
     VERBS,
+    ZERO_CREATE_TOOL_NAME,
 )
 from .docs_search import DocsSearch
 from .error_classification import (
@@ -35,6 +36,7 @@ from .error_classification import (
     classify_tool_error,
 )
 from .tool_manager import ToolManager
+from .zero import Zero
 
 ToolContent = types.TextContent | types.ImageContent | types.EmbeddedResource
 # (tool_name, arguments, project_id, organization_id) -> content
@@ -120,6 +122,7 @@ class Operator:
         require_target_context: bool = False,
         store_results: bool = True,
         search_limit: int = SEARCH_LIMIT,
+        zero: Zero | None = None,
     ):
         self._tools_manager = tools_manager
         self._execute_tool = execute_tool
@@ -129,6 +132,7 @@ class Operator:
         self._require_target_context = require_target_context
         self._store_results = store_results
         self._search_limit = search_limit
+        self._zero = zero
         self._result_store = ResultStore()
         self._catalog = self._build_catalog()
         self._cached_catalog_json = self._catalog_json()
@@ -140,6 +144,10 @@ class Operator:
     @property
     def docs_enabled(self) -> bool:
         return self._docs_search is not None
+
+    @property
+    def zero_enabled(self) -> bool:
+        return self._zero is not None
 
     def get_public_tools(self) -> list[types.Tool]:
         tools = [
@@ -292,12 +300,17 @@ class Operator:
         if self._docs_search is not None:
             tools.append(self._docs_search.get_tool())
 
+        if self._zero is not None:
+            tools.extend(self._zero.get_tools())
+
         return tools
 
     def has_public_tool(self, name: str) -> bool:
         names = {"appwrite_get_context", "appwrite_search_tools", "appwrite_call_tool"}
         if self._docs_search is not None:
             names.add(self._docs_search.get_tool().name)
+        if self._zero is not None and self._zero.has_tool(name):
+            return True
         return name in names
 
     def execute_public_tool(
@@ -332,6 +345,15 @@ class Operator:
     def _dispatch_public_tool(
         self, name: str, arguments: dict[str, Any] | None
     ) -> list[ToolContent]:
+        if self._zero is not None:
+            if self._zero.has_tool(name):
+                return self._zero.execute(name, arguments or {})
+            if not self._zero.ready and name in _PROJECT_TOOLS:
+                raise ValueError(
+                    "No Appwrite project is configured. Call "
+                    f"{ZERO_CREATE_TOOL_NAME} to create a temporary one, or set "
+                    "APPWRITE_PROJECT_ID and APPWRITE_API_KEY."
+                )
         if name == "appwrite_get_context":
             return self._get_context(arguments or {})
         if name == "appwrite_search_tools":
@@ -634,6 +656,8 @@ class Operator:
         return ranked[:limit]
 
 
+# Public tools that need a project; Zero mode refuses them until one exists.
+_PROJECT_TOOLS = frozenset({"appwrite_get_context", "appwrite_call_tool"})
 _MIN_INFLECTION_TOKEN_LENGTH = 3
 _MAX_INFLECTION_SUFFIX = 2
 _SUGGESTION_LIMIT = 5
