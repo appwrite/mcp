@@ -268,13 +268,26 @@ class ServerHelperTests(unittest.TestCase):
         self.assertIn("Large results are stored as resources", stdio)
         self.assertIn("returns tool results inline", http)
 
+    def test_build_instructions_cover_every_database_type(self):
+        for transport in ("stdio", "http"):
+            instructions = build_instructions(transport)
+            for product in ("TablesDB", "DocumentsDB", "VectorsDB", "Firewall"):
+                self.assertIn(product, instructions)
+
+        # Dedicated databases and domain registration are console-only APIs
+        # that the API-key catalog does not expose.
+        http = build_instructions("http")
+        stdio = build_instructions("stdio")
+        self.assertIn("MongoDB", http)
+        self.assertIn("register, transfer and renew domains", http)
+        self.assertNotIn("MongoDB", stdio)
+        self.assertNotIn("register, transfer and renew domains", stdio)
+
     def test_build_instructions_lead_with_capabilities(self):
         for transport in ("stdio", "http"):
             instructions = build_instructions(transport)
             self.assertTrue(
-                instructions.startswith(
-                    "This server covers the full Appwrite platform"
-                ),
+                instructions.startswith("Build and deploy application backends."),
                 instructions,
             )
 

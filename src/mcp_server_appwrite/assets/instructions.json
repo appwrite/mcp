@@ -1,0 +1,75 @@
+{
+  "sections": [
+    {
+      "sentences": [
+        "Build and deploy application backends.",
+        "Add authentication, PostgreSQL/MySQL databases, vector databases, storage, serverless functions, realtime, messaging, hosting, domains, CDN and firewall.",
+        "Databases: TablesDB (relational tables, rows, columns, indexes, relationships, transactions), DocumentsDB (schemaless JSON collections and documents), and VectorsDB (vector embeddings with similarity search, plus a text embeddings API)."
+      ]
+    },
+    {
+      "transports": ["http"],
+      "sentences": [
+        "Dedicated databases: managed PostgreSQL, MySQL and MongoDB with direct connections, backups, branches, replicas, connection pooling, point-in-time recovery and extensions such as pgvector."
+      ]
+    },
+    {
+      "sentences": [
+        "Auth: users, sessions, teams, labels, MFA, OAuth2 providers, tokens, presences for who is online, and an OAuth2/OIDC server so the project can act as an identity provider.",
+        "Storage: buckets and files with image previews and transformations.",
+        "Functions: serverless functions across many runtimes with Git or manual deployments, executions, schedules and environment variables.",
+        "Sites: host static and server-rendered web apps.",
+        "Messaging: email, SMS and push notifications through providers, topics and targets.",
+        "Network: custom domains, CDN cache invalidation and proxy rules, and Firewall rules that deny, challenge, rate limit, redirect or bypass traffic to the API, Functions and Sites."
+      ]
+    },
+    {
+      "transports": ["http"],
+      "sentences": [
+        "Domains: register, transfer and renew domains and manage DNS records.",
+        "Operations: project backups and restores, migrations from other platforms, webhooks, usage metrics, and Advisor reports with insights."
+      ]
+    },
+    {
+      "transports": ["stdio"],
+      "sentences": [
+        "Operations: project backups and restores, webhooks, and Advisor reports with insights.",
+        "This local Appwrite MCP connection uses the API key, endpoint, and project configured in the server environment.",
+        "Appwrite API calls target that configured APPWRITE_PROJECT_ID by default."
+      ]
+    },
+    {
+      "transports": ["http"],
+      "sentences": [
+        "You authenticate against the Appwrite console, which can list your organizations and projects but stores no project data itself.",
+        "Project-scoped tools (every database type, users, teams, storage, functions, sites, messaging, firewall, advisor) need a target project: use appwrite_get_context first, then pass the selected project id as project_id to appwrite_call_tool.",
+        "Organization-scoped console tools (e.g. creating a project or managing domains) need organization_id.",
+        "File/image uploads: pass a public URL as the file argument (e.g. {\"url\": \"https://...\"}) so the server downloads it directly; for very small files you may pass inline base64 ({\"filename\": ..., \"content\": ..., \"encoding\": \"base64\"})."
+      ]
+    },
+    {
+      "docs": true,
+      "sentences": [
+        "For questions about Appwrite concepts, products, features, or guides, use appwrite_search_docs — it searches the official Appwrite documentation and needs no project or credentials."
+      ]
+    },
+    {
+      "sentences": [
+        "Appwrite workflow: use appwrite_get_context to understand the current connection and available project resources, then use appwrite_search_tools and appwrite_call_tool for specific operations.",
+        "Mutating hidden tools require confirm_write=true."
+      ]
+    },
+    {
+      "transports": ["stdio"],
+      "sentences": [
+        "Large results are stored as resources; read the URI returned by the tool."
+      ]
+    },
+    {
+      "transports": ["http"],
+      "sentences": [
+        "Hosted HTTP returns tool results inline, including images and other binary payloads."
+      ]
+    }
+  ]
+}
