@@ -91,8 +91,23 @@
     },
     {
       "transports": ["stdio"],
+      "zero": false,
       "lines": [
-        "- This local connection uses the API key, endpoint, and project configured in the server environment. Appwrite API calls target that configured APPWRITE_PROJECT_ID by default.",
+        "- This local connection uses the API key, endpoint, and project configured in the server environment. Appwrite API calls target that configured APPWRITE_PROJECT_ID by default."
+      ]
+    },
+    {
+      "transports": ["stdio"],
+      "zero": true,
+      "lines": [
+        "- No Appwrite project is configured. When the user needs a backend and has no Appwrite project, call appwrite_create_zero_project: it creates a free project with no account, valid for 60 minutes, and points the other tools at it.",
+        "- Always give the user the returned claimUrl and tell them to open it to keep the project; an unclaimed project is deleted.",
+        "- Use the returned endpoint, projectId and apiKey to configure the user's app or an Appwrite SDK."
+      ]
+    },
+    {
+      "transports": ["stdio"],
+      "lines": [
         "- Project API keys cannot manage dedicated PostgreSQL/MySQL databases, domain registration, migrations or usage metrics; those need the hosted server at mcp.appwrite.io.",
         "- Large results are stored as resources; read the URI returned by the tool."
       ]

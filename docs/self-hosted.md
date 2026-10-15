@@ -43,6 +43,18 @@ For a local Docker Appwrite instance the endpoint is typically
 `http://localhost:9501/v1` (HTTP, not HTTPS). The value must be the API base
 (`…/v1`), not the Console URL.
 
+## No account: Appwrite Zero
+
+Start the server with neither `APPWRITE_PROJECT_ID` nor `APPWRITE_API_KEY` and
+it boots in Zero mode. The agent calls `appwrite_create_zero_project` to get a
+temporary project (endpoint, project ID and an API key valid for 60 minutes),
+and the other tools then operate on it. Open the returned `claimUrl` and sign in
+to keep the project; an unclaimed one is deleted.
+
+```bash
+claude mcp add appwrite -- uvx mcp-server-appwrite
+```
+
 ## Connect your client
 
 <details open>

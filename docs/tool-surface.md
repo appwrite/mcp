@@ -40,6 +40,14 @@ flowchart LR
 | `appwrite_call_tool` | Runs a read catalog tool (`list`, `get`). |
 | `appwrite_call_write_tool` | Runs every other catalog tool (create, update, delete, upsert, unknown verbs). Requires `confirm_write=true`. |
 | `appwrite_search_docs` | Semantic search over Appwrite docs (conditional — see above). |
+| `appwrite_create_zero_project` | Zero mode only: creates a temporary project with no account and points the other tools at it. |
+| `appwrite_get_zero_project` | Zero mode only: status, `expiresAt` and `claimBy` of a Zero project. |
+
+**Zero mode**: stdio started with neither `APPWRITE_PROJECT_ID` nor
+`APPWRITE_API_KEY` skips startup validation and adds the two Zero tools.
+`appwrite_get_context`, `appwrite_call_tool`, `appwrite_call_write_tool` and
+the MCP Apps view tools refuse until a Zero project exists; after that they
+operate on it for the rest of the session.
 
 ## Behavior
 
