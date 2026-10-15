@@ -271,23 +271,26 @@ class ServerHelperTests(unittest.TestCase):
     def test_build_instructions_cover_every_database_type(self):
         for transport in ("stdio", "http"):
             instructions = build_instructions(transport)
-            for product in ("TablesDB", "DocumentsDB", "VectorsDB", "Firewall"):
+            for product in (
+                "PostgreSQL",
+                "MySQL",
+                "TablesDB",
+                "DocumentsDB",
+                "VectorsDB",
+                "Firewall",
+            ):
                 self.assertIn(product, instructions)
 
         # Dedicated databases and domain registration are console-only APIs
         # that the API-key catalog does not expose.
-        http = build_instructions("http")
-        stdio = build_instructions("stdio")
-        self.assertIn("MongoDB", http)
-        self.assertIn("register, transfer and renew domains", http)
-        self.assertNotIn("MongoDB", stdio)
-        self.assertNotIn("register, transfer and renew domains", stdio)
+        self.assertIn("need the hosted server", build_instructions("stdio"))
+        self.assertNotIn("need the hosted server", build_instructions("http"))
 
     def test_build_instructions_lead_with_capabilities(self):
         for transport in ("stdio", "http"):
             instructions = build_instructions(transport)
             self.assertTrue(
-                instructions.startswith("Build and deploy application backends."),
+                instructions.startswith("Appwrite is a cloud backend"),
                 instructions,
             )
 
@@ -1820,9 +1823,9 @@ class UploadInputFileTests(unittest.TestCase):
     def test_http_instructions_mention_url_upload(self):
         http = build_instructions("http")
         stdio = build_instructions("stdio")
-        self.assertIn("url", http.lower())
-        self.assertIn("upload", http.lower())
-        self.assertNotIn("upload", stdio.lower())
+        guidance = "File/image uploads: pass a public URL"
+        self.assertIn(guidance, http)
+        self.assertNotIn(guidance, stdio)
 
     def test_url_fetch_pins_validated_ip_and_preserves_host_sni(self):
         response = _FakeResponse(data=b"abc", headers={"content-type": "image/png"})

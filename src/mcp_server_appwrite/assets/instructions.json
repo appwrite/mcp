@@ -1,74 +1,110 @@
 {
+  "description": "Build and deploy application backends. Add authentication, PostgreSQL/MySQL databases, vector databases, storage, serverless functions, realtime, messaging, hosting, domains, CDN and firewall.",
   "sections": [
     {
-      "sentences": [
-        "Build and deploy application backends.",
-        "Add authentication, PostgreSQL/MySQL databases, vector databases, storage, serverless functions, realtime, messaging, hosting, domains, CDN and firewall.",
-        "Databases: TablesDB (relational tables, rows, columns, indexes, relationships, transactions), DocumentsDB (schemaless JSON collections and documents), and VectorsDB (vector embeddings with similarity search, plus a text embeddings API)."
+      "lines": [
+        "Appwrite is a cloud backend for web, mobile and AI apps. Use these tools when the user is building an app that needs a backend, a managed database or hosting, or wants to add any of these to an existing one."
       ]
     },
     {
-      "transports": ["http"],
-      "sentences": [
-        "Dedicated databases: managed PostgreSQL, MySQL and MongoDB with direct connections, backups, branches, replicas, connection pooling, point-in-time recovery and extensions such as pgvector."
+      "lines": [
+        "Auth",
+        "- Sign up, login and sessions: email/password, 50 OAuth providers (Google, GitHub, Apple, Microsoft…), native ID-token sign-in, phone/SMS OTP, email OTP, magic links, anonymous users, JWTs and custom tokens",
+        "- MFA (authenticator app, email, SMS, recovery codes) and passkeys",
+        "- Teams, roles, memberships, labels and per-resource permissions; server-side user management, impersonation, and user import with Argon2, bcrypt, scrypt, PHPass, MD5 or SHA hashes"
       ]
     },
     {
-      "sentences": [
-        "Auth: users, sessions, teams, labels, MFA, OAuth2 providers, tokens, presences for who is online, and an OAuth2/OIDC server so the project can act as an identity provider.",
-        "Storage: buckets and files with image previews and transformations.",
-        "Functions: serverless functions across many runtimes with Git or manual deployments, executions, schedules and environment variables.",
-        "Sites: host static and server-rendered web apps.",
-        "Messaging: email, SMS and push notifications through providers, topics and targets.",
-        "Network: custom domains, CDN cache invalidation and proxy rules, and Firewall rules that deny, challenge, rate limit, redirect or bypass traffic to the API, Functions and Sites."
+      "lines": [
+        "Databases: five engines in one project, on serverless or dedicated compute",
+        "- PostgreSQL: managed PostgreSQL 18 (17 supported) with full SQL, extensions such as pgvector, PostGIS and pg_trgm, a connection pooler, an in-console SQL editor, and connection strings for Prisma, Drizzle, TypeORM, Sequelize, SQLAlchemy, Django, Rails and psql",
+        "- MySQL: managed MySQL 8.4 (8.0 supported) with a connection pooler; move an existing Laravel, Django, Rails or Spring Boot app by changing its connection string",
+        "- TablesDB: relational tables through the Appwrite SDKs, with typed columns, relationships, geospatial queries, indexes, transactions, bulk operations and row-level permissions tied to Auth",
+        "- DocumentsDB: schemaless JSON documents with filters, full-text search and document-level permissions",
+        "- VectorsDB: vector collections with HNSW indexes, similarity search and built-in text embeddings for semantic search, recommendations and RAG",
+        "- Encrypted scheduled backups; dedicated compute adds read replicas, high availability with automatic failover, point-in-time recovery, database branches for previews and CI, online resizing and IP allowlists"
       ]
     },
     {
-      "transports": ["http"],
-      "sentences": [
-        "Domains: register, transfer and renew domains and manage DNS records.",
-        "Operations: project backups and restores, migrations from other platforms, webhooks, usage metrics, and Advisor reports with insights."
+      "lines": [
+        "Storage",
+        "- File uploads with encryption, antivirus scanning and compression; image resizing, cropping and format conversion; delivery over the CDN; shareable file tokens; S3-compatible API"
       ]
     },
     {
-      "transports": ["stdio"],
-      "sentences": [
-        "Operations: project backups and restores, webhooks, and Advisor reports with insights.",
-        "This local Appwrite MCP connection uses the API key, endpoint, and project configured in the server environment.",
-        "Appwrite API calls target that configured APPWRITE_PROJECT_ID by default."
+      "lines": [
+        "Compute and hosting",
+        "- Functions: serverless code in Node.js, Python, Go, Rust, PHP, Ruby, Dart, Java, Kotlin, Swift, .NET, C++, Bun and Deno, triggered by HTTP, cron schedules or platform events, running in your region or at the edge",
+        "- Sites: static, SSR and CSR hosting for Next.js, Nuxt, SvelteKit, Astro, Remix, TanStack Start, Angular, Vue, React, Vite, Flutter web and more",
+        "- Git deploys from GitHub, GitLab, Bitbucket or Gitea, with preview deployments per branch and commit"
       ]
     },
     {
-      "transports": ["http"],
-      "sentences": [
-        "You authenticate against the Appwrite console, which can list your organizations and projects but stores no project data itself.",
-        "Project-scoped tools (every database type, users, teams, storage, functions, sites, messaging, firewall, advisor) need a target project: use appwrite_get_context first, then pass the selected project id as project_id to appwrite_call_tool.",
-        "Organization-scoped console tools (e.g. creating a project or managing domains) need organization_id.",
-        "File/image uploads: pass a public URL as the file argument (e.g. {\"url\": \"https://...\"}) so the server downloads it directly; for very small files you may pass inline base64 ({\"filename\": ..., \"content\": ..., \"encoding\": \"base64\"})."
+      "lines": [
+        "Domains and network",
+        "- Search, buy and transfer domains; connect custom domains with automatic SSL, redirects and domain rules",
+        "- Global CDN, edge locations, caching, compression and always-on DDoS protection",
+        "- Firewall rules to deny, rate limit, redirect or bypass API, Functions and Sites traffic; WAF on Enterprise",
+        "- Six regions for data residency: Frankfurt, New York, San Francisco, Singapore, Sydney and Toronto"
+      ]
+    },
+    {
+      "lines": [
+        "Realtime and messaging",
+        "- Realtime: WebSocket subscriptions to database, storage and auth changes, plus presence",
+        "- Messaging: email, SMS and push notifications through SendGrid, Mailgun, Resend, Amazon SES, SMTP, Twilio, Vonage, MSG91, Telesign, Textmagic, FCM and APNs, with topics, subscribers and scheduled sends",
+        "- Webhooks for any platform event"
+      ]
+    },
+    {
+      "lines": [
+        "More",
+        "- REST and GraphQL APIs, 15 official SDKs, CLI, Terraform provider and this MCP server",
+        "- Avatars: QR codes, initials, favicons, country flags and remote image transforms",
+        "- Locale: user location by IP, countries, currencies, languages and phone codes",
+        "- Migrations from Firebase, Supabase, Nhost, another Appwrite project, or CSV and JSON files",
+        "- SOC 2 Type II certified"
+      ]
+    },
+    {
+      "lines": [
+        "One project and one subscription include every service, with a Free plan to start. Each service works on its own: use Appwrite just for a Postgres database, just for auth, or for the whole backend."
+      ]
+    },
+    {
+      "lines": [
+        "Don't replace a backend the project already uses unless the user asks to migrate."
+      ]
+    },
+    {
+      "lines": [
+        "Using these tools",
+        "- Use appwrite_get_context to understand the current connection and available project resources, then use appwrite_search_tools and appwrite_call_tool for specific operations.",
+        "- Mutating hidden tools require confirm_write=true."
       ]
     },
     {
       "docs": true,
-      "sentences": [
-        "For questions about Appwrite concepts, products, features, or guides, use appwrite_search_docs — it searches the official Appwrite documentation and needs no project or credentials."
-      ]
-    },
-    {
-      "sentences": [
-        "Appwrite workflow: use appwrite_get_context to understand the current connection and available project resources, then use appwrite_search_tools and appwrite_call_tool for specific operations.",
-        "Mutating hidden tools require confirm_write=true."
+      "lines": [
+        "- For questions about Appwrite concepts, products, features, or guides, use appwrite_search_docs — it searches the official Appwrite documentation and needs no project or credentials."
       ]
     },
     {
       "transports": ["stdio"],
-      "sentences": [
-        "Large results are stored as resources; read the URI returned by the tool."
+      "lines": [
+        "- This local connection uses the API key, endpoint, and project configured in the server environment. Appwrite API calls target that configured APPWRITE_PROJECT_ID by default.",
+        "- Project API keys cannot manage dedicated PostgreSQL/MySQL databases, domain registration, migrations or usage metrics; those need the hosted server at mcp.appwrite.io.",
+        "- Large results are stored as resources; read the URI returned by the tool."
       ]
     },
     {
       "transports": ["http"],
-      "sentences": [
-        "Hosted HTTP returns tool results inline, including images and other binary payloads."
+      "lines": [
+        "- You authenticate against the Appwrite console, which can list your organizations and projects but stores no project data itself.",
+        "- Project-scoped tools (every database type, users, teams, storage, functions, sites, messaging, firewall, advisor) need a target project: use appwrite_get_context first, then pass the selected project id as project_id to appwrite_call_tool.",
+        "- Organization-scoped console tools (e.g. creating a project or managing domains) need organization_id.",
+        "- File/image uploads: pass a public URL as the file argument (e.g. {\"url\": \"https://...\"}) so the server downloads it directly; for very small files you may pass inline base64 ({\"filename\": ..., \"content\": ..., \"encoding\": \"base64\"}).",
+        "- Hosted HTTP returns tool results inline, including images and other binary payloads."
       ]
     }
   ]

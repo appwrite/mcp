@@ -25,12 +25,12 @@ class SectionTest(unittest.TestCase):
 
     def test_parse_rejects_malformed_sections(self):
         invalid = [
-            {"sentences": []},
-            {"sentences": [""]},
-            {"sentences": ["Text."], "transports": ["websocket"]},
-            {"sentences": ["Text."], "transports": []},
-            {"sentences": ["Text."], "docs": "yes"},
-            {"sentences": ["Text."], "transport": ["http"]},
+            {"lines": []},
+            {"lines": [""]},
+            {"lines": ["Text."], "transports": ["websocket"]},
+            {"lines": ["Text."], "transports": []},
+            {"lines": ["Text."], "docs": "yes"},
+            {"lines": ["Text."], "transport": ["http"]},
         ]
         for raw in invalid:
             with self.subTest(raw=raw), self.assertRaises(ValueError):
@@ -38,9 +38,9 @@ class SectionTest(unittest.TestCase):
 
     def test_parse_reads_conditions(self):
         section = Section.parse(
-            {"sentences": ["Text."], "transports": ["stdio"], "docs": False}
+            {"lines": ["Text."], "transports": ["stdio"], "docs": False}
         )
-        self.assertEqual(section.sentences, ("Text.",))
+        self.assertEqual(section.lines, ("Text.",))
         self.assertEqual(section.transports, frozenset({"stdio"}))
         self.assertIs(section.docs, False)
 

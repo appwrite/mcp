@@ -79,7 +79,7 @@ from .events import protocol as events
 from .events.ingress import Ingress
 from .events.streams import Streams
 from .events.subscriptions import Subscriptions
-from .instructions import build_instructions
+from .instructions import build_instructions, load_description
 from .operator import Operator, _parse_tool_name
 from .service import Service
 from .tool_manager import ToolManager
@@ -1562,6 +1562,7 @@ def build_mcp_server(
     server = Server(
         "Appwrite MCP Server",
         version=SERVER_VERSION,
+        description=load_description(),
         instructions=instructions,
         website_url=SERVER_WEBSITE_URL,
         icons=[types.Icon(src=SERVER_ICON_URL, mime_type="image/svg+xml")],

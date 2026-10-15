@@ -1,11 +1,13 @@
 import importlib.util
 import json
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from mcp_server_appwrite import constants
+from mcp_server_appwrite.instructions import load_description
 
 
 def _load_render_module():
@@ -39,6 +41,11 @@ class ServerTemplateTests(unittest.TestCase):
         template_path = Path(__file__).parents[2] / "server.template.json"
         template = json.loads(template_path.read_text())
         self.assertLessEqual(len(template["description"]), 100)
+
+    def test_package_description_matches_server_info(self):
+        pyproject_path = Path(__file__).parents[2] / "pyproject.toml"
+        pyproject = tomllib.loads(pyproject_path.read_text())
+        self.assertEqual(pyproject["project"]["description"], load_description())
 
 
 class RenderServerMetadataTests(unittest.TestCase):
