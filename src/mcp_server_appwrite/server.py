@@ -37,7 +37,6 @@ from dotenv import find_dotenv, load_dotenv
 from mcp import MCPError
 from mcp.server import NotificationOptions, Server, ServerRequestContext
 from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server.models import InitializationOptions
 from mcp.server.subscriptions import InMemorySubscriptionBus, ListenHandler
 from mcp.types import CLIENT_INFO_META_KEY, INVALID_PARAMS
 
@@ -75,6 +74,10 @@ from .context import (
 )
 from .docs_search import DocsSearch
 from .error_classification import HostedBinaryResponseTooLarge, is_response_parse_error
+from .events import protocol as events
+from .events.ingress import Ingress
+from .events.streams import Streams
+from .events.subscriptions import Subscriptions
 from .operator import Operator, _parse_tool_name
 from .service import Service
 from .tool_manager import ToolManager
@@ -939,6 +942,26 @@ def _prepare_arguments(tool_info: dict, arguments: dict[str, Any]) -> dict[str, 
     return prepared_arguments
 
 
+def _selects_attributes(arguments: dict[str, Any]) -> bool:
+    """Whether the call narrows its response with a ``select`` query."""
+    queries = arguments.get("queries")
+    if not isinstance(queries, list):
+        return False
+    for query in queries:
+        if isinstance(query, str):
+            try:
+                query = json.loads(query)
+            except ValueError:
+                continue
+        if isinstance(query, dict) and query.get("method") == "select":
+            return True
+    return False
+
+
+def _untyped_response(response: Any, model: Any = None) -> Any:
+    return response
+
+
 def _raise_bounded_response_error(response: httpx.Response) -> None:
     """Translate an upstream streaming error into the SDK's public exception."""
     body = bytearray()
@@ -1085,7 +1108,12 @@ def execute_registered_tool(
     hosted = client is None
     if client is None:
         client = resolve_client(target_project, organization_id)
-    bound_method = getattr(service_cls(client), method_name)
+    service = service_cls(client)
+    if _selects_attributes(prepared_arguments):
+        # A select query returns only the chosen attributes, which the SDK's
+        # full response models reject, so the payload is passed through untyped.
+        setattr(service, "_parse_response", _untyped_response)
+    bound_method = getattr(service, method_name)
     bounded_binary = (
         hosted and inspect.signature(bound_method).return_annotation is bytes
     )
@@ -1097,14 +1125,16 @@ def execute_registered_tool(
             setattr(
                 client,
                 "call",
-                lambda method, path="", headers=None, params=None, response_type="json": _bounded_binary_client_call(
-                    client,
-                    name,
-                    method,
-                    path,
-                    headers,
-                    params,
-                    response_type,
+                lambda method, path="", headers=None, params=None, response_type="json": (
+                    _bounded_binary_client_call(
+                        client,
+                        name,
+                        method,
+                        path,
+                        headers,
+                        params,
+                        response_type,
+                    )
                 ),
             )
             try:
@@ -1346,7 +1376,17 @@ def build_instructions(transport: str = "http", *, docs_enabled: bool = True) ->
     )
 
 
-def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
+def build_mcp_server(
+    operator: Operator,
+    *,
+    transport: str = "http",
+    ingress: Ingress | None = None,
+    streams: Streams | None = None,
+) -> Server:
+    """The low-level MCP server. With events enabled, ``events/subscribe``
+    writes webhooks that point at ``ingress`` (built from the environment when
+    not given) and verifies callbacks through its egress. ``streams``, when
+    given, serves push delivery (``events/stream``)."""
     _configure_uploads(transport)
     instructions = build_instructions(
         transport, docs_enabled=bool(getattr(operator, "docs_enabled", False))
@@ -1575,7 +1615,16 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
             ]
         )
 
-    return Server(
+    def tool_input_schema(name: str) -> dict[str, Any] | None:
+        # Mcp-Param-* header validation on the 2026-07-28 HTTP entry needs the
+        # called tool's schema. Without this lookup the SDK runs our tools/list
+        # handler on every tools/call, double-counting tools/list in telemetry.
+        for tool in operator.get_public_tools():
+            if tool.name == name:
+                return tool.input_schema
+        return None
+
+    server = Server(
         "Appwrite MCP Server",
         version=SERVER_VERSION,
         instructions=instructions,
@@ -1587,7 +1636,16 @@ def build_mcp_server(operator: Operator, *, transport: str = "http") -> Server:
         on_list_resource_templates=handle_list_resource_templates,
         on_read_resource=handle_read_resource,
         on_subscriptions_listen=subscriptions,
+        get_tool_input_schema=tool_input_schema,
     )
+    if events.enabled(transport):
+        events.register(
+            server,
+            Subscriptions(ingress or Ingress.from_env(), resolve_client),
+            lambda ctx: _mcp_request_context(ctx).tags,
+            streams,
+        )
+    return server
 
 
 def _jsonrpc_error_code(exc: Exception) -> int:
@@ -1764,13 +1822,15 @@ def build_operator(
 
     return Operator(
         tools_manager,
-        lambda tool_name, tool_arguments, target_project=None, organization_id=None: execute_registered_tool(
-            tools_manager,
-            tool_name,
-            tool_arguments,
-            client=client,
-            target_project=target_project,
-            organization_id=organization_id,
+        lambda tool_name, tool_arguments, target_project=None, organization_id=None: (
+            execute_registered_tool(
+                tools_manager,
+                tool_name,
+                tool_arguments,
+                client=client,
+                target_project=target_project,
+                organization_id=organization_id,
+            )
         ),
         context_provider=lambda arguments: _get_context_for_request(arguments, client),
         docs_search=docs_search,
@@ -1846,17 +1906,13 @@ async def run_stdio() -> None:
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
         _log_startup("MCP transport: stdio")
         _log_startup("Appwrite MCP server ready")
+        # Derive the initialize result from the server itself so stdio reports
+        # the same identity, instructions and icons as the HTTP transport, and
+        # leaves out the empty ``experimental`` capability like mcp>=2.3 does.
         await server.run(
             read_stream,
             write_stream,
-            InitializationOptions(
-                server_name="appwrite",
-                server_version=SERVER_VERSION,
-                capabilities=server.get_capabilities(
-                    notification_options=NotificationOptions(),
-                    experimental_capabilities={},
-                ),
-            ),
+            server.create_initialization_options(NotificationOptions()),
         )
 
 

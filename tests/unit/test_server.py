@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import contextlib
 import http.server
 import io
 import ipaddress
@@ -309,6 +310,38 @@ class ServerHelperTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_stdio_initialize_matches_server_metadata(self):
+        captured = []
+
+        async def capture_run(_server, _read, _write, options, *args, **kwargs):
+            captured.append(options)
+
+        @contextlib.asynccontextmanager
+        async def fake_stdio_server():
+            yield (Mock(), Mock())
+
+        with (
+            patch.object(server_module, "load_appwrite_config", return_value=Mock()),
+            patch.object(server_module, "build_client", return_value=Mock()),
+            patch.object(server_module, "register_services", return_value=Mock()),
+            patch.object(server_module, "validate_services"),
+            patch.object(server_module, "build_operator", return_value=Mock()),
+            patch.object(server_module.Server, "run", capture_run),
+            patch("mcp.server.stdio.stdio_server", fake_stdio_server),
+        ):
+            asyncio.run(server_module.run_stdio())
+
+        (options,) = captured
+        reference = build_mcp_server(Mock(), transport="stdio")
+        self.assertEqual(options.server_name, reference.name)
+        self.assertEqual(options.instructions, reference.instructions)
+        self.assertEqual(options.website_url, server_module.SERVER_WEBSITE_URL)
+        self.assertIsNotNone(options.icons)
+        # mcp>=2.3 omits an unconfigured ``experimental`` capability; stdio must
+        # not reintroduce an empty one.
+        self.assertIsNone(options.capabilities.experimental)
+        self.assertIsNotNone(options.capabilities.tools)
 
     def test_http_tool_execution_does_not_block_event_loop(self):
         class BlockingOperator:
@@ -1008,8 +1041,8 @@ class ServerHelperTests(unittest.TestCase):
             {service.service_name for service in manager_a.services},
             set(SERVICE_CLASSES),
         )
-        self.assertEqual(len(manager_a.services), 40)
-        self.assertEqual(len(manager_a.get_all_tools()), 1007)
+        self.assertEqual(len(manager_a.services), 41)
+        self.assertEqual(len(manager_a.get_all_tools()), 1029)
 
     def test_console_sdk_0_7_surface(self):
         manager = register_services(object(), profile=OAUTH_PROFILE)
@@ -1020,6 +1053,8 @@ class ServerHelperTests(unittest.TestCase):
         self.assertIn("growth_create_conversation", tools)
         self.assertIn("organization_create_project_key", tools)
         self.assertIn("tables_db_create_cutover", tools)
+        self.assertIn("analytics_list_metrics", tools)
+        self.assertIn("avatars_update_photo", tools)
         for removed_tool in (
             "project_get_usage",
             "projects_list_dev_keys",
@@ -1069,6 +1104,35 @@ class ServerHelperTests(unittest.TestCase):
         ]
         self.assertIn("bun-1.4", build_runtime["enum"])
 
+    def test_console_sdk_accepts_null_billing_fields(self):
+        # Cloud returns null for these fields; earlier SDKs rejected the
+        # responses (Sentry MCP-1G/1S/1F/1P/1N/1W).
+        from appwrite_console.models.dedicated_database_restoration import (
+            DedicatedDatabaseRestoration,
+        )
+        from appwrite_console.models.invoice import Invoice
+        from appwrite_console.models.organization import Organization
+        from appwrite_console.models.payment_method import PaymentMethod
+        from pydantic import TypeAdapter
+
+        cases = {
+            Organization: ("paymentMethodId",),
+            PaymentMethod: ("mandateId", "state", "lastError"),
+            Invoice: ("clientSecret", "lastError"),
+            DedicatedDatabaseRestoration: ("targetTime",),
+        }
+        for model, aliases in cases.items():
+            fields = {
+                field.alias or name: field for name, field in model.model_fields.items()
+            }
+            for alias in aliases:
+                with self.subTest(model=model.__name__, field=alias):
+                    field = fields[alias]
+                    self.assertFalse(field.is_required())
+                    self.assertIsNone(
+                        TypeAdapter(field.annotation).validate_python(None)
+                    )
+
     def test_advisor_tools_are_project_scoped(self):
         manager = register_services(object(), profile=OAUTH_PROFILE)
         advisor_tools = {
@@ -1082,13 +1146,27 @@ class ServerHelperTests(unittest.TestCase):
             {tool["context_scope"] for tool in advisor_tools.values()}, {"project"}
         )
 
+    def test_waf_rule_tools_take_conditions_as_a_list_of_strings(self):
+        manager = register_services(object(), profile=OAUTH_PROFILE)
+        tools = {tool.name: tool for tool in manager.get_all_tools()}
+
+        for action in ("bypass", "challenge", "deny", "rate_limit", "redirect"):
+            for verb in ("create", "update"):
+                name = f"waf_{verb}_{action}_rule"
+                with self.subTest(tool=name):
+                    conditions = tools[name].input_schema["properties"]["conditions"]
+                    self.assertEqual(conditions["type"], "array")
+                    self.assertEqual(conditions["items"], {"type": "string"})
+
     def test_api_key_profile_only_advertises_server_capabilities(self):
         manager = register_services(object(), profile=API_KEY_PROFILE)
         service_names = {service.service_name for service in manager.services}
         tool_names = {tool.name for tool in manager.get_all_tools()}
 
-        self.assertEqual(len(manager.services), 26)
-        self.assertEqual(len(tool_names), 663)
+        self.assertEqual(len(manager.services), 27)
+        self.assertEqual(len(tool_names), 689)
+        self.assertIn("waf_list_rules", tool_names)
+        self.assertIn("waf_create_deny_rule", tool_names)
         self.assertIn("avatars_get_photo", tool_names)
         self.assertIn("project_update_o_auth2_hugging_face", tool_names)
         self.assertIn("documents_db_list", tool_names)
@@ -1098,6 +1176,9 @@ class ServerHelperTests(unittest.TestCase):
         self.assertNotIn("organizations", service_names)
         self.assertNotIn("documents_db_list_operations", tool_names)
         self.assertNotIn("tables_db_create_cutover", tool_names)
+        self.assertNotIn("avatars_update_photo", tool_names)
+        self.assertNotIn("avatars_delete_photo", tool_names)
+        self.assertNotIn("analytics", service_names)
         self.assertNotIn("growth", service_names)
         for method in (
             "create_ephemeral_project_key",
@@ -1431,6 +1512,37 @@ class ServerHelperTests(unittest.TestCase):
         bounded_call.assert_not_called()
         client.call.assert_called_once()
         self.assertIsInstance(result[0], types.EmbeddedResource)
+
+    def test_execute_registered_tool_returns_selected_attributes_untyped(self):
+        # A select query returns partial documents that the SDK's full models
+        # reject (Sentry MCP-12/MCP-13).
+        manager = register_services(object(), profile=OAUTH_PROFILE)
+        partial = {
+            "total": 1,
+            "deployments": [{"$id": "deployment", "type": "cli", "status": "ready"}],
+        }
+        select = json.dumps({"method": "select", "values": ["type", "status"]})
+        client = build_introspection_client()
+        client.call = Mock(return_value=partial)
+
+        result = execute_registered_tool(
+            manager,
+            "functions_list_deployments",
+            {"function_id": "function", "queries": [select]},
+            client=client,
+        )
+
+        self.assertIsInstance(result[0], types.TextContent)
+        self.assertEqual(json.loads(result[0].text), partial)
+
+        with patch.object(server_module.error_monitoring, "capture_appwrite_exception"):
+            with self.assertRaises(RuntimeError):
+                execute_registered_tool(
+                    manager,
+                    "functions_list_deployments",
+                    {"function_id": "function"},
+                    client=client,
+                )
 
     def test_execute_registered_tool_captures_publishable_appwrite_error(self):
         tool = types.Tool(

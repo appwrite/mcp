@@ -6,6 +6,7 @@ import os
 import unittest
 from unittest import mock
 
+from mcp.server.auth.provider import AccessToken
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from starlette.testclient import TestClient
@@ -335,6 +336,83 @@ class WellKnownMetadataEndpointTests(unittest.TestCase):
         )
         media_type = response.headers["content-type"].split(";", 1)[0].strip()
         self.assertEqual(media_type, "text/plain")
+
+
+class ModernHttpEntryTests(unittest.TestCase):
+    """The real hosted app on the stateless 2026-07-28 HTTP entry, with the
+    bearer check satisfied by a stub verifier."""
+
+    HEADERS = {
+        "Authorization": "Bearer test-token",
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+        "MCP-Protocol-Version": "2026-07-28",
+    }
+
+    def setUp(self):
+        from mcp_server_appwrite import server as server_module
+
+        original_transport = server_module._UPLOAD_TRANSPORT
+        self.addCleanup(setattr, server_module, "_UPLOAD_TRANSPORT", original_transport)
+
+        async def verify_token(_verifier, token):
+            return AccessToken(token=token, client_id="test-client", scopes=[])
+
+        patcher = mock.patch.object(
+            auth.AppwriteTokenVerifier, "verify_token", verify_token
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_cancelled_notification_is_acknowledged_with_202(self):
+        # Clients still POST notifications such as ``notifications/cancelled``
+        # on this entry; they must be acknowledged, not rejected with a 400.
+        body = {
+            "jsonrpc": "2.0",
+            "method": "notifications/cancelled",
+            "params": {"requestId": 1, "reason": "user aborted"},
+        }
+
+        with TestClient(build_app()) as client:
+            for path in ("/", "/mcp"):
+                with self.subTest(path=path):
+                    response = client.post(path, json=body, headers=self.HEADERS)
+                    self.assertEqual(response.status_code, 202, response.text)
+                    self.assertEqual(response.content, b"")
+
+    def test_tool_call_does_not_run_an_internal_tools_list(self):
+        # Mcp-Param-* header validation needs the called tool's input schema.
+        # Without a direct lookup the SDK runs our tools/list handler for every
+        # tools/call, which double-counts tools/list in telemetry.
+        body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "appwrite_search_tools",
+                "arguments": {"query": "create row", "limit": 1},
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                },
+            },
+        }
+        headers = {
+            **self.HEADERS,
+            "Mcp-Method": "tools/call",
+            "Mcp-Name": "appwrite_search_tools",
+        }
+
+        with (
+            mock.patch.object(telemetry, "record_message") as record_message,
+            TestClient(build_app()) as client,
+        ):
+            response = client.post("/", json=body, headers=headers)
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertNotIn('"isError":true', response.text)
+        methods = [call.args[0] for call in record_message.call_args_list]
+        self.assertEqual(methods, ["tools/call"])
 
 
 class ConsoleOverrideTests(unittest.TestCase):

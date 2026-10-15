@@ -197,7 +197,7 @@ def _histogram(
 
 
 def _build_instruments(meter: Any, transport: str, version: str) -> None:
-    # --- Transport & sessions ------------------------------------------------
+
     _instruments["handshake"] = meter.create_counter(
         "mcp.handshake",
         unit="{handshake}",
@@ -215,7 +215,6 @@ def _build_instruments(meter: Any, transport: str, version: str) -> None:
         description="Activity-session ends by reason (stateless transport: idle expiry).",
     )
 
-    # --- Protocol & messages -------------------------------------------------
     _instruments["messages_received"] = meter.create_counter(
         "mcp.messages.received",
         unit="{message}",
@@ -240,7 +239,6 @@ def _build_instruments(meter: Any, transport: str, version: str) -> None:
         boundaries=_BYTE_BUCKETS,
     )
 
-    # --- Tool execution -------------------------------------------------------
     _instruments["tool_calls"] = meter.create_counter(
         "mcp.tool.calls",
         unit="{call}",
@@ -283,7 +281,36 @@ def _build_instruments(meter: Any, transport: str, version: str) -> None:
         description="Calls to tools that do not exist (hallucinated tool names).",
     )
 
-    # --- Agentic & token metrics ----------------------------------------------
+    _instruments["events_ingress"] = meter.create_counter(
+        "mcp.events.ingress",
+        unit="{delivery}",
+        description=(
+            "Appwrite webhook deliveries at the events ingress by outcome "
+            "(accepted, dropped, rejected) and reason."
+        ),
+    )
+    _instruments["events_deliveries"] = meter.create_counter(
+        "mcp.events.deliveries",
+        unit="{event}",
+        description=(
+            "MCP event deliveries by mode (webhook callbacks, push streams) "
+            "and outcome."
+        ),
+    )
+    _instruments["events_streams"] = meter.create_up_down_counter(
+        "mcp.events.streams",
+        unit="{stream}",
+        description="Open events/stream push subscriptions.",
+    )
+    _instruments["events_subscriptions"] = meter.create_counter(
+        "mcp.events.subscriptions",
+        unit="{subscription}",
+        description=(
+            "events/subscribe and events/unsubscribe outcomes, and expired "
+            "subscription webhooks cleaned up, by operation and event."
+        ),
+    )
+
     _instruments["token_usage"] = meter.create_counter(
         "mcp.token.usage",
         unit="{token}",
@@ -297,7 +324,6 @@ def _build_instruments(meter: Any, transport: str, version: str) -> None:
         boundaries=_TOKEN_BUCKETS,
     )
 
-    # --- Observable gauges ------------------------------------------------------
     meter.create_observable_gauge(
         "mcp.active_sessions",
         callbacks=[_observe_active_sessions],
@@ -339,8 +365,6 @@ def _build_instruments(meter: Any, transport: str, version: str) -> None:
         description="Server build info (value is always 1).",
     )
 
-
-# --- Request identity ---------------------------------------------------------
 
 _CLIENT_NAME_WHITESPACE = re.compile(r"\s+")
 
@@ -405,9 +429,6 @@ def set_request_identity(
 
 def current_client_id() -> str:
     return _request_client.get()
-
-
-# --- Active-set bookkeeping -----------------------------------------------------
 
 
 def _prune(store: dict, now: float) -> list:
@@ -512,9 +533,6 @@ def _resident_bytes() -> float | None:
         return None
 
 
-# --- Record helpers (all exception-safe, no-op when disabled) --------------------
-
-
 def _safe_add(name: str, value: int, attributes: dict[str, Any]) -> None:
     if not _enabled:
         return
@@ -545,9 +563,6 @@ def _sanitize_tool_name(name: Any) -> str:
     text = str(name) if name is not None else ""
     text = _TOOL_NAME_SAFE.sub("_", text)[:64]
     return text or "invalid"
-
-
-# --- Transport & sessions ---------------------------------------------------------
 
 
 def record_connection(
@@ -607,9 +622,6 @@ def record_handshake_failure(reason: str | None = None) -> None:
     )
 
 
-# --- Protocol & messages ------------------------------------------------------------
-
-
 def record_message(
     method: str,
     outcome: str,
@@ -637,9 +649,6 @@ def record_message(
 
 def record_message_size(direction: str, size_bytes: int) -> None:
     _safe_record("message_size", size_bytes, {"direction": direction})
-
-
-# --- Tool execution --------------------------------------------------------------------
 
 
 def tool_call_started(tool_name: str) -> None:
@@ -711,3 +720,43 @@ def record_hallucination(attempted_tool: Any) -> None:
             "client_id": current_client_id(),
         },
     )
+
+
+def record_ingress(outcome: str, reason: str | None, event: str | None) -> None:
+    """One Appwrite webhook delivery at the events ingress. ``event`` is a
+    catalog event name, known only once the envelope has opened."""
+    _safe_add(
+        "events_ingress",
+        1,
+        {"outcome": outcome, "reason": reason, "event": event},
+    )
+
+
+def record_subscription(
+    operation: str, outcome: str, event: str | None, reason: str | None = None
+) -> None:
+    """One subscription operation: ``subscribe`` (created, refreshed, error),
+    ``unsubscribe`` (removed, absent, error) or ``cleanup`` (removed). ``event``
+    is a catalog event name, or ``None`` when the request named none."""
+    _safe_add(
+        "events_subscriptions",
+        1,
+        {"operation": operation, "outcome": outcome, "event": event, "reason": reason},
+    )
+
+
+def record_event_delivery(
+    event: str, outcome: str, reason: str | None, mode: str
+) -> None:
+    """How one MCP event delivery ended: to a subscriber callback (``mode``
+    ``webhook``) or on an ``events/stream`` (``push``)."""
+    _safe_add(
+        "events_deliveries",
+        1,
+        {"event": event, "outcome": outcome, "reason": reason, "mode": mode},
+    )
+
+
+def record_stream(event: str, delta: int) -> None:
+    """An ``events/stream`` opened (``delta`` 1) or closed (-1)."""
+    _safe_add("events_streams", delta, {"event": event})
