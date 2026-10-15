@@ -36,7 +36,7 @@
         "Compute and hosting",
         "- Functions: serverless code in Node.js, Python, Go, Rust, PHP, Ruby, Dart, Java, Kotlin, Swift, .NET, C++, Bun and Deno, triggered by HTTP, cron schedules or platform events, running in your region or at the edge",
         "- Sites: static, SSR and CSR hosting for Next.js, Nuxt, SvelteKit, Astro, Remix, TanStack Start, Angular, Vue, React, Vite, Flutter web and more",
-        "- Git deploys from GitHub, GitLab, Bitbucket or Gitea, with preview deployments per branch and commit"
+        "- Git deploys from GitHub, with preview deployments per branch and commit"
       ]
     },
     {
