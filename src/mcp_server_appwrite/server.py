@@ -79,6 +79,7 @@ from .events import protocol as events
 from .events.ingress import Ingress
 from .events.streams import Streams
 from .events.subscriptions import Subscriptions
+from .instructions import build_instructions, load_description
 from .operator import Operator, _parse_tool_name
 from .service import Service
 from .tool_manager import ToolManager
@@ -1310,60 +1311,6 @@ def _format_response_parse_error(tool_name: str | None, response: Any = None) ->
     )
 
 
-def build_instructions(transport: str = "http", *, docs_enabled: bool = True) -> str:
-    docs = (
-        "For questions about Appwrite concepts, products, features, or guides, "
-        "use appwrite_search_docs — it searches the official Appwrite "
-        "documentation and needs no project or credentials. "
-        if docs_enabled
-        else ""
-    )
-    capabilities = (
-        "This server covers the full Appwrite platform: it operates on Appwrite "
-        "resources (databases, auth/users, storage, functions, messaging, sites, "
-        "and more) via a searchable tool catalog"
-        + (" and answers Appwrite documentation questions" if docs_enabled else "")
-        + ". "
-    )
-    result_handling = (
-        "Large results are stored as resources; read the URI returned by the tool."
-        if transport == "stdio"
-        else "Hosted HTTP returns tool results inline, including images and other binary payloads."
-    )
-    common = (
-        f"{docs}"
-        "Appwrite workflow: use appwrite_get_context to understand the current "
-        "connection and available project resources, then use appwrite_search_tools "
-        "and appwrite_call_tool for specific operations. "
-        "Mutating hidden tools require confirm_write=true. "
-        f"{result_handling}"
-    )
-
-    if transport == "stdio":
-        return (
-            f"{capabilities}"
-            "This local Appwrite MCP connection uses the API key, endpoint, and "
-            "project configured in the server environment. Appwrite API calls target "
-            "that configured APPWRITE_PROJECT_ID by default. "
-            f"{common}"
-        )
-
-    return (
-        f"{capabilities}"
-        "You authenticate against the Appwrite console, which can list your "
-        "organizations and projects but stores no project data itself. Project-scoped "
-        "tools (Advisor, TablesDB, tables, users, storage, functions, messaging, sites) need a "
-        "target project: use appwrite_get_context first, then pass the selected "
-        "project id as project_id to appwrite_call_tool. "
-        "Organization-scoped console tools (e.g. creating a project) need organization_id. "
-        "File/image uploads: pass a public URL as the file argument (e.g. "
-        '{"url": "https://..."}) so the server downloads it directly; for very small '
-        'files you may pass inline base64 ({"filename": ..., "content": ..., '
-        '"encoding": "base64"}). '
-        f"{common}"
-    )
-
-
 def build_mcp_server(
     operator: Operator,
     *,
@@ -1615,6 +1562,7 @@ def build_mcp_server(
     server = Server(
         "Appwrite MCP Server",
         version=SERVER_VERSION,
+        description=load_description(),
         instructions=instructions,
         website_url=SERVER_WEBSITE_URL,
         icons=[types.Icon(src=SERVER_ICON_URL, mime_type="image/svg+xml")],

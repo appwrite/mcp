@@ -12,6 +12,8 @@ import httpx
 from jsonschema import Draft202012Validator
 from support import Server
 
+from mcp_server_appwrite.instructions import load_description
+
 EXTENSION = "io.modelcontextprotocol/events"
 
 CATALOG = [
@@ -169,6 +171,16 @@ class EventsDisabledFlow(unittest.TestCase):
                 status, message = client.initialize()
                 self.assertEqual(status, 200, message)
                 self.assertNotIn("events", message["result"]["capabilities"])
+                # Clients pick servers from serverInfo.description and the
+                # instructions, both rendered from assets/instructions.json.
+                self.assertEqual(
+                    message["result"]["serverInfo"]["description"], load_description()
+                )
+                self.assertTrue(
+                    message["result"]["instructions"].startswith(
+                        "Appwrite is a cloud backend"
+                    )
+                )
 
                 for method in ("events/list", "events/subscribe", "events/unsubscribe"):
                     _, message = client.call(method)

@@ -30,6 +30,7 @@ Source lives in `src/mcp_server_appwrite/`:
 | `service.py` | `Service` base class: introspects an Appwrite SDK service and turns its methods into MCP tool definitions. |
 | `tool_manager.py` | Registry of all services and their generated tools. |
 | `operator.py` | The compact "operator" surface — `appwrite_search_tools`, `appwrite_call_tool`, result/resource storage, write confirmation. |
+| `instructions.py` | `serverInfo.description` and the server instructions sent on initialize, rendered from `assets/instructions.json` (a description plus ordered, transport/docs-conditional Markdown sections). Edit the JSON to change the wording; keep the `pyproject.toml` description in sync (a test enforces it). |
 | `context.py` | `appwrite_get_context` — workspace summary (project, services, account/org for OAuth). |
 | `docs_search.py` | In-process semantic docs search (`appwrite_search_docs`) over a prebuilt index. |
 | `docs_source.py` | Fetches the published docs (`/docs/llms.txt` + per-page `.md` exports on appwrite.io) and chunks them for the index build. |
