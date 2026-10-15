@@ -1744,7 +1744,13 @@ class UploadInputFileTests(unittest.TestCase):
 
     def test_url_fetch_rejects_private_ip(self):
         response = _FakeResponse(data=b"secret")
-        for ip in ("127.0.0.1", "169.254.169.254", "10.0.0.1"):
+        for ip in (
+            "127.0.0.1",
+            "169.254.169.254",
+            "10.0.0.1",
+            "100.64.0.1",
+            "64:ff9b::a00:1",
+        ):
             with self.subTest(ip=ip):
                 addr, client = self._patch_fetch(
                     response, addrinfo=[(None, None, None, None, (ip, 80))]

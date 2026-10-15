@@ -74,6 +74,7 @@ from .context import (
 )
 from .docs_search import DocsSearch
 from .error_classification import HostedBinaryResponseTooLarge, is_response_parse_error
+from .events import egress
 from .events import protocol as events
 from .events.ingress import Ingress
 from .events.streams import Streams
@@ -514,19 +515,6 @@ class _FetchFailed(Exception):
     """Internal fetch failure. Logged server-side; callers see a generic ValueError."""
 
 
-def _ip_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
-    return (
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local
-        or ip.is_reserved
-        or ip.is_multicast
-        or ip.is_unspecified
-    )
-
-
 @dataclass(frozen=True)
 class _PinnedFetchTarget:
     """A URL rewritten to a validated IP, with Host/SNI kept on the original host."""
@@ -576,7 +564,7 @@ def _pin_fetch_target(url: str) -> _PinnedFetchTarget:
 
     addrs = [str(info[4][0]) for info in infos]
     for addr in addrs:
-        if _ip_is_blocked(ipaddress.ip_address(addr)):
+        if not egress.permitted(ipaddress.ip_address(addr)):
             raise ValueError(
                 "Refusing to fetch a URL that resolves to a private, loopback, or "
                 "link-local address."
