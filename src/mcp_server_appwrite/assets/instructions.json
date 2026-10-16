@@ -102,6 +102,7 @@
       "lines": [
         "- No Appwrite project is configured. When the user needs a backend and has no Appwrite project, call appwrite_create_zero_project: it creates a free project with no account, valid for 60 minutes, and points the other tools at it.",
         "- Always give the user the returned claimUrl and tell them to open it to keep the project; an unclaimed project is deleted.",
+        "- Until the project is claimed, its Sites and function domains open only with the returned accessToken: send it in the X-Appwrite-Zero-Token header when you fetch a domain, and give the user https://<domain>/__appwrite/zero?token=<accessToken> to open one in a browser.",
         "- Use the returned endpoint, projectId and apiKey to configure the user's app or an Appwrite SDK."
       ]
     },
