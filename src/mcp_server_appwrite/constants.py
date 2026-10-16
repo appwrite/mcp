@@ -119,6 +119,13 @@ DATA_DIR = Path(__file__).parent / "data"
 INDEX_FILE = "docs_index.npz"
 META_MEMBER = "meta.json"
 
+# --- zero -----------------------------------------------------------------
+
+ZERO_CREATE_TOOL_NAME = "appwrite_create_zero_project"
+ZERO_GET_TOOL_NAME = "appwrite_get_zero_project"
+ZERO_SOURCE = "mcp"
+ZERO_TIMEOUT_SECONDS = 60.0
+
 # --- context --------------------------------------------------------------
 
 SERVICE_PROBES = {
