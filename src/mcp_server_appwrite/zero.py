@@ -75,6 +75,11 @@ class Zero:
                     "REST API. You MUST give the user the claimUrl: opening it and "
                     "signing in keeps the project and its API key. An unclaimed "
                     "project stops working at expiresAt and is deleted after claimBy. "
+                    "Until it is claimed, its Sites and function domains open only with "
+                    "the accessToken: send it in the X-Appwrite-Zero-Token header when "
+                    "you fetch a domain, and give the user "
+                    "https://<domain>/__appwrite/zero?token=<accessToken> to open one "
+                    "in a browser. "
                     "Use this only when the user has no Appwrite project of their own."
                 ),
                 input_schema={

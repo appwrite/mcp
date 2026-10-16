@@ -50,6 +50,9 @@ it boots in Zero mode. The agent calls `appwrite_create_zero_project` to get a
 temporary project (endpoint, project ID and an API key valid for 60 minutes),
 and the other tools then operate on it. Open the returned `claimUrl` and sign in
 to keep the project; an unclaimed one is deleted.
+Until then its Sites and function domains open only with the returned
+`accessToken`: open `https://<domain>/__appwrite/zero?token=<accessToken>` once
+in the browser, or send it in the `X-Appwrite-Zero-Token` header.
 
 ```bash
 claude mcp add appwrite -- uvx mcp-server-appwrite
