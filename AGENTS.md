@@ -47,7 +47,8 @@ Source lives in `src/mcp_server_appwrite/`:
 no-op unless the transport is `http` and `OTEL_EXPORTER_OTLP_ENDPOINT` is set, so
 `stdio` and unconfigured servers stay silent. In the cluster that endpoint is the
 Alloy collector, which adds the `deployment.*` labels and forwards upstream — the app
-needs no credentials. Dashboards live in the `dashboards` repo under `MCP/`.
+needs no credentials. The MCP dashboard lives in `appwrite-labs/monitoring` at
+`dashboards/Cloud/mcp.json`, synced to monitoring.appwrite.systems by Grafana Git Sync.
 
 ### Tool surface (key design point)
 
