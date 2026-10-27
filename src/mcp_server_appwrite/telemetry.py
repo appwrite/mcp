@@ -3,7 +3,7 @@
 This module mirrors the ``utopia-php/telemetry`` pattern used by the other Appwrite
 services: it exports OpenTelemetry metrics over OTLP/HTTP to an OpenTelemetry
 Collector, which forwards them to the shared Prometheus/Mimir + Grafana stack
-(``telemetry.appwrite.systems``).
+(``monitoring.appwrite.systems``).
 
 The metric names follow the "MCP Server Observability" reference dashboard
 (grafana.com/grafana/dashboards/25252): after the standard OTLP-to-Prometheus
@@ -11,8 +11,8 @@ translation (dots become underscores, unit and ``_total`` suffixes appended)
 the instruments below land as ``mcp_tool_calls_total``,
 ``mcp_tool_duration_seconds_bucket``, ``mcp_active_sessions``, and so on.
 Only metrics queried by the hosted ``MCP`` Grafana dashboard
-(appwrite-labs/dashboards ``mcp.json``) are emitted — when a panel is removed
-there, drop its instrument here too.
+(appwrite-labs/monitoring ``dashboards/Cloud/mcp.json``) are emitted — when a
+panel is removed there, drop its instrument here too.
 
 Design notes:
 
