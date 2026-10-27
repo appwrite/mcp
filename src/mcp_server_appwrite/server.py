@@ -14,7 +14,7 @@ import re
 import socket
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -40,7 +40,7 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.subscriptions import InMemorySubscriptionBus, ListenHandler
 from mcp.types import CLIENT_INFO_META_KEY, INVALID_PARAMS
 
-from . import error_monitoring, flags, telemetry
+from . import error_monitoring, flags, legacy, telemetry
 from .catalog_policy import (
     API_KEY_PROFILE,
     OAUTH_PROFILE,
@@ -153,6 +153,7 @@ def parse_args(argv: list[str] | None = None):
         help="Bind port for the HTTP server (default $PORT or 8000).",
     )
     flags.register_cli_args(parser)
+    legacy.register_cli_args(parser)
     args = parser.parse_args(argv)
     try:
         args.transport = _transport_arg(args.transport)
@@ -1317,15 +1318,19 @@ def build_mcp_server(
     transport: str = "http",
     ingress: Ingress | None = None,
     streams: Streams | None = None,
+    notice: str | None = None,
 ) -> Server:
     """The low-level MCP server. With events enabled, ``events/subscribe``
     writes webhooks that point at ``ingress`` (built from the environment when
     not given) and verifies callbacks through its egress. ``streams``, when
-    given, serves push delivery (``events/stream``)."""
+    given, serves push delivery (``events/stream``). A ``notice`` (see
+    ``legacy.py``) leads the instructions so clients that truncate them keep it."""
     _configure_uploads(transport)
     instructions = build_instructions(
         transport, docs_enabled=bool(getattr(operator, "docs_enabled", False))
     )
+    if notice:
+        instructions = f"{notice}\n\n{instructions}"
     subscriptions = ListenHandler(InMemorySubscriptionBus())
 
     async def handle_list_tools(
@@ -1740,6 +1745,7 @@ def build_operator(
     client: Client | None = None,
     *,
     store_results: bool = True,
+    notice: str | None = None,
 ) -> Operator:
     """Wire the operator surface to the per-request execution path. The execution
     callback re-binds each call to a per-request client via `resolve_client` in
@@ -1772,6 +1778,7 @@ def build_operator(
         docs_search=docs_search,
         require_target_context=client is None,
         store_results=store_results,
+        notice=notice,
     )
 
 
@@ -1825,8 +1832,9 @@ def build_catalog_tools_manager() -> ToolManager:
     return register_services(build_introspection_client(), profile=OAUTH_PROFILE)
 
 
-async def run_stdio() -> None:
+async def run_stdio(legacy_flags: Sequence[str] = ()) -> None:
     """Serve a local stdio MCP using APPWRITE_* API-key configuration."""
+    notice = legacy.notice(legacy_flags)
     _log_startup("Loading Appwrite configuration")
     config = load_appwrite_config()
     client = build_client(config)
@@ -1836,8 +1844,8 @@ async def run_stdio() -> None:
     _log_startup("Starting Appwrite service validation")
     validate_services(tools_manager)
     _log_startup("Building Appwrite operator surface")
-    operator = build_operator(tools_manager, client=client)
-    server = build_mcp_server(operator, transport="stdio")
+    operator = build_operator(tools_manager, client=client, notice=notice)
+    server = build_mcp_server(operator, transport="stdio", notice=notice)
 
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
         _log_startup("MCP transport: stdio")
@@ -1856,10 +1864,16 @@ def main() -> int:
     """Entry point: stdio by default, or Streamable HTTP when requested."""
     load_environment()
     args = parse_args()
+    legacy_flags = legacy.passed(args)
+    if legacy_flags:
+        _log_startup(
+            f"WARNING: ignoring deprecated flags {' '.join(legacy_flags)}; every "
+            "service is always enabled. Remove them from the launch command."
+        )
 
     if args.transport == "stdio":
         try:
-            asyncio.run(run_stdio())
+            asyncio.run(run_stdio(legacy_flags))
         except (ValueError, RuntimeError) as exc:
             # Config/validation failures must stay on stderr as a short message.
             # An uncaught traceback still exits non-zero, but MCP clients only

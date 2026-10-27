@@ -120,6 +120,7 @@ class Operator:
         require_target_context: bool = False,
         store_results: bool = True,
         search_limit: int = SEARCH_LIMIT,
+        notice: str | None = None,
     ):
         self._tools_manager = tools_manager
         self._execute_tool = execute_tool
@@ -129,6 +130,7 @@ class Operator:
         self._require_target_context = require_target_context
         self._store_results = store_results
         self._search_limit = search_limit
+        self._notice = notice
         self._result_store = ResultStore()
         self._catalog = self._build_catalog()
         self._cached_catalog_json = self._catalog_json()
@@ -347,6 +349,8 @@ class Operator:
         if self._context_provider is None:
             raise RuntimeError("Appwrite context provider is not configured.")
         context = self._context_provider(arguments)
+        if self._notice:
+            context = {"notice": self._notice, **context}
         return [types.TextContent(type="text", text=json.dumps(context, indent=2))]
 
     def list_resources(self) -> list[types.Resource]:
