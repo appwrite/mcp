@@ -1053,7 +1053,8 @@ def _stamp() -> str:
 
 class Cloud:
     """The Appwrite REST API at ``http://127.0.0.1:<port>/v1``, as the server
-    reaches it with a caller's OAuth token.
+    reaches it with a caller's OAuth token, or with the project API key the
+    stdio transport sends as ``X-Appwrite-Key`` (granted like a token).
 
     Only what ``events/subscribe`` and ``events/unsubscribe`` call is served:
     the console project lookup ``resolve_client`` makes for regions, the
@@ -1121,7 +1122,7 @@ class Cloud:
     def grant(
         self, token: str, projects: Iterable[str], scopes: Iterable[str] = SCOPES
     ) -> None:
-        """Let ``token`` reach ``projects`` with ``scopes``."""
+        """Let ``token`` (or API key) reach ``projects`` with ``scopes``."""
         with self._lock:
             self._grants[token] = (frozenset(projects), frozenset(scopes))
 
@@ -1215,7 +1216,11 @@ class Cloud:
         path = parts.path
         query = parse_qs(parts.query)
         authorization = headers.get("authorization", "")
-        token = authorization[7:] if authorization.startswith("Bearer ") else None
+        token = (
+            authorization[7:]
+            if authorization.startswith("Bearer ")
+            else headers.get("x-appwrite-key")
+        )
         with self._lock:
             interleaving = next(
                 (
