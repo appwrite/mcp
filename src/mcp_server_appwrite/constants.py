@@ -13,8 +13,6 @@ from appwrite_console.models.site import Site
 from appwrite_console.models.team import Team
 from appwrite_console.models.user import User
 
-# --- server ---------------------------------------------------------------
-
 
 def _resolve_server_version() -> str:
     try:
@@ -64,8 +62,6 @@ HOSTED_PATH_GUIDANCE = (
     '{{"filename": "...", "content": "<base64>", "encoding": "base64"}}.'
 )
 
-# --- auth -----------------------------------------------------------------
-
 DEFAULT_PROJECT_ID = "console"
 
 # Curated scope allowlist. Empty means "no curation": the MCP mirrors the
@@ -76,8 +72,6 @@ PREFERRED_SCOPES: list[str] = []
 
 # Shared TTL for cached upstream lookups (OAuth discovery, project regions).
 CACHE_TTL_SECONDS = 300.0
-
-# --- http_app -------------------------------------------------------------
 
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -90,8 +84,10 @@ CORS_HEADERS = {
     "Access-Control-Expose-Headers": "Mcp-Session-Id, WWW-Authenticate, Link",
 }
 
-# --- operator -------------------------------------------------------------
-
+CONTEXT_TOOL_NAME = "appwrite_get_context"
+SEARCH_TOOL_NAME = "appwrite_search_tools"
+CALL_TOOL_NAME = "appwrite_call_tool"
+WRITE_TOOL_NAME = "appwrite_call_write_tool"
 SEARCH_LIMIT = 8
 # A page of rows does not fit in 800 characters, so the model paid a
 # resources/read for every list call. Only stdio stores results at all.
@@ -106,8 +102,6 @@ UPDATE_HINTS = {"change", "edit", "modify", "rename", "set", "update"}
 DELETE_HINTS = {"delete", "destroy", "drop", "remove"}
 READ_HINTS = {"fetch", "find", "get", "list", "read", "search", "show", "view"}
 
-# --- docs_search ----------------------------------------------------------
-
 DOCS_TOOL_NAME = "appwrite_search_docs"
 EMBED_MODEL = "text-embedding-3-small"
 DOCS_DEFAULT_LIMIT = 5
@@ -118,8 +112,6 @@ DOCS_MIN_QUERY_LENGTH = 3
 DATA_DIR = Path(__file__).parent / "data"
 INDEX_FILE = "docs_index.npz"
 META_MEMBER = "meta.json"
-
-# --- context --------------------------------------------------------------
 
 SERVICE_PROBES = {
     "tablesdb": {
@@ -160,8 +152,6 @@ SERVICE_PROBES = {
 }
 
 REDACTED_KEYS = {"password", "secret", "key", "token", "otp", "cookie", "session"}
-
-# --- telemetry ------------------------------------------------------------
 
 ACTIVE_WINDOW_SECONDS = 300.0  # rolling window for "active users/clients" gauges
 

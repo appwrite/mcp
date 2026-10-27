@@ -292,7 +292,7 @@ class OperatorTelemetryTests(TelemetryHarness):
         runtime = self.make_runtime(lambda name, arguments, *_: [])
         with self.assertRaises(WriteConfirmationRequired):
             runtime.execute_public_tool(
-                "appwrite_call_tool",
+                "appwrite_call_write_tool",
                 {"tool_name": "tables_db_create", "arguments": {"database_id": "db"}},
             )
         errors = self.points("mcp.tool.errors")

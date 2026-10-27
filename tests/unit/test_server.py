@@ -623,7 +623,7 @@ class ServerHelperTests(unittest.TestCase):
             ctx.meta = None
             ctx.session.client_params = None
             params = types.CallToolRequestParams(
-                name="appwrite_call_tool",
+                name="appwrite_call_write_tool",
                 arguments={
                     "tool_name": "functions_create_variable",
                     "confirm_write": True,
@@ -671,7 +671,7 @@ class ServerHelperTests(unittest.TestCase):
             ctx.meta = None
             ctx.session.client_params = None
             params = types.CallToolRequestParams(
-                name="appwrite_call_tool",
+                name="appwrite_call_write_tool",
                 arguments={
                     "tool_name": "functions_create_variable",
                     "confirm_write": True,
@@ -977,7 +977,7 @@ class ServerHelperTests(unittest.TestCase):
 
             def execute_public_tool(self, name, arguments):
                 raise WriteConfirmationRequired(
-                    "Tool tables_db_create is write. Re-run appwrite_call_tool "
+                    "Tool tables_db_create is write. Re-run appwrite_call_write_tool "
                     "with confirm_write=true if you intend to mutate Appwrite state."
                 )
 
@@ -1003,7 +1003,7 @@ class ServerHelperTests(unittest.TestCase):
             ctx.meta = None
             ctx.session.client_params = None
             params = types.CallToolRequestParams(
-                name="appwrite_call_tool",
+                name="appwrite_call_write_tool",
                 arguments={"tool_name": "tables_db_create"},
             )
             result = await entry.handler(ctx, params)

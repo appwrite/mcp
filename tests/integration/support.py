@@ -243,7 +243,7 @@ class LiveSurfaceRunner:
 
         try:
             self.runtime.execute_public_tool(
-                "appwrite_call_tool",
+                "appwrite_call_write_tool",
                 {
                     "tool_name": "users_create",
                     "arguments": {"user_id": self.unique_id("u")},
@@ -252,15 +252,17 @@ class LiveSurfaceRunner:
         except Exception as exc:  # pragma: no cover - exercised live
             if "confirm_write=true" not in str(exc):
                 self._register_public(
-                    "appwrite_call_tool.confirm_write", "unexpected_error", str(exc)
+                    "appwrite_call_write_tool.confirm_write",
+                    "unexpected_error",
+                    str(exc),
                 )
                 raise
             self._register_public(
-                "appwrite_call_tool.confirm_write", "expected_error", str(exc)
+                "appwrite_call_write_tool.confirm_write", "expected_error", str(exc)
             )
         else:  # pragma: no cover - exercised live
             self._register_public(
-                "appwrite_call_tool.confirm_write",
+                "appwrite_call_write_tool.confirm_write",
                 "unexpected_error",
                 "confirm_write guard did not fire",
             )

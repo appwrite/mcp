@@ -29,7 +29,7 @@ Source lives in `src/mcp_server_appwrite/`:
 | `flags.py` | Central registry of tester/testing flags (CLI arg + env var per flag). Enabling and testing them is documented in [docs/flags.md](docs/flags.md). |
 | `service.py` | `Service` base class: introspects an Appwrite SDK service and turns its methods into MCP tool definitions. |
 | `tool_manager.py` | Registry of all services and their generated tools. |
-| `operator.py` | The compact "operator" surface — `appwrite_search_tools`, `appwrite_call_tool`, result/resource storage, write confirmation. |
+| `operator.py` | The compact "operator" surface — `appwrite_search_tools`, `appwrite_call_tool` / `appwrite_call_write_tool`, tool annotations, result/resource storage, write confirmation. |
 | `instructions.py` | `serverInfo.description` and the server instructions sent on initialize, rendered from `assets/instructions.json` (a description plus ordered, transport/docs-conditional Markdown sections). Edit the JSON to change the wording; keep the `pyproject.toml` description in sync (a test enforces it). |
 | `context.py` | `appwrite_get_context` — workspace summary (project, services, account/org for OAuth). |
 | `docs_search.py` | In-process semantic docs search (`appwrite_search_docs`) over a prebuilt index. |
@@ -51,13 +51,15 @@ needs no credentials. Dashboards live in the `dashboards` repo under `MCP/`.
 
 ### Tool surface (key design point)
 
-The server boots in a compact workflow: the client sees up to 4 tools
-(`appwrite_get_context`, `appwrite_search_tools`, `appwrite_call_tool`, and
-optionally `appwrite_search_docs`), while the full OAuth Appwrite catalog (41
+The server boots in a compact workflow: the client sees up to 5 tools
+(`appwrite_get_context`, `appwrite_search_tools`, `appwrite_call_tool` for
+reads, `appwrite_call_write_tool` for everything else, and optionally
+`appwrite_search_docs`), while the full OAuth Appwrite catalog (41
 services) stays internal and is searched at runtime. API-key stdio uses a filtered
-27-service catalog. Mutating hidden tools require
-`confirm_write=true`. Large outputs are stored as MCP resources and returned as a
-preview + resource URI.
+27-service catalog. Mutating hidden tools run only through
+`appwrite_call_write_tool` and require `confirm_write=true`, so each exposed
+tool's annotations match every call it accepts. Large outputs are stored as MCP
+resources and returned as a preview + resource URI.
 
 ## Local development
 
