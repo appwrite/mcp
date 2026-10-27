@@ -196,7 +196,12 @@ class OperatorTests(unittest.TestCase):
         names = {tool.name for tool in runtime.get_public_tools()}
         self.assertEqual(
             names,
-            {"appwrite_get_context", "appwrite_search_tools", "appwrite_call_tool"},
+            {
+                "appwrite_get_context",
+                "appwrite_search_tools",
+                "appwrite_call_tool",
+                "appwrite_call_write_tool",
+            },
         )
         self.assertFalse(runtime.has_public_tool("appwrite_search_docs"))
 
@@ -205,7 +210,7 @@ class OperatorTests(unittest.TestCase):
         runtime = self.make_runtime_with_docs(docs)
 
         tools = runtime.get_public_tools()
-        self.assertEqual(len(tools), 4)
+        self.assertEqual(len(tools), 5)
         self.assertIn("appwrite_search_docs", {tool.name for tool in tools})
         self.assertTrue(runtime.has_public_tool("appwrite_search_docs"))
 
@@ -602,7 +607,7 @@ class OperatorTests(unittest.TestCase):
 
         with self.assertRaisesRegex(WriteConfirmationRequired, "confirm_write=true"):
             runtime.execute_public_tool(
-                "appwrite_call_tool",
+                "appwrite_call_write_tool",
                 {"tool_name": "tables_db_create", "arguments": {"database_id": "db"}},
             )
 
@@ -616,7 +621,7 @@ class OperatorTests(unittest.TestCase):
 
         runtime = self.make_runtime(executor)
         result = runtime.execute_public_tool(
-            "appwrite_call_tool",
+            "appwrite_call_write_tool",
             {
                 "tool_name": "tables_db_create",
                 "confirm_write": True,

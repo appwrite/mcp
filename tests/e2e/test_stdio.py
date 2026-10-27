@@ -91,6 +91,7 @@ class StdioTest(unittest.TestCase):
         session = self.launch()
 
         self.assertIn("appwrite_call_tool", session["tools"])
+        self.assertIn("appwrite_call_write_tool", session["tools"])
         self.assertNotIn("deprecated flags", session["instructions"])
         self.assertNotIn("notice", session["context"])
 

@@ -16,7 +16,9 @@ from mcp.server.lowlevel.helper_types import ReadResourceContents
 
 from . import telemetry
 from .constants import (
+    CALL_TOOL_NAME,
     CATALOG_URI,
+    CONTEXT_TOOL_NAME,
     CREATE_HINTS,
     DELETE_HINTS,
     PREVIEW_THRESHOLD,
@@ -25,13 +27,16 @@ from .constants import (
     RESULT_STORE_SIZE,
     RESULT_URI_TEMPLATE,
     SEARCH_LIMIT,
+    SEARCH_TOOL_NAME,
     UPDATE_HINTS,
     VERBS,
+    WRITE_TOOL_NAME,
 )
 from .docs_search import DocsSearch
 from .error_classification import (
     ErrorCategory,
     WriteConfirmationRequired,
+    WrongCallTool,
     classify_tool_error,
 )
 from .tool_manager import ToolManager
@@ -55,6 +60,23 @@ class CatalogEntry:
     resource_name: str
     service_name: str
     tool_name: str
+
+    @property
+    def mutating(self) -> bool:
+        """Anything but a recognised read. Unknown verbs (upserts, increments,
+        GraphQL) may change state, so they are treated as mutations."""
+        return self.classification != "read"
+
+    @property
+    def call_tool(self) -> str:
+        """The public tool that runs this entry."""
+        return WRITE_TOOL_NAME if self.mutating else CALL_TOOL_NAME
+
+
+@dataclass(frozen=True)
+class PublicTool:
+    tool: types.Tool
+    handler: Callable[[dict[str, Any]], list[ToolContent]]
 
 
 @dataclass(frozen=True)
@@ -135,6 +157,7 @@ class Operator:
         self._catalog = self._build_catalog()
         self._cached_catalog_json = self._catalog_json()
         self._catalog_map = {entry.tool_name: entry for entry in self._catalog}
+        self._public_tools = self._build_public_tools()
 
     def get_catalog_resource_uri(self) -> str:
         return CATALOG_URI
@@ -144,163 +167,155 @@ class Operator:
         return self._docs_search is not None
 
     def get_public_tools(self) -> list[types.Tool]:
+        return [public.tool for public in self._public_tools.values()]
+
+    def has_public_tool(self, name: str) -> bool:
+        return name in self._public_tools
+
+    def _build_public_tools(self) -> dict[str, PublicTool]:
         tools = [
-            types.Tool(
-                name="appwrite_get_context",
-                annotations=types.ToolAnnotations(
-                    read_only_hint=True,
-                    open_world_hint=True,
-                    destructive_hint=False,
-                ),
-                description=(
-                    "Get an adaptive Appwrite account/project context summary, including "
-                    "available projects and per-project service counts where the current "
-                    "connection can read them. Use this before searching the hidden catalog "
-                    "when orienting to a user's Appwrite workspace."
-                ),
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "project_id": {
-                            "type": "string",
-                            "description": "Optional project ID to focus the context summary.",
+            PublicTool(
+                types.Tool(
+                    name=CONTEXT_TOOL_NAME,
+                    title=_CONTEXT_TITLE,
+                    annotations=_annotations(
+                        _CONTEXT_TITLE, read_only=True, open_world=True
+                    ),
+                    description=(
+                        "Get an adaptive Appwrite account/project context summary, including "
+                        "available projects and per-project service counts where the current "
+                        "connection can read them. Use this before searching the hidden catalog "
+                        "when orienting to a user's Appwrite workspace."
+                    ),
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "project_id": {
+                                "type": "string",
+                                "description": "Optional project ID to focus the context summary.",
+                            },
+                            "organization_id": {
+                                "type": "string",
+                                "description": "Optional organization ID to focus project discovery.",
+                            },
+                            "include_services": {
+                                "type": "boolean",
+                                "description": (
+                                    "Include per-project service summaries. Defaults to true, "
+                                    "but large project sets are skipped unless project_id is provided."
+                                ),
+                            },
+                            "service_detail": {
+                                "type": "string",
+                                "enum": ["totals", "samples"],
+                                "description": "Service summary detail. Defaults to totals; samples includes small item previews.",
+                            },
+                            "sample_limit": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 25,
+                                "description": "Maximum sample items per service when service_detail=samples. Defaults to 5.",
+                            },
                         },
-                        "organization_id": {
-                            "type": "string",
-                            "description": "Optional organization ID to focus project discovery.",
-                        },
-                        "include_services": {
-                            "type": "boolean",
-                            "description": (
-                                "Include per-project service summaries. Defaults to true, "
-                                "but large project sets are skipped unless project_id is provided."
-                            ),
-                        },
-                        "service_detail": {
-                            "type": "string",
-                            "enum": ["totals", "samples"],
-                            "description": "Service summary detail. Defaults to totals; samples includes small item previews.",
-                        },
-                        "sample_limit": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 25,
-                            "description": "Maximum sample items per service when service_detail=samples. Defaults to 5.",
-                        },
+                        "additionalProperties": False,
                     },
-                    "additionalProperties": False,
-                },
+                ),
+                self._get_context,
             ),
-            types.Tool(
-                name="appwrite_search_tools",
-                annotations=types.ToolAnnotations(
-                    read_only_hint=True,
-                    open_world_hint=False,
-                    destructive_hint=False,
-                ),
-                description=(
-                    "Search the hidden Appwrite tool catalog by natural language query. "
-                    "Matches include parameter schemas (name, type, required/optional, "
-                    "description) to use with appwrite_call_tool. "
-                    "Use this before appwrite_call_tool when using the Appwrite operator surface."
-                ),
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Natural language query such as 'list databases' or 'create storage bucket'.",
+            PublicTool(
+                types.Tool(
+                    name=SEARCH_TOOL_NAME,
+                    title=_SEARCH_TITLE,
+                    annotations=_annotations(
+                        _SEARCH_TITLE, read_only=True, open_world=False
+                    ),
+                    description=(
+                        "Search the hidden Appwrite tool catalog by natural language query. "
+                        "Matches include parameter schemas (name, type, required/optional, "
+                        "description) and name the public tool that runs each match: "
+                        f"{CALL_TOOL_NAME} for reads, {WRITE_TOOL_NAME} for everything else. "
+                        f"Use this before {CALL_TOOL_NAME} or {WRITE_TOOL_NAME} when using "
+                        "the Appwrite operator surface."
+                    ),
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Natural language query such as 'list databases' or 'create storage bucket'.",
+                            },
+                            "service_hints": {
+                                "oneOf": [
+                                    {"type": "string"},
+                                    {"type": "array", "items": {"type": "string"}},
+                                ],
+                                "description": "Optional service filter such as 'tables_db', 'storage', or ['users', 'teams'].",
+                            },
+                            "argument_hints": {
+                                "type": "object",
+                                "description": "Known argument values used to boost matching tools and detect missing required fields.",
+                            },
+                            "include_mutating": {
+                                "type": "boolean",
+                                "description": "Include write and delete tools in the search results.",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 20,
+                                "description": f"Maximum number of matches to return. Defaults to {self._search_limit}.",
+                            },
                         },
-                        "service_hints": {
-                            "oneOf": [
-                                {"type": "string"},
-                                {"type": "array", "items": {"type": "string"}},
-                            ],
-                            "description": "Optional service filter such as 'tables_db', 'storage', or ['users', 'teams'].",
-                        },
-                        "argument_hints": {
-                            "type": "object",
-                            "description": "Known argument values used to boost matching tools and detect missing required fields.",
-                        },
-                        "include_mutating": {
-                            "type": "boolean",
-                            "description": "Include write and delete tools in the search results.",
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 20,
-                            "description": f"Maximum number of matches to return. Defaults to {self._search_limit}.",
-                        },
+                        "required": ["query"],
+                        "additionalProperties": False,
                     },
-                    "required": ["query"],
-                    "additionalProperties": False,
-                },
+                ),
+                self._search_tools,
             ),
-            types.Tool(
-                name="appwrite_call_tool",
-                annotations=types.ToolAnnotations(
-                    read_only_hint=False,
-                    open_world_hint=True,
-                    destructive_hint=True,
+            PublicTool(
+                types.Tool(
+                    name=CALL_TOOL_NAME,
+                    title=_CALL_TITLE,
+                    annotations=_annotations(
+                        _CALL_TITLE, read_only=True, open_world=True
+                    ),
+                    description=(
+                        "Run a read-only hidden Appwrite tool (class=read in "
+                        f"{SEARCH_TOOL_NAME} results: list and get operations) by name. "
+                        "Put Appwrite parameters inside `arguments`. Create, update, delete "
+                        f"and every other mutating tool runs through {WRITE_TOOL_NAME}. "
+                        "Hidden Appwrite parameters accept canonical snake_case names and "
+                        "common camelCase aliases."
+                    ),
+                    input_schema=_call_input_schema(write=False),
                 ),
-                description=(
-                    "Call a hidden Appwrite tool by name. Put Appwrite parameters inside `arguments`. "
-                    "Mutating tools require confirm_write=true. Hidden Appwrite parameters accept "
-                    "canonical snake_case names and common camelCase aliases."
+                self._call_read_tool,
+            ),
+            PublicTool(
+                types.Tool(
+                    name=WRITE_TOOL_NAME,
+                    title=_WRITE_TITLE,
+                    annotations=_annotations(
+                        _WRITE_TITLE, read_only=False, open_world=True
+                    ),
+                    description=(
+                        "Run a mutating hidden Appwrite tool (create, update, delete, upsert "
+                        f"and every other class except read in {SEARCH_TOOL_NAME} results) "
+                        "by name. Put Appwrite parameters inside `arguments` and set "
+                        f"confirm_write=true. Read-only tools run through {CALL_TOOL_NAME}. "
+                        "Hidden Appwrite parameters accept canonical snake_case names and "
+                        "common camelCase aliases."
+                    ),
+                    input_schema=_call_input_schema(write=True),
                 ),
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "tool_name": {
-                            "type": "string",
-                            "description": "Exact hidden Appwrite tool name returned by appwrite_search_tools.",
-                        },
-                        "arguments": {
-                            "type": "object",
-                            "description": "Arguments to forward to the hidden Appwrite tool.",
-                        },
-                        "confirm_write": {
-                            "type": "boolean",
-                            "description": "Required for create, update, and delete tools.",
-                        },
-                        "project_id": {
-                            "type": "string",
-                            "description": (
-                                "Appwrite project ID to act on (sent as X-Appwrite-Project). "
-                                "The connection authenticates against the Appwrite console, which "
-                                "can list your projects/organizations but holds no data — so "
-                                "project-scoped tools (Advisor, databases, documents, vectors, users, "
-                                "storage, functions, messaging, sites, usage, VCS, and WAF) "
-                                "require this. Search results identify each tool's context. Discover a project "
-                                "first, then pass its id. Omit for console/account-level tools."
-                            ),
-                        },
-                        "organization_id": {
-                            "type": "string",
-                            "description": (
-                                "Appwrite organization (team) ID to act on (sent as "
-                                "X-Appwrite-Organization). Required for organization-scoped "
-                                "console tools such as creating a project. Omit otherwise."
-                            ),
-                        },
-                    },
-                    "required": ["tool_name"],
-                    "additionalProperties": True,
-                },
+                self._call_write_tool,
             ),
         ]
 
         if self._docs_search is not None:
-            tools.append(self._docs_search.get_tool())
+            tools.append(PublicTool(self._docs_search.get_tool(), self._search_docs))
 
-        return tools
-
-    def has_public_tool(self, name: str) -> bool:
-        names = {"appwrite_get_context", "appwrite_search_tools", "appwrite_call_tool"}
-        if self._docs_search is not None:
-            names.add(self._docs_search.get_tool().name)
-        return name in names
+        return {public.tool.name: public for public in tools}
 
     def execute_public_tool(
         self, name: str, arguments: dict[str, Any] | None
@@ -334,16 +349,10 @@ class Operator:
     def _dispatch_public_tool(
         self, name: str, arguments: dict[str, Any] | None
     ) -> list[ToolContent]:
-        if name == "appwrite_get_context":
-            return self._get_context(arguments or {})
-        if name == "appwrite_search_tools":
-            return self._search_tools(arguments or {})
-        if name == "appwrite_call_tool":
-            return self._call_hidden_tool(arguments or {})
-        if self._docs_search is not None and name == self._docs_search.get_tool().name:
-            content = self._docs_search.search(arguments or {})
-            return self._preview_or_store_result(name, content)
-        raise ValueError(f"Unknown public Appwrite tool {name}")
+        public = self._public_tools.get(name)
+        if public is None:
+            raise ValueError(f"Unknown public Appwrite tool {name}")
+        return public.handler(arguments or {})
 
     def _get_context(self, arguments: dict[str, Any]) -> list[ToolContent]:
         if self._context_provider is None:
@@ -382,7 +391,10 @@ class Operator:
             types.ResourceTemplate(
                 uri_template=RESULT_URI_TEMPLATE,
                 name="Stored Appwrite Tool Result",
-                description="Stored result payloads created by appwrite_call_tool.",
+                description=(
+                    f"Stored result payloads created by {CALL_TOOL_NAME}, "
+                    f"{WRITE_TOOL_NAME} and the docs search."
+                ),
                 mime_type="application/json",
             )
         ]
@@ -435,6 +447,7 @@ class Operator:
             [
                 {
                     "action_verb": entry.action_verb,
+                    "call_tool": entry.call_tool,
                     "classification": entry.classification,
                     "context_scope": entry.context_scope,
                     "description": entry.description[:_CATALOG_DESCRIPTION_LIMIT],
@@ -449,6 +462,12 @@ class Operator:
             indent=2,
             ensure_ascii=False,
         )
+
+    def _search_docs(self, arguments: dict[str, Any]) -> list[ToolContent]:
+        if self._docs_search is None:
+            raise RuntimeError("Appwrite docs search is not configured.")
+        content = self._docs_search.search(arguments)
+        return self._preview_or_store_result(self._docs_search.get_tool().name, content)
 
     def _search_tools(self, arguments: dict[str, Any]) -> list[ToolContent]:
         query = str(arguments.get("query", "")).strip()
@@ -492,19 +511,30 @@ class Operator:
                 params = _format_params_block(match.entry)
                 lines.append(
                     f"{index}. tool={match.entry.tool_name} service={match.entry.service_name} "
-                    f"class={match.entry.classification} context={match.entry.context_scope} "
+                    f"class={match.entry.classification} call_tool={match.entry.call_tool} "
+                    f"context={match.entry.context_scope} "
                     f"required={required}{missing} "
                     f"score={match.score}{description}{params}"
                 )
             lines.append("")
             lines.append(
-                "Call via appwrite_call_tool with tool_name and arguments. "
+                "Run each match through its call_tool with tool_name and arguments: "
+                f"reads through {CALL_TOOL_NAME}, everything else through "
+                f"{WRITE_TOOL_NAME} with confirm_write=true. "
                 f"Full catalog resource: {CATALOG_URI}"
             )
 
         return [types.TextContent(type="text", text="\n".join(lines))]
 
-    def _call_hidden_tool(self, raw_arguments: dict[str, Any]) -> list[ToolContent]:
+    def _call_read_tool(self, raw_arguments: dict[str, Any]) -> list[ToolContent]:
+        return self._call_hidden_tool(raw_arguments, write=False)
+
+    def _call_write_tool(self, raw_arguments: dict[str, Any]) -> list[ToolContent]:
+        return self._call_hidden_tool(raw_arguments, write=True)
+
+    def _call_hidden_tool(
+        self, raw_arguments: dict[str, Any], *, write: bool
+    ) -> list[ToolContent]:
         tool_name = raw_arguments.get("tool_name", raw_arguments.get("toolName"))
         if not isinstance(tool_name, str) or not tool_name:
             raise ValueError("tool_name is required.")
@@ -520,16 +550,25 @@ class Operator:
             hint = (
                 f" Closest matches: {', '.join(suggestions)}."
                 if suggestions
-                else " Use appwrite_search_tools to find the right tool."
+                else f" Use {SEARCH_TOOL_NAME} to find the right tool."
             )
             raise ValueError(f"Tool {tool_name} was not found.{hint}")
 
+        # Each public call tool runs one side of the read/mutate line, so its
+        # annotations describe every call it accepts.
+        if entry.mutating != write:
+            confirmation = " with confirm_write=true" if entry.mutating else ""
+            raise WrongCallTool(
+                f"Tool {tool_name} is {entry.classification}. Call it through "
+                f"{entry.call_tool}{confirmation}."
+            )
         confirm_write = bool(
             raw_arguments.get("confirm_write", raw_arguments.get("confirmWrite", False))
         )
-        if entry.classification != "read" and not confirm_write:
+        if write and not confirm_write:
             raise WriteConfirmationRequired(
-                f"Tool {tool_name} is {entry.classification}. Re-run appwrite_call_tool with confirm_write=true if you intend to mutate Appwrite state."
+                f"Tool {tool_name} is {entry.classification}. Re-run {WRITE_TOOL_NAME} "
+                "with confirm_write=true if you intend to mutate Appwrite state."
             )
 
         project_id = raw_arguments.get("project_id", raw_arguments.get("projectId"))
@@ -539,12 +578,12 @@ class Operator:
         if self._require_target_context:
             if entry.context_scope == "project" and not project_id:
                 raise ValueError(
-                    f"Tool {tool_name} requires project_id. Use appwrite_get_context "
+                    f"Tool {tool_name} requires project_id. Use {CONTEXT_TOOL_NAME} "
                     "to select a project, then retry with that project ID."
                 )
             if entry.context_scope == "organization" and not organization_id:
                 raise ValueError(
-                    f"Tool {tool_name} requires organization_id. Use appwrite_get_context "
+                    f"Tool {tool_name} requires organization_id. Use {CONTEXT_TOOL_NAME} "
                     "to select an organization, then retry with that organization ID."
                 )
         arguments_object = _normalize_arguments(raw_arguments)
@@ -609,7 +648,7 @@ class Operator:
         ranked: list[SearchResult] = []
 
         for entry in self._catalog:
-            if not include_mutating and entry.classification != "read":
+            if not include_mutating and entry.mutating:
                 continue
 
             if (
@@ -636,6 +675,76 @@ class Operator:
 
         ranked.sort(key=lambda item: (-item.score, item.entry.tool_name))
         return ranked[:limit]
+
+
+_CONTEXT_TITLE = "Get Appwrite context"
+_SEARCH_TITLE = "Search Appwrite tools"
+_CALL_TITLE = "Run Appwrite read operation"
+_WRITE_TITLE = "Run Appwrite write operation"
+
+
+def _annotations(
+    title: str, *, read_only: bool, open_world: bool
+) -> types.ToolAnnotations:
+    """Every hint explicit: directory reviews reject unset hints and check them
+    against what the tool does. A read is safe to repeat; a write may create,
+    overwrite or delete, so it is neither."""
+    return types.ToolAnnotations(
+        title=title,
+        read_only_hint=read_only,
+        destructive_hint=not read_only,
+        idempotent_hint=read_only,
+        open_world_hint=open_world,
+    )
+
+
+def _call_input_schema(*, write: bool) -> dict[str, Any]:
+    properties: dict[str, Any] = {
+        "tool_name": {
+            "type": "string",
+            "description": (
+                f"Exact hidden Appwrite tool name returned by {SEARCH_TOOL_NAME} "
+                f"with call_tool={WRITE_TOOL_NAME if write else CALL_TOOL_NAME}."
+            ),
+        },
+        "arguments": {
+            "type": "object",
+            "description": "Arguments to forward to the hidden Appwrite tool.",
+        },
+    }
+    if write:
+        properties["confirm_write"] = {
+            "type": "boolean",
+            "description": "Required: set true to confirm the mutation.",
+        }
+    properties |= {
+        "project_id": {
+            "type": "string",
+            "description": (
+                "Appwrite project ID to act on (sent as X-Appwrite-Project). "
+                "The connection authenticates against the Appwrite console, which "
+                "can list your projects/organizations but holds no data — so "
+                "project-scoped tools (Advisor, databases, documents, vectors, users, "
+                "storage, functions, messaging, sites, usage, VCS, and WAF) "
+                "require this. Search results identify each tool's context. Discover a project "
+                "first, then pass its id. Omit for console/account-level tools."
+            ),
+        },
+        "organization_id": {
+            "type": "string",
+            "description": (
+                "Appwrite organization (team) ID to act on (sent as "
+                "X-Appwrite-Organization). Required for organization-scoped "
+                "console tools such as creating a project. Omit otherwise."
+            ),
+        },
+    }
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": ["tool_name"],
+        "additionalProperties": True,
+    }
 
 
 _MIN_INFLECTION_TOKEN_LENGTH = 3
@@ -871,16 +980,16 @@ def _compute_score(
     query_intent = _infer_query_intent(query_tokens)
     if query_intent == AMBIGUOUS_READ_INTENT:
         # Let the resource tokens decide between get and list.
-        score += 6 if entry.classification == "read" else -5
+        score += 6 if not entry.mutating else -5
     elif query_intent == entry.action_verb:
         score += 12
     elif query_intent:
-        if query_intent in READ_VERBS and entry.classification != "read":
+        if query_intent in READ_VERBS and entry.mutating:
             score -= 5
-        elif query_intent not in READ_VERBS and entry.classification == "read":
+        elif query_intent not in READ_VERBS and not entry.mutating:
             score -= 5
 
-    if entry.classification == "read" and not query_intent:
+    if not entry.mutating and not query_intent:
         score += 2
 
     if missing_required:

@@ -144,10 +144,13 @@ class DocsSearch:
     def get_tool(self) -> types.Tool:
         return types.Tool(
             name=DOCS_TOOL_NAME,
+            title="Search Appwrite docs",
             annotations=types.ToolAnnotations(
+                title="Search Appwrite docs",
                 read_only_hint=True,
-                open_world_hint=True,
                 destructive_hint=False,
+                idempotent_hint=True,
+                open_world_hint=True,
             ),
             description=(
                 "Search the Appwrite documentation with a natural-language query and "

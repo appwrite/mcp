@@ -15,6 +15,7 @@ from appwrite_console.exception import AppwriteException
 
 ErrorCategory = Literal[
     "write_confirmation",
+    "wrong_call_tool",
     "appwrite_4xx",
     "appwrite_5xx",
     "sdk_validation",
@@ -25,6 +26,7 @@ ErrorCategory = Literal[
 ERROR_CATEGORIES: frozenset[str] = frozenset(
     {
         "write_confirmation",
+        "wrong_call_tool",
         "appwrite_4xx",
         "appwrite_5xx",
         "sdk_validation",
@@ -36,6 +38,12 @@ ERROR_CATEGORIES: frozenset[str] = frozenset(
 
 class WriteConfirmationRequired(RuntimeError):
     """A mutating hidden tool was called without explicit confirmation."""
+
+
+class WrongCallTool(ValueError):
+    """A hidden tool was called through the public tool for the other
+    classification: a mutation through the read-only call tool, or a read
+    through the write call tool."""
 
 
 class HostedBinaryResponseTooLarge(ValueError):
@@ -71,6 +79,9 @@ def classify_tool_error(exc: BaseException) -> ErrorCategory:
 
     if any(isinstance(item, WriteConfirmationRequired) for item in chain):
         return "write_confirmation"
+
+    if any(isinstance(item, WrongCallTool) for item in chain):
+        return "wrong_call_tool"
 
     if any(isinstance(item, HostedBinaryResponseTooLarge) for item in chain):
         return "response_too_large"

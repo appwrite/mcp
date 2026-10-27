@@ -257,6 +257,10 @@ class Server:
         return Client(self.url, token)
 
 
+NAMED = {"tools/call": "name", "prompts/get": "name", "resources/read": "uri"}
+"""The param a 2026-07-28 request repeats in its ``Mcp-Name`` header (SEP-2243)."""
+
+
 def message(response: httpx.Response) -> dict[str, Any]:
     """The JSON-RPC message of a JSON or single-event SSE response."""
     text = response.text
@@ -310,6 +314,8 @@ class Client:
             "MCP-Protocol-Version": PROTOCOL_VERSION,
             "Mcp-Method": method,
         }
+        if method in NAMED:
+            headers["Mcp-Name"] = str((params or {})[NAMED[method]])
         response = self._http.post(path, json=body, headers=headers)
         return response.status_code, message(response)
 
