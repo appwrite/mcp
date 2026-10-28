@@ -101,6 +101,13 @@ class ToolsFlow(unittest.TestCase):
         self.assertLessEqual(
             WRITE.items(), tools["appwrite_call_write_tool"]["annotations"].items()
         )
+        # Both forward caller-built requests, so review requires them to name
+        # the API they call.
+        for name in ("appwrite_call_tool", "appwrite_call_write_tool"):
+            self.assertIn(
+                "Appwrite REST API, see https://appwrite.io/docs/references",
+                tools[name]["description"],
+            )
         self.assertNotIn(
             "confirm_write", tools["appwrite_call_tool"]["inputSchema"]["properties"]
         )

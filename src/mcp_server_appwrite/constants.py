@@ -88,6 +88,9 @@ CONTEXT_TOOL_NAME = "appwrite_get_context"
 SEARCH_TOOL_NAME = "appwrite_search_tools"
 CALL_TOOL_NAME = "appwrite_call_tool"
 WRITE_TOOL_NAME = "appwrite_call_write_tool"
+# Directory review requires tools that forward caller-built requests to name
+# the API they call.
+API_REFERENCE_URL = "https://appwrite.io/docs/references"
 SEARCH_LIMIT = 8
 # A page of rows does not fit in 800 characters, so the model paid a
 # resources/read for every list call. Only stdio stores results at all.
