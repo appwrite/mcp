@@ -8,6 +8,7 @@ the view pages, refreshes, follows a build and saves an edit.
 checked to have reached no Appwrite write at all.
 """
 
+import base64
 import hashlib
 import json
 import re
@@ -16,6 +17,7 @@ from typing import Any
 
 from support import (
     APPS_SCOPES,
+    PNG,
     SCOPES,
     TOKEN,
     Client,
@@ -25,6 +27,7 @@ from support import (
     column,
     deployment,
     execution,
+    file,
     row,
 )
 
@@ -40,6 +43,8 @@ ROWS = 30
 PAGE = 25
 LOG_LINES = 250
 EXECUTIONS = 30
+BUCKET = "photos"
+PHOTOS = 30
 # How open-runtimes colors a build log line.
 ANSI_LINE = (
     "\x1b[90m[13:23:45] \x1b[31m[\x1b[0mopen-runtimes\x1b[31m] "
@@ -53,7 +58,12 @@ def setUpModule() -> None:
     global cloud
     cloud = Cloud()
     project = cloud.add(
-        Project(PROJECT, tables={(DATABASE, TABLE)}, functions={FUNCTION})
+        Project(
+            PROJECT,
+            tables={(DATABASE, TABLE)},
+            functions={FUNCTION},
+            buckets={BUCKET},
+        )
     )
     project.columns[(DATABASE, TABLE)] = [
         column("customer", "string"),
@@ -107,6 +117,12 @@ def setUpModule() -> None:
             errors="card_declined\n    at charge (index.js:14:11)",
         )
     ]
+    project.files[BUCKET] = [
+        file(
+            f"img_{index:03d}", BUCKET, f"photo-{index}.jpg", "image/jpeg", 2048 * index
+        )
+        for index in range(1, PHOTOS)
+    ] + [file("invoice", BUCKET, "invoice.pdf", "application/pdf", 40_000)]
     cloud.grant(TOKEN, {PROJECT}, SCOPES | APPS_SCOPES)
 
 
@@ -443,9 +459,76 @@ class AppsFlow(unittest.TestCase):
         self.assertIn("Execution exe_running: processing, POST /charge", text)
         self.assertIn("Errors (last lines):\ncard_declined", text)
 
+    def test_files_view_pages_a_bucket_with_previews_for_the_view_only(self):
+        show = {"view": "files", "project_id": PROJECT, "bucket_id": BUCKET}
+        previews = rf"/v1/storage/buckets/{BUCKET}/files/[^/]+/preview"
+        before = cloud.calls("GET", previews)
+        # The model's call carries no previews.
+        result = self.call("appwrite_show", show)
+        self.assertFalse(result.get("isError"), result)
+        data = result["structuredContent"]
+        self.assertEqual(data["view"], "files")
+        self.assertEqual(data["bucket"]["name"], "Photos")
+        self.assertTrue(data["bucket"]["encryption"])
+        self.assertEqual(data["total"], PHOTOS)
+        self.assertEqual(len(data["files"]), 24)
+        self.assertEqual(data["files"][0]["id"], "invoice")
+        self.assertEqual(data["next"], data["files"][-1]["id"])
+        self.assertFalse(data["thumbnails"])
+        self.assertTrue(all(each["thumbnail"] is None for each in data["files"]))
+        self.assertEqual(cloud.calls("GET", previews), before)
+        text = result["content"][0]["text"]
+        self.assertIn(
+            f"Bucket Photos ({BUCKET}): {PHOTOS} files, showing 24 newest.", text
+        )
+        self.assertIn("invoice | invoice.pdf | application/pdf | 39.1 KB", text)
+        self.assertNotIn("base64", text)
+
+        # The view asks for them: one per image on the page, none for the PDF.
+        result = self.call("appwrite_show", {**show, "thumbnails": True})
+        data = result["structuredContent"]
+        self.assertEqual(cloud.calls("GET", previews), before + 23)
+        thumbnails = {each["id"]: each["thumbnail"] for each in data["files"]}
+        self.assertIsNone(thumbnails.pop("invoice"))
+        self.assertEqual(
+            set(thumbnails.values()),
+            {"data:image/png;base64," + base64.b64encode(PNG).decode()},
+        )
+
+        rest = self.call("appwrite_show", {**show, "cursor": data["next"]})
+        self.assertEqual(len(rest["structuredContent"]["files"]), PHOTOS - 24)
+        self.assertIsNone(rest["structuredContent"]["next"])
+
+        found = self.call("appwrite_show", {**show, "search": "photo-2"})
+        names = [each["name"] for each in found["structuredContent"]["files"]]
+        self.assertEqual(names[0], "photo-29.jpg")
+        self.assertTrue(all(name.startswith("photo-2") for name in names))
+
+        opened = self.call(
+            "appwrite_show", {**show, "file_id": "img_003", "thumbnails": True}
+        )
+        detail = opened["structuredContent"]["file"]
+        self.assertEqual(detail["name"], "photo-3.jpg")
+        self.assertEqual(detail["size"], 6144)
+        self.assertEqual(detail["permissions"], ['read("any")'])
+        self.assertTrue(detail["preview"].startswith("data:image/png;base64,"))
+        self.assertIn(
+            "File img_003 (photo-3.jpg): image/jpeg, 6.0 KB",
+            opened["content"][0]["text"],
+        )
+        # A file Appwrite cannot render opens without a preview.
+        pdf = self.call(
+            "appwrite_show", {**show, "file_id": "invoice", "thumbnails": True}
+        )
+        self.assertFalse(pdf.get("isError"), pdf)
+        self.assertIsNone(pdf["structuredContent"]["file"]["preview"])
+
     def test_bad_requests_are_tool_errors(self):
         cases = [
-            ({"view": "chart"}, "view must be one of: table, deployment, executions"),
+            (
+                {"view": "chart"},
+                "view must be one of: table, deployment, executions, files",
+            ),
             (
                 {"view": "table", "project_id": PROJECT, "table_id": TABLE},
                 "database_id is required for view=table.",
@@ -466,6 +549,10 @@ class AppsFlow(unittest.TestCase):
                     "status": "done",
                 },
                 "status must be one of: waiting, processing, completed",
+            ),
+            (
+                {"view": "files", "project_id": PROJECT},
+                "bucket_id is required for view=files.",
             ),
         ]
         for arguments, error in cases:

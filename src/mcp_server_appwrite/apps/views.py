@@ -2,7 +2,8 @@
 
 ``appwrite_show`` is the one tool the model sees. It reads what a view shows
 (a page of a table's rows, a Function or Site deployment with its build logs,
-or a Function's executions) through the hidden catalog, and returns it twice: a text summary in
+a Function's executions, or a Storage bucket's files) through the hidden
+catalog, and returns it twice: a text summary in
 ``content`` for the model and for hosts without MCP Apps, and the data in
 ``structuredContent`` for the view. The view calls it again to page, refresh
 and follow a build, so every read it makes is one the model could make too.
@@ -28,7 +29,7 @@ import mcp.types as types
 from appwrite_console.query import Query
 
 from ..constants import SHOW_TOOL_NAME, VIEW_WRITE_TOOL_NAME
-from . import executions, resource
+from . import executions, files, resource
 
 Run = Callable[[dict[str, Any], bool], list[Any]]
 """Runs a hidden catalog tool from raw call arguments (``tool_name``,
@@ -69,6 +70,7 @@ class View(StrEnum):
     TABLE = "table"
     DEPLOYMENT = "deployment"
     EXECUTIONS = "executions"
+    FILES = "files"
 
 
 class Views:
@@ -89,6 +91,9 @@ class Views:
         elif view == View.EXECUTIONS:
             data = executions.read(self._read, arguments)
             text = executions.summary(data)
+        elif view == View.FILES:
+            data = files.read(self._read, self._preview, arguments)
+            text = files.summary(data)
         else:
             raise ValueError(f"view must be one of: {', '.join(View)}. Got {view!r}.")
         return types.CallToolResult(
@@ -132,6 +137,25 @@ class Views:
         if not isinstance(result, dict):
             raise ValueError(f"{tool_name} returned an unexpected response.")
         return result
+
+    def _preview(self, project_id: Any, arguments: dict[str, Any]) -> str | None:
+        """A file preview as a data URI. A file Appwrite cannot transform
+        shows without one rather than failing the page."""
+        try:
+            content = self._run(
+                {
+                    "tool_name": "storage_get_file_preview",
+                    "project_id": project_id,
+                    "arguments": arguments,
+                },
+                False,
+            )
+        except Exception:
+            return None
+        for item in content:
+            if isinstance(item, types.ImageContent):
+                return f"data:{item.mime_type};base64,{item.data}"
+        return None
 
     def _table(self, arguments: dict[str, Any]) -> dict[str, Any]:
         project_id = arguments.get("project_id")
@@ -241,6 +265,7 @@ def _show_tool() -> types.Tool:
             "follows a Function or Site deployment's status and build logs live; "
             "view=executions lists a Function's executions and opens one with "
             "its request, response, logs and errors. "
+            "view=files browses a Storage bucket's files with image previews. "
             "Use it when the user wants to see or browse this data rather than "
             "reason over it; the result also carries a short text summary. Calls "
             "the Appwrite REST API."
@@ -264,8 +289,9 @@ def _show_tool() -> types.Tool:
                 "cursor": {
                     "type": "string",
                     "description": (
-                        "view=table or view=executions: continue after this "
-                        "ID (the previous page's `next`). Omit for the newest."
+                        "view=table, view=executions or view=files: continue "
+                        "after this ID (the previous page's `next`). Omit for the "
+                        "newest."
                     ),
                 },
                 "function_id": {
@@ -294,6 +320,25 @@ def _show_tool() -> types.Tool:
                     "type": "string",
                     "enum": list(executions.STATUSES),
                     "description": "view=executions: only executions in this status.",
+                },
+                "bucket_id": {
+                    "type": "string",
+                    "description": "view=files: the Storage bucket ID.",
+                },
+                "search": {
+                    "type": "string",
+                    "description": "view=files: only files whose name matches.",
+                },
+                "file_id": {
+                    "type": "string",
+                    "description": "view=files: also open this file.",
+                },
+                "thumbnails": {
+                    "type": "boolean",
+                    "description": (
+                        "view=files: include image previews. The view asks for "
+                        "these itself; leave unset."
+                    ),
                 },
             },
             "required": ["view"],

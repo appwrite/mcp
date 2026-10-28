@@ -1025,7 +1025,14 @@ SCOPES = frozenset(
 """Every Appwrite scope the events methods need."""
 
 APPS_SCOPES = frozenset(
-    {"rows.read", "rows.write", "functions.write", "sites.write", "execution.read"}
+    {
+        "rows.read",
+        "rows.write",
+        "functions.write",
+        "sites.write",
+        "execution.read",
+        "files.read",
+    }
 )
 """The scopes the MCP Apps views need on top of :data:`SCOPES`."""
 
@@ -1062,6 +1069,8 @@ class Project:
     """Deployment models per Function or Site ID, oldest first."""
     executions: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     """Execution models per Function ID, oldest first."""
+    files: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    """File models per bucket ID, oldest first."""
 
 
 @dataclass
@@ -1434,17 +1443,33 @@ class Cloud:
                 "bytesUsed": 0,
             }
         if match := re.fullmatch(
-            r"/v1/storage/buckets/([^/]+)/files/([^/]+)/preview", path
+            r"/v1/storage/buckets/([^/]+)/files(?:/([^/]+))?(/preview)?", path
         ):
             need("files.read")
-            if match.group(1) not in project.buckets:
+            id, file_id, preview = match.groups()
+            if id not in project.buckets:
                 raise _Refusal(404, "storage_bucket_not_found", "Bucket not found")
-            return 200, PNG
+            files = project.files.get(id, [])
+            if file_id is None:
+                found = files[::-1]
+                if term := (query.get("search") or [""])[0].lower():
+                    found = [each for each in found if term in each["name"].lower()]
+                return 200, {"total": len(found), "files": _page(found, query)}
+            if preview:
+                # Appwrite's image transformations refuse what is not an image.
+                stored = next((each for each in files if each["$id"] == file_id), None)
+                if stored is not None and not stored["mimeType"].startswith("image/"):
+                    raise _Refusal(400, "storage_file_type_unsupported", "Not an image")
+                return 200, PNG
+            stored = next((each for each in files if each["$id"] == file_id), None)
+            if stored is None:
+                raise _Refusal(404, "storage_file_not_found", "File not found")
+            return 200, stored
         if match := re.fullmatch(r"/v1/storage/buckets/([^/]+)", path):
             need("buckets.read")
             if match.group(1) not in project.buckets:
                 raise _Refusal(404, "storage_bucket_not_found", "Bucket not found")
-            return 200, {"$id": match.group(1)}
+            return 200, bucket(match.group(1))
         if path == "/v1/users" and method == "GET":
             need("users.read")
             return 200, {"total": 0, "users": []}
@@ -1721,6 +1746,50 @@ def execution(
         "errors": "",
         "duration": 0.25 if status in ("completed", "failed") else 0,
         **values,
+    }
+
+
+def bucket(id: str) -> dict[str, Any]:
+    """A ``Bucket`` model."""
+    stamp = _stamp()
+    return {
+        "$id": id,
+        "$createdAt": stamp,
+        "$updatedAt": stamp,
+        "$permissions": [],
+        "fileSecurity": False,
+        "name": id.title(),
+        "enabled": True,
+        "maximumFileSize": 5_000_000,
+        "allowedFileExtensions": ["jpg", "png", "pdf"],
+        "compression": "none",
+        "encryption": True,
+        "antivirus": True,
+        "transformations": True,
+        "totalSize": 0,
+    }
+
+
+def file(id: str, bucket: str, name: str, mime: str, size: int) -> dict[str, Any]:
+    """A ``File`` model."""
+    stamp = _stamp()
+    return {
+        "$id": id,
+        "bucketId": bucket,
+        "$createdAt": stamp,
+        "$updatedAt": stamp,
+        "$permissions": ['read("any")'],
+        "name": name,
+        "folder": "",
+        "key": name,
+        "signature": "5d41402abc4b2a76b9719d911017c592",
+        "mimeType": mime,
+        "sizeOriginal": size,
+        "sizeActual": size,
+        "chunksTotal": 1,
+        "chunksUploaded": 1,
+        "encryption": True,
+        "compression": "none",
     }
 
 
