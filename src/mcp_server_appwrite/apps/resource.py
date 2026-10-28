@@ -54,8 +54,8 @@ def resource() -> types.Resource:
         uri=uri(),
         name="Appwrite view",
         description=(
-            "Interactive Appwrite view: table rows, deployment build logs and "
-            "function executions."
+            "Interactive Appwrite view: table rows, deployment build logs, "
+            "function executions and Storage files."
         ),
         mime_type=MIME_TYPE,
         size=len(html().encode("utf-8")),
