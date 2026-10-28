@@ -1076,6 +1076,9 @@ class Project:
     """User documents, oldest first, password hash included."""
     sessions: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     """Session models per user ID, oldest first."""
+    usage: dict[str, dict[str, int]] = field(default_factory=dict)
+    """Usage values per metric, keyed by interval start (ISO 8601), for both
+    the events and the gauges API."""
 
 
 @dataclass
@@ -1415,6 +1418,30 @@ class Cloud:
             else:
                 need("rows.read")
             return 200, found
+        if match := re.fullmatch(r"/v1/usage/(events|gauges)", path):
+            start = (query.get("startAt") or [""])[0]
+            metrics = [
+                value
+                for key, values in query.items()
+                if key.startswith("metrics")
+                for value in values
+            ]
+            return 200, {
+                "interval": (query.get("interval") or [""])[0],
+                "metrics": [
+                    {
+                        "metric": metric,
+                        "points": [
+                            {"time": time, "value": value}
+                            for time, value in sorted(
+                                project.usage.get(metric, {}).items()
+                            )
+                            if not start or _instant(time) >= _instant(start)
+                        ],
+                    }
+                    for metric in metrics
+                ],
+            }
         if match := re.fullmatch(r"/v1/functions/([^/]+)", path):
             need("functions.read")
             if match.group(1) not in project.functions:
@@ -1649,6 +1676,10 @@ def _filter(
                 if document.get(parsed["attribute"]) in parsed["values"]
             ]
     return documents
+
+
+def _instant(value: str) -> datetime.datetime:
+    return datetime.datetime.fromisoformat(value)
 
 
 def column(key: str, type: str) -> dict[str, Any]:
