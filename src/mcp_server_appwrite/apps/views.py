@@ -2,8 +2,8 @@
 
 ``appwrite_show`` is the one tool the model sees. It reads what a view shows
 (a page of a table's rows, a Function or Site deployment with its build logs,
-a Function's executions, or a Storage bucket's files) through the hidden
-catalog, and returns it twice: a text summary in
+a Function's executions, a Storage bucket's files, or a project's Auth
+users) through the hidden catalog, and returns it twice: a text summary in
 ``content`` for the model and for hosts without MCP Apps, and the data in
 ``structuredContent`` for the view. The view calls it again to page, refresh
 and follow a build, so every read it makes is one the model could make too.
@@ -29,7 +29,7 @@ import mcp.types as types
 from appwrite_console.query import Query
 
 from ..constants import SHOW_TOOL_NAME, VIEW_WRITE_TOOL_NAME
-from . import executions, files, resource
+from . import executions, files, resource, users
 
 Run = Callable[[dict[str, Any], bool], list[Any]]
 """Runs a hidden catalog tool from raw call arguments (``tool_name``,
@@ -59,8 +59,10 @@ WRITES = (
     "tables_db_update_row",
     "functions_update_deployment_status",
     "sites_update_deployment_status",
+    *users.WRITES,
 )
-"""The writes the view offers: editing a row and cancelling a build."""
+"""The writes the view offers: editing a row, cancelling a build, and
+blocking, verifying or labelling a user."""
 
 _SHOW_TITLE = "Show Appwrite view"
 _WRITE_TITLE = "Run Appwrite view action"
@@ -71,6 +73,7 @@ class View(StrEnum):
     DEPLOYMENT = "deployment"
     EXECUTIONS = "executions"
     FILES = "files"
+    USERS = "users"
 
 
 class Views:
@@ -94,6 +97,9 @@ class Views:
         elif view == View.FILES:
             data = files.read(self._read, self._preview, arguments)
             text = files.summary(data)
+        elif view == View.USERS:
+            data = users.read(self._read, arguments)
+            text = users.summary(data)
         else:
             raise ValueError(f"view must be one of: {', '.join(View)}. Got {view!r}.")
         return types.CallToolResult(
@@ -116,6 +122,8 @@ class Views:
         result = _json(self._run(arguments, True))
         if isinstance(result, dict) and tool_name == "tables_db_update_row":
             result = _row(result)
+        elif isinstance(result, dict) and tool_name in users.WRITES:
+            result = users.user(result)
         return types.CallToolResult(
             content=[types.TextContent(type="text", text=f"{tool_name} succeeded.")],
             structured_content=result if isinstance(result, dict) else None,
@@ -266,6 +274,9 @@ def _show_tool() -> types.Tool:
             "view=executions lists a Function's executions and opens one with "
             "its request, response, logs and errors. "
             "view=files browses a Storage bucket's files with image previews. "
+            "view=users lists the project's Auth users (search by name, email, "
+            "phone or ID) and opens one with their sessions, where the user can "
+            "block, verify or label them. "
             "Use it when the user wants to see or browse this data rather than "
             "reason over it; the result also carries a short text summary. Calls "
             "the Appwrite REST API."
@@ -289,9 +300,9 @@ def _show_tool() -> types.Tool:
                 "cursor": {
                     "type": "string",
                     "description": (
-                        "view=table, view=executions or view=files: continue "
-                        "after this ID (the previous page's `next`). Omit for the "
-                        "newest."
+                        "view=table, view=executions, view=files or view=users: "
+                        "continue after this ID (the previous page's `next`). "
+                        "Omit for the newest."
                     ),
                 },
                 "function_id": {
@@ -327,7 +338,10 @@ def _show_tool() -> types.Tool:
                 },
                 "search": {
                     "type": "string",
-                    "description": "view=files: only files whose name matches.",
+                    "description": (
+                        "view=files: only files whose name matches. view=users: "
+                        "only users whose name, email, phone or ID matches."
+                    ),
                 },
                 "file_id": {
                     "type": "string",
@@ -339,6 +353,10 @@ def _show_tool() -> types.Tool:
                         "view=files: include image previews. The view asks for "
                         "these itself; leave unset."
                     ),
+                },
+                "user_id": {
+                    "type": "string",
+                    "description": "view=users: also open this user with their sessions.",
                 },
             },
             "required": ["view"],

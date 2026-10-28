@@ -29,6 +29,8 @@ from support import (
     execution,
     file,
     row,
+    session,
+    user,
 )
 
 PROJECT = "6630f1a2b3c4d5e6f7a8"
@@ -45,6 +47,17 @@ LOG_LINES = 250
 EXECUTIONS = 30
 BUCKET = "photos"
 PHOTOS = 30
+USERS = 27
+SECRETS = (
+    "argon2",
+    "c2FsdA",
+    "theme",
+    "target",
+    "provider-access-token",
+    "provider-refresh-token",
+    "session-secret",
+)
+"""Values of the user and session fields the view must never carry."""
 # How open-runtimes colors a build log line.
 ANSI_LINE = (
     "\x1b[90m[13:23:45] \x1b[31m[\x1b[0mopen-runtimes\x1b[31m] "
@@ -123,6 +136,22 @@ def setUpModule() -> None:
         )
         for index in range(1, PHOTOS)
     ] + [file("invoice", BUCKET, "invoice.pdf", "application/pdf", 40_000)]
+    project.users = [
+        user(
+            f"usr_{index:03d}",
+            f"Member {index}",
+            f"member{index}@example.com",
+            labels=["beta"] if index % 2 else [],
+        )
+        for index in range(1, USERS - 1)
+    ] + [
+        user("grace", "Grace Hopper", "grace@navy.example", emailVerification=True),
+        user("ada", "Ada Lovelace", "ada@engine.example", mfa=True, labels=["vip"]),
+    ]
+    project.sessions["ada"] = [
+        session(f"ses_{index}", "ada", ip=f"203.0.113.{index}")
+        for index in range(1, 13)
+    ]
     cloud.grant(TOKEN, {PROJECT}, SCOPES | APPS_SCOPES)
 
 
@@ -523,11 +552,124 @@ class AppsFlow(unittest.TestCase):
         self.assertFalse(pdf.get("isError"), pdf)
         self.assertIsNone(pdf["structuredContent"]["file"]["preview"])
 
+    def test_users_view_searches_opens_and_changes_a_user(self):
+        show = {"view": "users", "project_id": PROJECT}
+        result = self.call("appwrite_show", show)
+        self.assertFalse(result.get("isError"), result)
+        data = result["structuredContent"]
+        self.assertEqual(data["view"], "users")
+        self.assertEqual(data["total"], USERS)
+        self.assertEqual(len(data["users"]), PAGE)
+        self.assertEqual(data["users"][0]["id"], "ada")
+        self.assertEqual(data["next"], data["users"][-1]["id"])
+        self.assertIsNone(data["user"])
+        ada = data["users"][0]
+        self.assertEqual(ada["labels"], ["vip"])
+        self.assertTrue(ada["mfa"])
+        text = result["content"][0]["text"]
+        self.assertIn(f"{USERS} users, showing 25 newest.", text)
+        self.assertIn(
+            "ada | Ada Lovelace | ada@engine.example | active, unverified", text
+        )
+        rest = self.call("appwrite_show", {**show, "cursor": data["next"]})
+        self.assertEqual(len(rest["structuredContent"]["users"]), USERS - PAGE)
+        self.assertIsNone(rest["structuredContent"]["next"])
+
+        found = self.call("appwrite_show", {**show, "search": "navy"})
+        data = found["structuredContent"]
+        self.assertEqual([each["id"] for each in data["users"]], ["grace"])
+        self.assertTrue(data["users"][0]["emailVerification"])
+        self.assertIn("1 users matching 'navy'", found["content"][0]["text"])
+
+        opened = self.call("appwrite_show", {**show, "user_id": "ada"})
+        detail = opened["structuredContent"]["user"]
+        self.assertEqual(detail["sessionsTotal"], 12)
+        # The newest ten sessions, newest first.
+        self.assertEqual(
+            [each["ip"] for each in detail["sessions"]],
+            [f"203.0.113.{index}" for index in range(12, 2, -1)],
+        )
+        self.assertEqual(detail["sessions"][0]["client"], "Chrome 131.0")
+        self.assertEqual(detail["sessions"][0]["os"], "Mac 15.1")
+        self.assertIn(
+            "User ada (Ada Lovelace): active, unverified, mfa; 12 sessions",
+            opened["content"][0]["text"],
+        )
+        # Password hashes, prefs, targets and session tokens never leave the server.
+        for secret in SECRETS:
+            self.assertNotIn(secret, json.dumps(opened), secret)
+
+        block = {
+            "tool_name": "users_update_status",
+            "project_id": PROJECT,
+            "arguments": {"user_id": "grace", "status": False},
+        }
+        status_path = r"/v1/users/grace/status"
+        result = self.call("appwrite_view_write", {**block, "confirm_write": "true"})
+        self.assertTrue(result["isError"])
+        self.assertEqual(cloud.calls("PATCH", status_path), 0)
+        for tool_name, arguments in (
+            ("users_delete", {"user_id": "grace"}),
+            ("users_update_password", {"user_id": "grace", "password": "x" * 12}),
+        ):
+            with self.subTest(tool_name=tool_name):
+                result = self.call(
+                    "appwrite_view_write",
+                    {
+                        **block,
+                        "tool_name": tool_name,
+                        "arguments": arguments,
+                        "confirm_write": True,
+                    },
+                )
+                self.assertTrue(result["isError"])
+                self.assertIn(
+                    "appwrite_view_write runs only", result["content"][0]["text"]
+                )
+        self.assertEqual(cloud.calls("DELETE", r"/v1/users/grace"), 0)
+
+        result = self.call("appwrite_view_write", {**block, "confirm_write": True})
+        self.assertFalse(result.get("isError"), result)
+        self.assertFalse(result["structuredContent"]["status"])
+        for secret in SECRETS:
+            self.assertNotIn(secret, json.dumps(result), secret)
+        self.assertEqual(cloud.calls("PATCH", status_path), 1)
+
+        result = self.call(
+            "appwrite_view_write",
+            {
+                "tool_name": "users_update_labels",
+                "project_id": PROJECT,
+                "confirm_write": True,
+                "arguments": {"user_id": "grace", "labels": ["admin", "navy"]},
+            },
+        )
+        self.assertEqual(result["structuredContent"]["labels"], ["admin", "navy"])
+        result = self.call(
+            "appwrite_view_write",
+            {
+                "tool_name": "users_update_email_verification",
+                "project_id": PROJECT,
+                "confirm_write": True,
+                "arguments": {"user_id": "grace", "email_verification": False},
+            },
+        )
+        self.assertFalse(result["structuredContent"]["emailVerification"])
+
+        grace = self.call("appwrite_show", {**show, "search": "navy"})
+        row = grace["structuredContent"]["users"][0]
+        self.assertFalse(row["status"])
+        self.assertEqual(row["labels"], ["admin", "navy"])
+        self.assertIn(
+            "grace | Grace Hopper | grace@navy.example | blocked, unverified | admin,navy",
+            grace["content"][0]["text"],
+        )
+
     def test_bad_requests_are_tool_errors(self):
         cases = [
             (
                 {"view": "chart"},
-                "view must be one of: table, deployment, executions, files",
+                "view must be one of: table, deployment, executions, files, users",
             ),
             (
                 {"view": "table", "project_id": PROJECT, "table_id": TABLE},

@@ -1032,6 +1032,7 @@ APPS_SCOPES = frozenset(
         "sites.write",
         "execution.read",
         "files.read",
+        "users.write",
     }
 )
 """The scopes the MCP Apps views need on top of :data:`SCOPES`."""
@@ -1071,6 +1072,10 @@ class Project:
     """Execution models per Function ID, oldest first."""
     files: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     """File models per bucket ID, oldest first."""
+    users: list[dict[str, Any]] = field(default_factory=list)
+    """User documents, oldest first, password hash included."""
+    sessions: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    """Session models per user ID, oldest first."""
 
 
 @dataclass
@@ -1472,7 +1477,39 @@ class Cloud:
             return 200, bucket(match.group(1))
         if path == "/v1/users" and method == "GET":
             need("users.read")
-            return 200, {"total": 0, "users": []}
+            found = project.users[::-1]
+            if term := (query.get("search") or [""])[0].lower():
+                found = [
+                    each
+                    for each in found
+                    if any(
+                        term in str(each.get(key, "")).lower()
+                        for key in ("$id", "name", "email", "phone")
+                    )
+                ]
+            return 200, {"total": len(found), "users": _page(found, query)}
+        if match := re.fullmatch(
+            r"/v1/users/([^/]+)(/status|/labels|/verification|/sessions)?", path
+        ):
+            id, action = match.groups()
+            found = next((each for each in project.users if each["$id"] == id), None)
+            if found is None:
+                raise _Refusal(404, "user_not_found", "User not found")
+            if method == "GET":
+                need("users.read")
+                if action == "/sessions":
+                    sessions = project.sessions.get(id, [])
+                    return 200, {"total": len(sessions), "sessions": sessions}
+                return 200, found
+            need("users.write")
+            if action == "/status":
+                found["status"] = payload["status"]
+            elif action == "/labels":
+                found["labels"] = list(payload["labels"])
+            elif action == "/verification":
+                found["emailVerification"] = payload["emailVerification"]
+            found["$updatedAt"] = _stamp()
+            return 200, found
         if path == "/v1/webhooks":
             if method == "GET":
                 need("webhooks.read")
@@ -1749,6 +1786,46 @@ def execution(
     }
 
 
+def user(id: str, name: str, email: str, **values: Any) -> dict[str, Any]:
+    """A ``User`` document as the Users API returns it, password hash, prefs
+    and targets included."""
+    stamp = _stamp()
+    return {
+        "$id": id,
+        "$createdAt": stamp,
+        "$updatedAt": stamp,
+        "name": name,
+        "password": "$argon2id$v=19$m=7168,t=5,p=1$c2FsdA$aGFzaA",
+        "hash": "argon2",
+        "hashOptions": {"type": "argon2", "memory_cost": 7168},
+        "registration": stamp,
+        "status": True,
+        "labels": [],
+        "passwordUpdate": stamp,
+        "email": email,
+        "phone": "",
+        "emailVerification": False,
+        "phoneVerification": False,
+        "mfa": False,
+        "prefs": {"theme": "dark"},
+        "targets": [
+            {
+                "$id": "target",
+                "$createdAt": stamp,
+                "$updatedAt": stamp,
+                "name": "",
+                "userId": id,
+                "providerId": None,
+                "providerType": "email",
+                "identifier": email,
+                "expired": False,
+            }
+        ],
+        "accessedAt": "",
+        **values,
+    }
+
+
 def bucket(id: str) -> dict[str, Any]:
     """A ``Bucket`` model."""
     stamp = _stamp()
@@ -1790,6 +1867,43 @@ def file(id: str, bucket: str, name: str, mime: str, size: int) -> dict[str, Any
         "chunksUploaded": 1,
         "encryption": True,
         "compression": "none",
+    }
+
+
+def session(id: str, user: str, **values: Any) -> dict[str, Any]:
+    """A ``Session`` model, provider tokens and secret included."""
+    stamp = _stamp()
+    return {
+        "$id": id,
+        "$createdAt": stamp,
+        "$updatedAt": stamp,
+        "userId": user,
+        "expire": stamp,
+        "provider": "email",
+        "providerUid": "",
+        "providerAccessToken": "provider-access-token",
+        "providerAccessTokenExpiry": "",
+        "providerRefreshToken": "provider-refresh-token",
+        "ip": "203.0.113.7",
+        "osCode": "MAC",
+        "osName": "Mac",
+        "osVersion": "15.1",
+        "clientType": "browser",
+        "clientCode": "CH",
+        "clientName": "Chrome",
+        "clientVersion": "131.0",
+        "clientEngine": "Blink",
+        "clientEngineVersion": "131.0",
+        "deviceName": "desktop",
+        "deviceBrand": "Apple",
+        "deviceModel": "",
+        "countryCode": "de",
+        "countryName": "Germany",
+        "current": False,
+        "factors": ["password"],
+        "secret": "session-secret",
+        "mfaUpdatedAt": "",
+        **values,
     }
 
 

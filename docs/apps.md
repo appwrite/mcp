@@ -9,8 +9,8 @@ interactive view inside the chat. This server offers one view,
 
 | Name | Seen by | What it does |
 | --- | --- | --- |
-| `appwrite_show` | model and view | `view=table`: a page of a table's rows, newest first, with `cursor` paging. `view=deployment`: a Function or Site deployment (the latest unless `deployment_id` is given) with the last 200 build log lines. `view=executions`: a Function's executions, newest first, optionally one `status`, with `cursor` paging; `execution_id` also opens one with its request and response headers, status code, duration, and the last 200 lines of logs and of errors. `view=files`: a Storage bucket's files, newest first, with `search` (file name) and `cursor` paging; `file_id` also opens one. Read-only. |
-| `appwrite_view_write` | view only (`visibility: ["app"]`) | Runs one of `tables_db_update_row`, `functions_update_deployment_status`, `sites_update_deployment_status`, only with `confirm_write=true`. |
+| `appwrite_show` | model and view | `view=table`: a page of a table's rows, newest first, with `cursor` paging. `view=deployment`: a Function or Site deployment (the latest unless `deployment_id` is given) with the last 200 build log lines. `view=executions`: a Function's executions, newest first, optionally one `status`, with `cursor` paging; `execution_id` also opens one with its request and response headers, status code, duration, and the last 200 lines of logs and of errors. `view=files`: a Storage bucket's files, newest first, with `search` (file name) and `cursor` paging; `file_id` also opens one. `view=users`: the project's Auth users, newest first, with `search` (name, email, phone or ID) and `cursor` paging; `user_id` also opens one with their ten newest sessions. Read-only. |
+| `appwrite_view_write` | view only (`visibility: ["app"]`) | Runs one of `tables_db_update_row`, `functions_update_deployment_status`, `sites_update_deployment_status`, `users_update_status`, `users_update_labels`, `users_update_email_verification`, only with `confirm_write=true`. |
 | `ui://appwrite/view` | host | One HTML document (`assets/view.html`) that renders every view. |
 
 `appwrite_show` returns a text summary in `content`, which is what the model and
@@ -21,8 +21,10 @@ while any on the page, or the opened one, is waiting or processing. Appwrite
 keeps an execution's response body only for the synchronous call that ran it,
 so the view shows it only when present. An edited row or a cancelled
 build goes through a confirmation dialog in the view, and only then through
-`appwrite_view_write`. A successful edit and a finished build are passed to the
-model with `ui/update-model-context` when the host supports it.
+`appwrite_view_write`, as do blocking or unblocking a user, marking their
+email verified or not, and changing their labels. A successful change and a
+finished build are passed to the model with `ui/update-model-context` when the
+host supports it.
 
 The files view has no network access, so it cannot load a file's preview
 URL. It calls `appwrite_show` again with `thumbnails: true`, and the server
@@ -52,6 +54,9 @@ gated, because the view's own calls reach the server through the host.
   because a script injected through that data could call `appwrite_view_write`.
   The allowlist bounds what such a script could do, and `confirm_write` is
   required as for `appwrite_call_write_tool`.
+- User documents carry the password hash, prefs and messaging targets, and
+  sessions carry OAuth provider tokens. The users view, and the user writes'
+  results, carry only the fields the view shows.
 
 ## Trying it in a real host
 
