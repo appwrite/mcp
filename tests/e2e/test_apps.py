@@ -34,6 +34,7 @@ MIME_TYPE = "text/html;profile=mcp-app"
 VIEW_URI = "ui://appwrite/view"
 UI = {"extensions": {EXTENSION: {"mimeTypes": [MIME_TYPE]}}}
 ROWS = 30
+PAGE = 25
 LOG_LINES = 250
 
 cloud: Cloud
@@ -236,9 +237,15 @@ class AppsFlow(unittest.TestCase):
             [f"ord_{index:03d}" for index in range(5, 0, -1)],
         )
         self.assertIsNone(second["next"])
+
+        # A last page that is exactly full has no next page either.
+        full = self.show_table(cursor=f"ord_{PAGE + 1:03d}")["structuredContent"]
+        self.assertEqual(len(full["rows"]), PAGE)
+        self.assertEqual(full["rows"][-1]["$id"], "ord_001")
+        self.assertIsNone(full["next"])
         self.assertEqual(
             cloud.calls("GET", rf"/v1/tablesdb/{DATABASE}/tables/{TABLE}/rows"),
-            listed + 2,
+            listed + 3,
         )
 
     def test_view_writes_only_its_allowlist_and_only_when_confirmed(self):
@@ -255,9 +262,14 @@ class AppsFlow(unittest.TestCase):
             },
         }
 
-        result = self.call("appwrite_view_write", {**update, "confirm_write": False})
-        self.assertTrue(result["isError"])
-        self.assertIn("confirm_write=true", result["content"][0]["text"])
+        # Only the literal true confirms; a truthy string must not.
+        for refusal in (False, "false", "true", 1):
+            with self.subTest(confirm_write=refusal):
+                result = self.call(
+                    "appwrite_view_write", {**update, "confirm_write": refusal}
+                )
+                self.assertTrue(result["isError"])
+                self.assertIn("confirm_write=true", result["content"][0]["text"])
 
         result = self.call(
             "appwrite_view_write",

@@ -93,6 +93,11 @@ class Views:
                 f"{VIEW_WRITE_TOOL_NAME} runs only {', '.join(WRITES)}. "
                 f"Got {tool_name!r}."
             )
+        # Only the literal true confirms: a string such as "false" is truthy.
+        if arguments.get("confirm_write") is not True:
+            raise ValueError(
+                f"{VIEW_WRITE_TOOL_NAME} runs {tool_name} only with confirm_write=true."
+            )
         result = _json(self._run(arguments, True))
         if isinstance(result, dict) and tool_name == "tables_db_update_row":
             result = _row(result)
@@ -126,13 +131,16 @@ class Views:
         target = {"database_id": database_id, "table_id": table_id}
 
         table = self._read("tables_db_get_table", project_id, target)
-        queries = [Query.order_desc("$createdAt"), Query.limit(PAGE_SIZE)]
+        # One row past the page tells whether another page follows.
+        queries = [Query.order_desc("$createdAt"), Query.limit(PAGE_SIZE + 1)]
         if cursor:
             queries.append(Query.cursor_after(str(cursor)))
         page = self._read(
             "tables_db_list_rows", project_id, {**target, "queries": queries}
         )
         rows = [_row(each) for each in page.get("rows") or []]
+        more = len(rows) > PAGE_SIZE
+        rows = rows[:PAGE_SIZE]
         columns = [
             {"key": column.get("key"), "type": column.get("type")}
             for column in table.get("columns") or []
@@ -148,7 +156,7 @@ class Views:
             "rows": rows,
             "total": int(page.get("total", len(rows))),
             "cursor": cursor,
-            "next": rows[-1].get("$id") if len(rows) == PAGE_SIZE else None,
+            "next": rows[-1].get("$id") if more else None,
         }
 
     def _deployment(self, arguments: dict[str, Any]) -> dict[str, Any]:
