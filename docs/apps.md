@@ -9,8 +9,7 @@ interactive view inside the chat. This server offers one view,
 
 | Name | Seen by | What it does |
 | --- | --- | --- |
-| `appwrite_show` | model and view | `view=table`: a page of a table's rows, newest first, with `cursor` paging. `view=deployment`: a Function or Site deployment (the latest unless `deployment_id` is given) with the last 200 build log lines. `view=executions`: a Function's executions, newest first, optionally one `status`, with `cursor` paging; `execution_id` also opens one with its request and response headers, status code, duration, and the last 200 lines of logs and of errors. 
-`view=files`: a Storage bucket's files, newest first, with `search` (file name) and `cursor` paging; `file_id` also opens one. Read-only. |
+| `appwrite_show` | model and view | `view=table`: a page of a table's rows, newest first, with `cursor` paging. `view=deployment`: a Function or Site deployment (the latest unless `deployment_id` is given) with the last 200 build log lines. `view=executions`: a Function's executions, newest first, optionally one `status`, with `cursor` paging; `execution_id` also opens one with its request and response headers, status code, duration, and the last 200 lines of logs and of errors. `view=files`: a Storage bucket's files, newest first, with `search` (file name) and `cursor` paging; `file_id` also opens one. Read-only. |
 | `appwrite_view_write` | view only (`visibility: ["app"]`) | Runs one of `tables_db_update_row`, `functions_update_deployment_status`, `sites_update_deployment_status`, only with `confirm_write=true`. |
 | `ui://appwrite/view` | host | One HTML document (`assets/view.html`) that renders every view. |
 
