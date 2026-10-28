@@ -24,6 +24,7 @@ from support import (
     Server,
     column,
     deployment,
+    execution,
     row,
 )
 
@@ -38,6 +39,7 @@ UI = {"extensions": {EXTENSION: {"mimeTypes": [MIME_TYPE]}}}
 ROWS = 30
 PAGE = 25
 LOG_LINES = 250
+EXECUTIONS = 30
 # How open-runtimes colors a build log line.
 ANSI_LINE = (
     "\x1b[90m[13:23:45] \x1b[31m[\x1b[0mopen-runtimes\x1b[31m] "
@@ -83,6 +85,27 @@ def setUpModule() -> None:
             providerBranch="main",
             providerCommitHash="a91c3e0f00",
         ),
+    ]
+    project.executions[FUNCTION] = [
+        execution(
+            f"exe_{index:03d}",
+            FUNCTION,
+            "failed" if index % 10 == 0 else "completed",
+            requestPath=f"/orders/{index}",
+            responseStatusCode=500 if index % 10 == 0 else 200,
+        )
+        for index in range(1, EXECUTIONS)
+    ] + [
+        execution(
+            "exe_running",
+            FUNCTION,
+            "processing",
+            requestMethod="POST",
+            requestPath="/charge",
+            requestHeaders=[{"name": "content-type", "value": "application/json"}],
+            logs="\n".join(f"step {index}" for index in range(1, LOG_LINES + 1)),
+            errors="card_declined\n    at charge (index.js:14:11)",
+        )
     ]
     cloud.grant(TOKEN, {PROJECT}, SCOPES | APPS_SCOPES)
 
@@ -357,9 +380,72 @@ class AppsFlow(unittest.TestCase):
         self.assertEqual(data["deployment"]["status"], "canceled")
         self.assertTrue(data["done"])
 
+    def test_executions_view_lists_filters_and_opens_one(self):
+        show = {"view": "executions", "project_id": PROJECT, "function_id": FUNCTION}
+        result = self.call("appwrite_show", show)
+        self.assertFalse(result.get("isError"), result)
+        data = result["structuredContent"]
+        self.assertEqual(data["view"], "executions")
+        self.assertEqual(data["name"], "Checkout")
+        self.assertEqual(data["runtime"], "node-22")
+        self.assertEqual(data["total"], EXECUTIONS)
+        ids = [each["id"] for each in data["executions"]]
+        self.assertEqual(len(ids), PAGE)
+        self.assertEqual(ids[0], "exe_running")
+        self.assertEqual(data["next"], ids[-1])
+        self.assertIsNone(data["execution"])
+        # A running execution on the page keeps the view polling.
+        self.assertTrue(data["running"])
+        first = data["executions"][0]
+        self.assertEqual(first["method"], "POST")
+        self.assertEqual(first["path"], "/charge")
+        self.assertNotIn("logs", first)
+        text = result["content"][0]["text"]
+        self.assertIn(
+            f"Function Checkout ({FUNCTION}): {EXECUTIONS} executions, "
+            "showing 25 newest.",
+            text,
+        )
+        self.assertIn("exe_running | processing | http | POST /charge", text)
+        self.assertIn(f"cursor={data['next']}", text)
+
+        second = self.call("appwrite_show", {**show, "cursor": data["next"]})
+        rest = second["structuredContent"]
+        self.assertEqual(len(rest["executions"]), EXECUTIONS - PAGE)
+        self.assertIsNone(rest["next"])
+        self.assertFalse(rest["running"])
+
+        failed = self.call("appwrite_show", {**show, "status": "failed"})
+        data = failed["structuredContent"]
+        self.assertEqual(
+            [each["id"] for each in data["executions"]],
+            ["exe_020", "exe_010"],
+        )
+        self.assertEqual(data["total"], 2)
+        self.assertEqual(data["executions"][0]["statusCode"], 500)
+        self.assertIn("2 failed executions", failed["content"][0]["text"])
+
+        opened = self.call("appwrite_show", {**show, "execution_id": "exe_running"})
+        detail = opened["structuredContent"]["execution"]
+        self.assertEqual(detail["status"], "processing")
+        self.assertEqual(
+            detail["requestHeaders"],
+            [{"name": "content-type", "value": "application/json"}],
+        )
+        # Only the end of long logs is carried.
+        self.assertEqual(len(detail["logs"]), 200)
+        self.assertEqual(detail["logs"][-1], f"step {LOG_LINES}")
+        self.assertTrue(detail["logsTruncated"])
+        self.assertEqual(
+            detail["errors"], ["card_declined", "    at charge (index.js:14:11)"]
+        )
+        text = opened["content"][0]["text"]
+        self.assertIn("Execution exe_running: processing, POST /charge", text)
+        self.assertIn("Errors (last lines):\ncard_declined", text)
+
     def test_bad_requests_are_tool_errors(self):
         cases = [
-            ({"view": "chart"}, "view must be one of: table, deployment"),
+            ({"view": "chart"}, "view must be one of: table, deployment, executions"),
             (
                 {"view": "table", "project_id": PROJECT, "table_id": TABLE},
                 "database_id is required for view=table.",
@@ -367,6 +453,19 @@ class AppsFlow(unittest.TestCase):
             (
                 {"view": "deployment", "project_id": PROJECT},
                 "Pass exactly one of function_id or site_id.",
+            ),
+            (
+                {"view": "executions", "project_id": PROJECT},
+                "function_id is required for view=executions.",
+            ),
+            (
+                {
+                    "view": "executions",
+                    "project_id": PROJECT,
+                    "function_id": FUNCTION,
+                    "status": "done",
+                },
+                "status must be one of: waiting, processing, completed",
             ),
         ]
         for arguments, error in cases:
