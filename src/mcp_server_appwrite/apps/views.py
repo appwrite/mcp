@@ -19,6 +19,7 @@ what such a script could do.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from enum import StrEnum
 from typing import Any
@@ -45,6 +46,10 @@ SUMMARY_LOG_LINES = 20
 SUMMARY_ROWS = 10
 SUMMARY_COLUMNS = 4
 SUMMARY_CELL = 24
+
+ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+"""Terminal escape sequences (colors, cursor moves) in build logs: the view
+renders the colors, the model's summary drops them."""
 
 TERMINAL_STATUSES = frozenset({"ready", "failed", "canceled"})
 
@@ -387,5 +392,5 @@ def _deployment_summary(data: dict[str, Any]) -> str:
     logs = deployment["logs"][-SUMMARY_LOG_LINES:]
     if logs:
         lines.append("Last build log lines:")
-        lines.extend(logs)
+        lines.extend(ANSI.sub("", line) for line in logs)
     return "\n".join(lines)

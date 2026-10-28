@@ -183,6 +183,14 @@ pre.logs {
 .status { padding: 32px 18px; text-align: center; color: var(--color-text-secondary); }
 .status.error { color: var(--color-text-danger); text-align: left; white-space: pre-wrap; }
 :root[data-display="fullscreen"] pre.logs { height: 60vh; }
+.ansi-bold { font-weight: var(--font-weight-semibold); }
+.ansi-dim, .ansi-gray, .ansi-black { color: var(--color-text-secondary); }
+.ansi-red { color: var(--color-text-danger); }
+.ansi-green { color: var(--color-text-success); }
+.ansi-yellow { color: var(--color-text-warning); }
+.ansi-blue, .ansi-cyan { color: light-dark(#1d5fb4, #8ab4f8); }
+.ansi-magenta { color: var(--accent); }
+.ansi-white, .ansi-bright { color: var(--color-text-primary); }
 @media (max-width: 560px) {
   .fields { grid-template-columns: minmax(0, 1fr); }
   .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -199,6 +207,11 @@ pre.logs {
   const WRITE_TOOL = "appwrite_view_write";
   const POLL_MS = 3000;
   const PAGE_SIZE = 25;
+  const ESCAPE = /\x1b\[[0-9;?]*[ -\/]*[@-~]/g;
+  const ANSI_COLORS = {
+    30: "black", 31: "red", 32: "green", 33: "yellow", 34: "blue", 35: "magenta", 36: "cyan", 37: "white",
+    90: "gray", 91: "red", 92: "green", 93: "yellow", 94: "blue", 95: "magenta", 96: "cyan", 97: "bright",
+  };
   const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
   const EDITABLE = {
     string: "text", varchar: "text", text: "text", mediumtext: "text", longtext: "text",
@@ -619,6 +632,36 @@ pre.logs {
     request("ui/update-model-context", { content: [{ type: "text", text }] }).catch(() => {});
   }
 
+  // Build logs carry terminal color codes (SGR, "ESC[31m"). Each run of text
+  // becomes a span whose classes carry its color and weight; other escape
+  // sequences are dropped. Text only ever goes in as a text node.
+  function ansi(line) {
+    const parts = [];
+    const style = { color: null, bold: false, dim: false };
+    let last = 0;
+    const push = (text) => {
+      if (!text) return;
+      const classes = [style.color, style.bold && "ansi-bold", style.dim && "ansi-dim"].filter(Boolean);
+      parts.push(classes.length ? el("span", { className: classes.join(" ") }, text) : text);
+    };
+    for (const match of line.matchAll(ESCAPE)) {
+      push(line.slice(last, match.index));
+      last = match.index + match[0].length;
+      if (!match[0].endsWith("m")) continue;
+      const codes = match[0].slice(2, -1).split(";").map(Number);
+      for (const code of codes) {
+        if (code === 0) Object.assign(style, { color: null, bold: false, dim: false });
+        else if (code === 1) style.bold = true;
+        else if (code === 2) style.dim = true;
+        else if (code === 22) Object.assign(style, { bold: false, dim: false });
+        else if (code === 39) style.color = null;
+        else if (ANSI_COLORS[code]) style.color = "ansi-" + ANSI_COLORS[code];
+      }
+    }
+    push(line.slice(last));
+    return parts;
+  }
+
   function pill(status) {
     const tone = status === "ready" ? "ready"
       : status === "failed" || status === "canceled" ? "failed"
@@ -671,8 +714,10 @@ pre.logs {
       deployment.activate ? el("span", {}, "Activates when ready") : null);
 
     const logs = el("pre", { className: "logs", tabindex: "0", "aria-label": "Build logs" },
-      (deployment.truncated ? "… earlier lines omitted\n" : "") +
-      (deployment.logs.length ? deployment.logs.join("\n") : data.done ? "No build logs." : "Waiting for build output…"));
+      deployment.truncated ? el("span", { className: "ansi-dim" }, "… earlier lines omitted\n") : null,
+      deployment.logs.length
+        ? deployment.logs.flatMap((line) => [...ansi(line), "\n"])
+        : data.done ? "No build logs." : "Waiting for build output…");
 
     const footer = el("footer", { className: "bar" },
       el("span", { className: "muted", style: "font-size: var(--font-text-xs-size)" },
