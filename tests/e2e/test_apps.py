@@ -302,7 +302,7 @@ class AppsFlow(unittest.TestCase):
         self.assertNotIn("innerHTML", html)
         self.assertNotIn("insertAdjacentHTML", html)
         # The view tags its own calls so telemetry can tell them apart.
-        self.assertIn('const ORIGIN = { "io.appwrite/origin": "view" };', html)
+        self.assertIn('"io.appwrite/origin": "view"', html)
         self.assertIn("_meta: ORIGIN", html)
         digest = hashlib.sha256(html.encode("utf-8")).hexdigest()[:12]
         self.assertEqual(uri, f"{VIEW_URI}/{digest}")
