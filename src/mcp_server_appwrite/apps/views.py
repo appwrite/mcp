@@ -1,8 +1,8 @@
 """The tools behind the Appwrite view (``ui://appwrite/view``).
 
 ``appwrite_show`` is the one tool the model sees. It reads what a view shows
-(a page of a table's rows, or a Function or Site deployment with its build
-logs) through the hidden catalog, and returns it twice: a text summary in
+(a page of a table's rows, a Function or Site deployment with its build logs,
+or a Function's executions) through the hidden catalog, and returns it twice: a text summary in
 ``content`` for the model and for hosts without MCP Apps, and the data in
 ``structuredContent`` for the view. The view calls it again to page, refresh
 and follow a build, so every read it makes is one the model could make too.
@@ -28,7 +28,7 @@ import mcp.types as types
 from appwrite_console.query import Query
 
 from ..constants import SHOW_TOOL_NAME, VIEW_WRITE_TOOL_NAME
-from . import resource
+from . import executions, resource
 
 Run = Callable[[dict[str, Any], bool], list[Any]]
 """Runs a hidden catalog tool from raw call arguments (``tool_name``,
@@ -68,6 +68,7 @@ _WRITE_TITLE = "Run Appwrite view action"
 class View(StrEnum):
     TABLE = "table"
     DEPLOYMENT = "deployment"
+    EXECUTIONS = "executions"
 
 
 class Views:
@@ -85,6 +86,9 @@ class Views:
         elif view == View.DEPLOYMENT:
             data = self._deployment(arguments)
             text = _deployment_summary(data)
+        elif view == View.EXECUTIONS:
+            data = executions.read(self._read, arguments)
+            text = executions.summary(data)
         else:
             raise ValueError(f"view must be one of: {', '.join(View)}. Got {view!r}.")
         return types.CallToolResult(
@@ -234,7 +238,9 @@ def _show_tool() -> types.Tool:
         description=(
             "Show an interactive Appwrite view in the chat: view=table pages "
             "through a table's rows and lets the user edit one; view=deployment "
-            "follows a Function or Site deployment's status and build logs live. "
+            "follows a Function or Site deployment's status and build logs live; "
+            "view=executions lists a Function's executions and opens one with "
+            "its request, response, logs and errors. "
             "Use it when the user wants to see or browse this data rather than "
             "reason over it; the result also carries a short text summary. Calls "
             "the Appwrite REST API."
@@ -258,13 +264,16 @@ def _show_tool() -> types.Tool:
                 "cursor": {
                     "type": "string",
                     "description": (
-                        "view=table: continue after this row ID (the previous "
-                        "page's `next`). Omit for the newest rows."
+                        "view=table or view=executions: continue after this "
+                        "ID (the previous page's `next`). Omit for the newest."
                     ),
                 },
                 "function_id": {
                     "type": "string",
-                    "description": "view=deployment: the Function ID (or site_id).",
+                    "description": (
+                        "view=deployment: the Function ID (or site_id). "
+                        "view=executions: the Function ID."
+                    ),
                 },
                 "site_id": {
                     "type": "string",
@@ -273,6 +282,18 @@ def _show_tool() -> types.Tool:
                 "deployment_id": {
                     "type": "string",
                     "description": "view=deployment: omit for the latest deployment.",
+                },
+                "execution_id": {
+                    "type": "string",
+                    "description": (
+                        "view=executions: also open this execution with its "
+                        "request, response, logs and errors."
+                    ),
+                },
+                "status": {
+                    "type": "string",
+                    "enum": list(executions.STATUSES),
+                    "description": "view=executions: only executions in this status.",
                 },
             },
             "required": ["view"],

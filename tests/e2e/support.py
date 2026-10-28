@@ -1024,7 +1024,9 @@ SCOPES = frozenset(
 )
 """Every Appwrite scope the events methods need."""
 
-APPS_SCOPES = frozenset({"rows.read", "rows.write", "functions.write", "sites.write"})
+APPS_SCOPES = frozenset(
+    {"rows.read", "rows.write", "functions.write", "sites.write", "execution.read"}
+)
 """The scopes the MCP Apps views need on top of :data:`SCOPES`."""
 
 PNG = base64.b64decode(
@@ -1058,6 +1060,8 @@ class Project:
     """Row documents per ``(database id, table id)``, oldest first."""
     deployments: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     """Deployment models per Function or Site ID, oldest first."""
+    executions: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    """Execution models per Function ID, oldest first."""
 
 
 @dataclass
@@ -1360,6 +1364,24 @@ class Cloud:
                 found["$updatedAt"] = _stamp()
             return 200, found
         if match := re.fullmatch(
+            r"/v1/functions/([^/]+)/executions(?:/([^/]+))?", path
+        ):
+            need("execution.read")
+            resource, id = match.groups()
+            if resource not in project.functions:
+                raise _Refusal(404, "function_not_found", "Function not found")
+            executions = project.executions.get(resource, [])
+            if id is None:
+                matching = _filter(list(reversed(executions)), query)
+                return 200, {
+                    "total": len(matching),
+                    "executions": _page(matching, query),
+                }
+            found = next((each for each in executions if each["$id"] == id), None)
+            if found is None:
+                raise _Refusal(404, "execution_not_found", "Execution not found")
+            return 200, found
+        if match := re.fullmatch(
             r"/v1/tablesdb/([^/]+)/tables/([^/]+)/rows(?:/([^/]+))?", path
         ):
             database, table, row = match.groups()
@@ -1383,7 +1405,7 @@ class Cloud:
             need("functions.read")
             if match.group(1) not in project.functions:
                 raise _Refusal(404, "function_not_found", "Function not found")
-            return 200, {"$id": match.group(1)}
+            return 200, function(match.group(1))
         if match := re.fullmatch(r"/v1/sites/([^/]+)", path):
             need("sites.read")
             if match.group(1) not in project.sites:
@@ -1550,6 +1572,23 @@ def _page(
     return documents[:limit]
 
 
+def _filter(
+    documents: list[dict[str, Any]], query: Mapping[str, list[str]]
+) -> list[dict[str, Any]]:
+    """``documents`` narrowed by ``equal`` queries."""
+    for key, values in query.items():
+        if not key.startswith("queries["):
+            continue
+        parsed = json.loads(values[0])
+        if parsed["method"] == "equal":
+            documents = [
+                document
+                for document in documents
+                if document.get(parsed["attribute"]) in parsed["values"]
+            ]
+    return documents
+
+
 def column(key: str, type: str) -> dict[str, Any]:
     """A ``Column`` model."""
     stamp = _stamp()
@@ -1614,6 +1653,73 @@ def deployment(
         "providerCommitUrl": "",
         "providerBranch": "",
         "providerBranchUrl": "",
+        **values,
+    }
+
+
+def function(id: str) -> dict[str, Any]:
+    """A ``Function`` model."""
+    stamp = _stamp()
+    return {
+        "$id": id,
+        "$createdAt": stamp,
+        "$updatedAt": stamp,
+        "execute": ["any"],
+        "name": id.replace("-", " ").title(),
+        "enabled": True,
+        "live": True,
+        "logging": True,
+        "runtime": "node-22",
+        "deploymentRetention": 0,
+        "deploymentId": "",
+        "deploymentCreatedAt": "",
+        "latestDeploymentId": "",
+        "latestDeploymentCreatedAt": "",
+        "latestDeploymentStatus": "",
+        "scopes": [],
+        "vars": [],
+        "events": [],
+        "schedule": "",
+        "timeout": 15,
+        "entrypoint": "index.js",
+        "commands": "",
+        "version": "v5",
+        "installationId": "",
+        "providerRepositoryId": "",
+        "providerBranch": "",
+        "providerRootDirectory": "",
+        "providerSilentMode": False,
+        "providerBranches": [],
+        "providerPaths": [],
+        "buildSpecification": "s-1vcpu-512mb",
+        "runtimeSpecification": "s-1vcpu-512mb",
+    }
+
+
+def execution(
+    id: str, function: str, status: str = "completed", **values: Any
+) -> dict[str, Any]:
+    """An ``Execution`` model of a Function."""
+    stamp = _stamp()
+    return {
+        "$id": id,
+        "$createdAt": stamp,
+        "$updatedAt": stamp,
+        "$permissions": [],
+        "resourceId": function,
+        "resourceType": "functions",
+        "deploymentId": "dep_new",
+        "trigger": "http",
+        "status": status,
+        "requestMethod": "GET",
+        "requestPath": "/",
+        "requestHeaders": [],
+        "responseStatusCode": 200 if status == "completed" else 0,
+        "responseBody": "",
+        "responseHeaders": [],
+        "logs": "",
+        "errors": "",
+        "duration": 0.25 if status in ("completed", "failed") else 0,
         **values,
     }
 
