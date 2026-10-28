@@ -88,6 +88,9 @@ CONTEXT_TOOL_NAME = "appwrite_get_context"
 SEARCH_TOOL_NAME = "appwrite_search_tools"
 CALL_TOOL_NAME = "appwrite_call_tool"
 WRITE_TOOL_NAME = "appwrite_call_write_tool"
+SHOW_TOOL_NAME = "appwrite_show"
+VIEW_WRITE_TOOL_NAME = "appwrite_view_write"
+VIEW_URI = "ui://appwrite/view"
 # Directory review requires tools that forward caller-built requests to name
 # the API they call.
 API_REFERENCE_URL = "https://appwrite.io/docs/references"

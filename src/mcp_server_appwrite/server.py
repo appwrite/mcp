@@ -41,6 +41,7 @@ from mcp.server.subscriptions import InMemorySubscriptionBus, ListenHandler
 from mcp.types import CLIENT_INFO_META_KEY, INVALID_PARAMS
 
 from . import error_monitoring, flags, legacy, telemetry
+from .apps import protocol as apps
 from .catalog_policy import (
     API_KEY_PROFILE,
     OAUTH_PROFILE,
@@ -80,7 +81,7 @@ from .events.ingress import Ingress
 from .events.streams import Streams
 from .events.subscriptions import Subscriptions
 from .instructions import build_instructions, load_description
-from .operator import Operator, _parse_tool_name
+from .operator import Operator, ToolOutput, _parse_tool_name
 from .service import Service
 from .tool_manager import ToolManager
 
@@ -1339,7 +1340,9 @@ def build_mcp_server(
         _emit_initialize(ctx)
         start = time.monotonic()
         try:
-            tools = operator.get_public_tools()
+            tools = operator.get_public_tools(
+                apps=apps.enabled() and apps.supported(ctx)
+            )
         except Exception as exc:
             telemetry.record_message(
                 "tools/list",
@@ -1377,10 +1380,10 @@ def build_mcp_server(
         name = params.name
         arguments = params.arguments or {}
         try:
-            if not operator.has_public_tool(name):
+            if not operator.has_public_tool(name, apps=apps.enabled()):
                 telemetry.record_hallucination(name)
                 raise ValueError(f"Tool {name} not found")
-            content = await _execute_public_tool_for_transport(
+            output = await _execute_public_tool_for_transport(
                 operator, name, arguments, transport
             )
         except Exception as exc:
@@ -1420,7 +1423,9 @@ def build_mcp_server(
                 is_error=True,
             )
         telemetry.record_message("tools/call", "success", time.monotonic() - start)
-        return types.CallToolResult(content=cast(list[types.ContentBlock], content))
+        if isinstance(output, types.CallToolResult):
+            return output
+        return types.CallToolResult(content=cast(list[types.ContentBlock], output))
 
     async def handle_list_resources(
         ctx: ServerRequestContext, params: types.PaginatedRequestParams | None
@@ -1428,7 +1433,9 @@ def build_mcp_server(
         _emit_initialize(ctx)
         start = time.monotonic()
         try:
-            resources = operator.list_resources()
+            resources = operator.list_resources(
+                apps=apps.enabled() and apps.supported(ctx)
+            )
         except Exception as exc:
             telemetry.record_message(
                 "resources/list",
@@ -1473,7 +1480,7 @@ def build_mcp_server(
         uri_str = str(params.uri)
         resource_type = "catalog" if uri_str == CATALOG_URI else "result"
         try:
-            contents = operator.read_resource(uri_str)
+            contents = operator.read_resource(uri_str, apps=apps.enabled())
         except ValueError as exc:
             telemetry.record_message(
                 "resources/read",
@@ -1550,6 +1557,7 @@ def build_mcp_server(
                         else str(item.content)
                     ),
                     mime_type=item.mime_type,
+                    _meta=item.meta,
                 )
                 for item in contents
             ]
@@ -1559,7 +1567,7 @@ def build_mcp_server(
         # Mcp-Param-* header validation on the 2026-07-28 HTTP entry needs the
         # called tool's schema. Without this lookup the SDK runs our tools/list
         # handler on every tools/call, double-counting tools/list in telemetry.
-        for tool in operator.get_public_tools():
+        for tool in operator.get_public_tools(apps=apps.enabled()):
             if tool.name == name:
                 return tool.input_schema
         return None
@@ -1579,6 +1587,8 @@ def build_mcp_server(
         on_subscriptions_listen=subscriptions,
         get_tool_input_schema=tool_input_schema,
     )
+    if apps.enabled():
+        apps.register(server)
     if events.enabled(transport):
         events.register(
             server,
@@ -1699,7 +1709,7 @@ async def _execute_public_tool_for_transport(
     name: str,
     arguments: dict | None,
     transport: str,
-) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+) -> ToolOutput:
     if transport != "http":
         return operator.execute_public_tool(name, arguments)
 

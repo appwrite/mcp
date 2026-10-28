@@ -1,0 +1,765 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Appwrite</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --color-background-primary: light-dark(#ffffff, #1f1e1d);
+  --color-background-secondary: light-dark(#faf9f5, #262624);
+  --color-background-tertiary: light-dark(#f1efe8, #151514);
+  --color-background-danger: light-dark(#fdecec, #3d2020);
+  --color-background-success: light-dark(#e3f4ea, #1d3326);
+  --color-background-warning: light-dark(#fcefd9, #3d3220);
+  --color-text-primary: light-dark(#1f1e1d, #f2f1ec);
+  --color-text-secondary: light-dark(#5e5d57, #b5b3aa);
+  --color-text-danger: light-dark(#b42318, #ff9b8f);
+  --color-text-success: light-dark(#1b6b3f, #7fd3a4);
+  --color-text-warning: light-dark(#8a5300, #f5c46b);
+  --color-border-primary: light-dark(#dad8ce, #45443f);
+  --color-border-secondary: light-dark(#eceae2, #34332f);
+  --color-ring-primary: light-dark(#c8124f, #ff7da5);
+  --font-sans: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-text-xs-size: 12px;
+  --font-text-sm-size: 13px;
+  --font-text-md-size: 14px;
+  --font-heading-sm-size: 16px;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --border-radius-sm: 6px;
+  --border-radius-md: 8px;
+  --border-radius-full: 999px;
+  --accent: light-dark(#c8124f, #ff7da5);
+  --accent-text: light-dark(#ffffff, #1f1e1d);
+}
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--color-background-primary); }
+body {
+  font-family: var(--font-sans);
+  font-size: var(--font-text-md-size);
+  color: var(--color-text-primary);
+  line-height: 1.45;
+}
+button, input, select { font: inherit; color: inherit; }
+.view { display: flex; flex-direction: column; min-width: 0; }
+header.bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 14px 18px; border-bottom: 1px solid var(--color-border-secondary);
+}
+.heading { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.eyebrow { font-size: var(--font-text-xs-size); color: var(--color-text-secondary); }
+.title {
+  font-size: var(--font-heading-sm-size); font-weight: var(--font-weight-semibold);
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.mono { font-family: var(--font-mono); font-size: var(--font-text-xs-size); }
+.muted { color: var(--color-text-secondary); }
+.actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 34px; padding: 0 12px; border-radius: var(--border-radius-md);
+  border: 1px solid var(--color-border-primary); background: var(--color-background-primary);
+  font-size: var(--font-text-sm-size); cursor: pointer;
+}
+.button:hover:not(:disabled) { background: var(--color-background-secondary); }
+.button:disabled { opacity: 0.5; cursor: default; }
+.button:focus-visible, .row-button:focus-visible, input:focus-visible {
+  outline: 2px solid var(--color-ring-primary); outline-offset: 1px;
+}
+.button.primary {
+  background: var(--accent); border-color: var(--accent); color: var(--accent-text);
+  font-weight: var(--font-weight-medium);
+}
+.button.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
+.button.icon { width: 34px; padding: 0; }
+.toolbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 18px; border-bottom: 1px solid var(--color-border-secondary);
+}
+.toolbar .spacer { flex: 1; }
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: var(--font-text-sm-size); }
+th {
+  text-align: left; font-weight: var(--font-weight-medium); font-size: var(--font-text-xs-size);
+  color: var(--color-text-secondary); background: var(--color-background-secondary);
+  padding: 9px 12px; border-bottom: 1px solid var(--color-border-secondary); white-space: nowrap;
+}
+th:first-child, td:first-child { padding-left: 18px; }
+td {
+  padding: 0 12px; height: 42px; border-bottom: 1px solid var(--color-border-secondary);
+  max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+tr.selected td { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.row-button {
+  border: 0; background: none; padding: 4px 0; cursor: pointer;
+  font-family: var(--font-mono); font-size: var(--font-text-xs-size); color: var(--accent);
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.null { color: var(--color-text-secondary); font-style: italic; }
+.empty { padding: 28px 18px; color: var(--color-text-secondary); text-align: center; }
+footer.bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+  padding: 10px 18px;
+}
+.panel {
+  margin: 14px 18px; border: 1px solid var(--color-border-primary);
+  border-radius: var(--border-radius-md); overflow: hidden;
+}
+.panel-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 10px 14px; background: var(--color-background-secondary);
+  border-bottom: 1px solid var(--color-border-secondary);
+  font-size: var(--font-text-sm-size); font-weight: var(--font-weight-semibold);
+}
+.fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 14px; }
+.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.field label { font-size: var(--font-text-xs-size); color: var(--color-text-secondary); }
+.field input[type="text"], .field input[type="number"] {
+  height: 34px; padding: 0 10px; border-radius: var(--border-radius-md);
+  border: 1px solid var(--color-border-primary); background: var(--color-background-primary);
+  font-size: var(--font-text-sm-size); min-width: 0;
+}
+.field .readonly {
+  min-height: 34px; padding: 7px 10px; border-radius: var(--border-radius-md);
+  background: var(--color-background-tertiary); font-family: var(--font-mono);
+  font-size: var(--font-text-xs-size); overflow-wrap: anywhere;
+}
+.checkbox { display: inline-flex; align-items: center; gap: 8px; min-height: 34px; }
+.panel-foot {
+  display: flex; justify-content: flex-end; gap: 8px; padding: 0 14px 14px;
+}
+.confirm { margin: 14px 18px; border: 1px solid var(--color-border-primary); border-radius: var(--border-radius-md); overflow: hidden; }
+.confirm-head { display: flex; gap: 12px; align-items: flex-start; padding: 14px; }
+.confirm-icon {
+  flex: none; width: 34px; height: 34px; border-radius: var(--border-radius-md);
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--color-background-warning); color: var(--color-text-warning);
+}
+.diff { width: 100%; border-top: 1px solid var(--color-border-secondary); }
+.diff td { height: 38px; max-width: none; white-space: normal; }
+.diff .before { color: var(--color-text-secondary); text-decoration: line-through; }
+.diff .after { color: var(--color-text-success); font-weight: var(--font-weight-medium); }
+.notice { margin: 14px 18px 0; padding: 10px 14px; border-radius: var(--border-radius-md); font-size: var(--font-text-sm-size); }
+.notice.success { background: var(--color-background-success); color: var(--color-text-success); }
+.notice.danger { background: var(--color-background-danger); color: var(--color-text-danger); }
+.pill {
+  display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px;
+  border-radius: var(--border-radius-full); font-size: var(--font-text-sm-size);
+  font-weight: var(--font-weight-medium); white-space: nowrap;
+}
+.pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.pill.active { background: var(--color-background-warning); color: var(--color-text-warning); }
+.pill.active::before { animation: pulse 1.2s ease-in-out infinite; }
+.pill.ready { background: var(--color-background-success); color: var(--color-text-success); }
+.pill.failed { background: var(--color-background-danger); color: var(--color-text-danger); }
+.pill.idle { background: var(--color-background-tertiary); color: var(--color-text-secondary); }
+@keyframes pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .pill.active::before { animation: none; } }
+.steps {
+  list-style: none; margin: 0; padding: 16px 18px; display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px;
+  border-bottom: 1px solid var(--color-border-secondary);
+}
+.steps li { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.steps .track { height: 4px; border-radius: 4px; background: var(--color-border-primary); }
+.steps .done .track { background: var(--color-text-success); }
+.steps .current .track { background: var(--color-text-warning); }
+.steps .failed .track { background: var(--color-text-danger); }
+.steps .label { font-size: var(--font-text-sm-size); font-weight: var(--font-weight-medium); }
+.steps .todo .label { color: var(--color-text-secondary); }
+.meta { display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 12px 18px 0; font-size: var(--font-text-xs-size); color: var(--color-text-secondary); }
+.logs-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 18px 0; font-size: var(--font-text-xs-size); color: var(--color-text-secondary); }
+pre.logs {
+  margin: 8px 18px 0; padding: 12px 14px; height: 300px; overflow: auto;
+  background: var(--color-background-tertiary); border: 1px solid var(--color-border-secondary);
+  border-radius: var(--border-radius-md); font-family: var(--font-mono);
+  font-size: var(--font-text-xs-size); line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.status { padding: 32px 18px; text-align: center; color: var(--color-text-secondary); }
+.status.error { color: var(--color-text-danger); text-align: left; white-space: pre-wrap; }
+:root[data-display="fullscreen"] pre.logs { height: 60vh; }
+@media (max-width: 560px) {
+  .fields { grid-template-columns: minmax(0, 1fr); }
+  .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+</style>
+</head>
+<body>
+<main id="root" class="view" aria-live="polite"><p class="status">Loading…</p></main>
+<script>
+"use strict";
+(() => {
+  const PROTOCOL_VERSION = "2026-01-26";
+  const SHOW_TOOL = "appwrite_show";
+  const WRITE_TOOL = "appwrite_view_write";
+  const POLL_MS = 3000;
+  const PAGE_SIZE = 25;
+  const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+  const EDITABLE = {
+    string: "text", varchar: "text", text: "text", mediumtext: "text", longtext: "text",
+    email: "text", url: "text", ip: "text", enum: "text", datetime: "text",
+    integer: "integer", double: "float", float: "float", boolean: "boolean",
+  };
+  const STEPS = [
+    ["waiting", "Queued"],
+    ["processing", "Processing"],
+    ["building", "Building"],
+    ["ready", "Ready"],
+  ];
+
+  const root = document.getElementById("root");
+  const pending = new Map();
+  let nextId = 1;
+  let host = { capabilities: {}, context: {} };
+  let input = {};
+  let data = null;
+  let cursors = [];
+  let ui = {};
+  let poll = null;
+  let closed = false;
+
+  function send(message) {
+    window.parent.postMessage({ jsonrpc: "2.0", ...message }, "*");
+  }
+
+  function request(method, params) {
+    const id = nextId++;
+    send({ id, method, params });
+    return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+  }
+
+  function notify(method, params) {
+    send({ method, params });
+  }
+
+  async function callTool(name, args) {
+    const result = await request("tools/call", { name, arguments: args });
+    if (result && result.isError) {
+      throw new Error(textOf(result) || "The Appwrite call failed.");
+    }
+    return result;
+  }
+
+  function textOf(result) {
+    return (result.content || [])
+      .filter((item) => item && item.type === "text")
+      .map((item) => item.text)
+      .join("\n");
+  }
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window.parent) return;
+    const message = event.data;
+    if (!message || message.jsonrpc !== "2.0") return;
+    if (message.method === undefined && pending.has(message.id)) {
+      const { resolve, reject } = pending.get(message.id);
+      pending.delete(message.id);
+      if (message.error) reject(new Error(message.error.message || "Request failed"));
+      else resolve(message.result);
+      return;
+    }
+    handle(message);
+  });
+
+  function handle(message) {
+    const params = message.params || {};
+    switch (message.method) {
+      case "ui/notifications/tool-input":
+        input = params.arguments || {};
+        if (!data) status("Loading " + (input.view || "view") + "…");
+        break;
+      case "ui/notifications/tool-result":
+        show(params);
+        break;
+      case "ui/notifications/tool-cancelled":
+        if (!data) status("Cancelled.");
+        break;
+      case "ui/notifications/host-context-changed":
+        applyContext(params);
+        break;
+      case "ui/resource-teardown":
+        closed = true;
+        clearTimeout(poll);
+        send({ id: message.id, result: {} });
+        break;
+      case "ping":
+        send({ id: message.id, result: {} });
+        break;
+      default:
+        if (message.id !== undefined) {
+          send({ id: message.id, error: { code: -32601, message: "Method not found" } });
+        }
+    }
+  }
+
+  function applyContext(context) {
+    host.context = { ...host.context, ...context };
+    const element = document.documentElement;
+    if (context.theme) element.dataset.theme = context.theme;
+    if (context.displayMode) element.dataset.display = context.displayMode;
+    const styles = context.styles || {};
+    for (const [key, value] of Object.entries(styles.variables || {})) {
+      if (key.startsWith("--") && typeof value === "string") {
+        element.style.setProperty(key, value);
+      }
+    }
+    if (styles.css && typeof styles.css.fonts === "string") {
+      let fonts = document.getElementById("host-fonts");
+      if (!fonts) {
+        fonts = document.createElement("style");
+        fonts.id = "host-fonts";
+        document.head.appendChild(fonts);
+      }
+      fonts.textContent = styles.css.fonts;
+    }
+  }
+
+  function el(tag, attributes, ...children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attributes || {})) {
+      if (value === undefined || value === null || value === false) continue;
+      if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else if (key === "className") node.className = value;
+      else if (key in node && typeof value !== "string") node[key] = value;
+      else node.setAttribute(key, value === true ? "" : value);
+    }
+    for (const child of children.flat()) {
+      if (child === null || child === undefined || child === false) continue;
+      node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+    }
+    return node;
+  }
+
+  function icon(path) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    for (const [key, value] of Object.entries({
+      width: "16", height: "16", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+      "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true",
+    })) svg.setAttribute(key, value);
+    const shape = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    shape.setAttribute("d", path);
+    svg.appendChild(shape);
+    return svg;
+  }
+
+  const ICONS = {
+    refresh: "M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7",
+    expand: "M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5",
+    collapse: "M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5",
+    warning: "M12 9v4M12 17h.01M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z",
+  };
+
+  function status(text, error) {
+    root.replaceChildren(el("p", { className: error ? "status error" : "status" }, text));
+  }
+
+  function show(result) {
+    if (result.isError) {
+      status(textOf(result) || "The Appwrite call failed.", true);
+      return;
+    }
+    const structured = result.structuredContent;
+    if (!structured || !structured.view) {
+      status(textOf(result) || "Nothing to show.");
+      return;
+    }
+    if (!data || data.view !== structured.view) ui = {};
+    data = structured;
+    render();
+  }
+
+  function render() {
+    clearTimeout(poll);
+    if (data.view === "table") root.replaceChildren(...tableView());
+    else if (data.view === "deployment") root.replaceChildren(...deploymentView());
+    else status("Unknown view " + data.view, true);
+  }
+
+  function fullscreenButton() {
+    const modes = host.context.availableDisplayModes || [];
+    if (!modes.includes("fullscreen")) return null;
+    const full = host.context.displayMode === "fullscreen";
+    return el("button", {
+      type: "button", className: "button icon",
+      "aria-label": full ? "Exit fullscreen" : "Fullscreen",
+      title: full ? "Exit fullscreen" : "Fullscreen",
+      onclick: async () => {
+        try {
+          const result = await request("ui/request-display-mode", { mode: full ? "inline" : "fullscreen" });
+          applyContext({ displayMode: result.mode });
+          render();
+        } catch (error) {
+          flash(error.message, "danger");
+        }
+      },
+    }, icon(full ? ICONS.collapse : ICONS.expand));
+  }
+
+  async function reload(args, busyLabel) {
+    ui.busy = busyLabel;
+    render();
+    try {
+      const result = await callTool(SHOW_TOOL, args);
+      ui.busy = null;
+      ui.notice = null;
+      show(result);
+    } catch (error) {
+      ui.busy = null;
+      flash(error.message, "danger");
+    }
+  }
+
+  function flash(text, tone) {
+    ui.notice = { text, tone };
+    render();
+  }
+
+  function notice() {
+    if (!ui.notice) return null;
+    return el("div", { className: "notice " + ui.notice.tone, role: "status" }, ui.notice.text);
+  }
+
+  function display(value) {
+    if (value === null || value === undefined) return el("span", { className: "null" }, "null");
+    if (typeof value === "object") return JSON.stringify(value);
+    if (typeof value === "string" && TIMESTAMP.test(value)) return timestamp(value);
+    return String(value);
+  }
+
+  function timestamp(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    try {
+      return date.toLocaleString(host.context.locale || undefined, {
+        dateStyle: "medium", timeStyle: "short", timeZone: host.context.timeZone || undefined,
+      });
+    } catch {
+      return date.toLocaleString();
+    }
+  }
+
+  function showArgs(extra) {
+    const args = { view: data.view };
+    if (data.projectId) args.project_id = data.projectId;
+    return { ...args, ...extra };
+  }
+
+  function tableView() {
+    const columns = data.columns || [];
+    const rows = data.rows || [];
+    const keys = ["$id", ...columns.map((column) => column.key), "$createdAt"];
+    const page = cursors.length;
+    const first = rows.length ? page * PAGE_SIZE + 1 : 0;
+    const last = page * PAGE_SIZE + rows.length;
+    const selected = rows.find((row) => row.$id === ui.rowId) || null;
+
+    const head = el("header", { className: "bar" },
+      el("div", { className: "heading" },
+        el("span", { className: "eyebrow" }, data.databaseId + " / " + data.tableId),
+        el("span", { className: "title" }, data.name)),
+      el("div", { className: "actions" }, fullscreenButton()));
+
+    const toolbar = el("div", { className: "toolbar" },
+      el("button", {
+        type: "button", className: "button", disabled: Boolean(ui.busy),
+        onclick: () => reload(showArgs({ database_id: data.databaseId, table_id: data.tableId, cursor: data.cursor || undefined }), "Refreshing…"),
+      }, icon(ICONS.refresh), "Refresh"),
+      el("span", { className: "spacer" }),
+      el("span", { className: "muted", style: "font-size: var(--font-text-xs-size)" },
+        ui.busy || (rows.length ? "Rows " + first + "–" + last + " of " + data.total : "No rows")));
+
+    const table = rows.length
+      ? el("div", { className: "scroll" },
+          el("table", {},
+            el("thead", {}, el("tr", {}, keys.map((key) => el("th", { scope: "col" }, key)))),
+            el("tbody", {}, rows.map((row) => el("tr", { className: row.$id === ui.rowId ? "selected" : "" },
+              keys.map((key, index) => el("td", { title: index ? (typeof row[key] === "object" ? JSON.stringify(row[key]) : String(row[key] ?? "")) : undefined },
+                index === 0
+                  ? el("button", {
+                      type: "button", className: "row-button", "aria-label": "Edit row " + row.$id,
+                      onclick: () => { ui.rowId = row.$id; ui.confirm = null; ui.notice = null; render(); },
+                    }, row.$id)
+                  : display(row[key]))))))))
+      : el("p", { className: "empty" }, "This table has no rows yet.");
+
+    const footer = el("footer", { className: "bar" },
+      el("span", { className: "muted", style: "font-size: var(--font-text-xs-size)" }, "Select a row ID to view or edit it"),
+      el("div", { className: "actions" },
+        el("button", {
+          type: "button", className: "button", disabled: !page || Boolean(ui.busy),
+          onclick: () => {
+            const previous = cursors.pop();
+            ui.rowId = null;
+            reload(showArgs({ database_id: data.databaseId, table_id: data.tableId, cursor: previous || undefined }), "Loading…");
+          },
+        }, "Previous"),
+        el("button", {
+          type: "button", className: "button", disabled: !data.next || Boolean(ui.busy),
+          onclick: () => {
+            cursors.push(data.cursor || null);
+            ui.rowId = null;
+            reload(showArgs({ database_id: data.databaseId, table_id: data.tableId, cursor: data.next }), "Loading…");
+          },
+        }, "Next")));
+
+    const panel = selected ? (ui.confirm ? confirmPanel(selected) : editPanel(selected, columns)) : null;
+    return [head, toolbar, notice(), panel, table, footer].filter(Boolean);
+  }
+
+  function editPanel(row, columns) {
+    const draft = ui.draft && ui.draft.$id === row.$id ? ui.draft : (ui.draft = { $id: row.$id, values: {} });
+    const fields = columns.map((column) => {
+      const kind = EDITABLE[column.type];
+      const id = "field-" + column.key;
+      const current = column.key in draft.values ? draft.values[column.key] : row[column.key];
+      if (!kind || Array.isArray(row[column.key])) {
+        return el("div", { className: "field" },
+          el("label", {}, column.key + " (" + column.type + ")"),
+          el("div", { className: "readonly" }, display(row[column.key])));
+      }
+      if (kind === "boolean") {
+        return el("div", { className: "field" },
+          el("span", { className: "muted", style: "font-size: var(--font-text-xs-size)" }, column.key),
+          el("label", { className: "checkbox", for: id },
+            el("input", {
+              id, type: "checkbox", checked: Boolean(current),
+              onchange: (event) => {
+                draft.values[column.key] = event.target.checked;
+                event.target.nextSibling.textContent = event.target.checked ? "true" : "false";
+              },
+            }), current ? "true" : "false"));
+      }
+      return el("div", { className: "field" },
+        el("label", { for: id }, column.key),
+        el("input", {
+          id, type: kind === "text" ? "text" : "number", step: kind === "float" ? "any" : undefined,
+          value: current === null || current === undefined ? "" : String(current),
+          oninput: (event) => {
+            const raw = event.target.value;
+            draft.values[column.key] = kind === "text" ? raw : raw === "" ? null : Number(raw);
+          },
+        }));
+    });
+    return el("section", { className: "panel", "aria-label": "Row " + row.$id },
+      el("div", { className: "panel-head" },
+        el("span", {}, "Row ", el("span", { className: "mono" }, row.$id)),
+        el("button", { type: "button", className: "button", onclick: () => { ui.rowId = null; ui.draft = null; render(); } }, "Close")),
+      el("div", { className: "fields" }, fields),
+      el("div", { className: "panel-foot" },
+        el("button", {
+          type: "button", className: "button primary",
+          onclick: () => {
+            const changes = Object.entries(draft.values).filter(([key, value]) => value !== row[key]);
+            if (!changes.length) {
+              flash("Nothing changed.", "success");
+              return;
+            }
+            ui.confirm = { changes };
+            ui.notice = null;
+            render();
+          },
+        }, "Review changes")));
+  }
+
+  function confirmPanel(row) {
+    const changes = ui.confirm.changes;
+    return el("section", { className: "confirm", "aria-label": "Confirm change" },
+      el("div", { className: "confirm-head" },
+        el("span", { className: "confirm-icon" }, icon(ICONS.warning)),
+        el("div", { className: "heading" },
+          el("span", { className: "title" }, "Confirm change"),
+          el("span", { className: "muted", style: "font-size: var(--font-text-sm-size)" },
+            "Update row ", el("span", { className: "mono" }, row.$id), " in ", data.name,
+            ". Runs as you through your Appwrite connection."))),
+      el("table", { className: "diff" },
+        el("thead", {}, el("tr", {}, el("th", { scope: "col" }, "Column"), el("th", { scope: "col" }, "Before"), el("th", { scope: "col" }, "After"))),
+        el("tbody", {}, changes.map(([key, value]) => el("tr", {},
+          el("td", { className: "mono" }, key),
+          el("td", { className: "before" }, display(row[key])),
+          el("td", { className: "after" }, display(value)))))),
+      el("div", { className: "panel-foot", style: "padding-top: 14px" },
+        el("button", { type: "button", className: "button", disabled: Boolean(ui.busy), onclick: () => { ui.confirm = null; render(); } }, "Cancel"),
+        el("button", {
+          type: "button", className: "button primary", disabled: Boolean(ui.busy),
+          onclick: () => updateRow(row, changes),
+        }, ui.busy || "Approve and run")));
+  }
+
+  async function updateRow(row, changes) {
+    ui.busy = "Saving…";
+    render();
+    const values = Object.fromEntries(changes);
+    try {
+      const result = await callTool(WRITE_TOOL, {
+        tool_name: "tables_db_update_row",
+        project_id: data.projectId || undefined,
+        confirm_write: true,
+        arguments: { database_id: data.databaseId, table_id: data.tableId, row_id: row.$id, data: values },
+      });
+      const updated = result.structuredContent || { ...row, ...values };
+      data.rows = data.rows.map((each) => (each.$id === row.$id ? updated : each));
+      ui = { notice: { text: "Row " + row.$id + " updated.", tone: "success" } };
+      render();
+      tellModel("The user updated row " + row.$id + " in table " + data.name + " (" + data.databaseId + "/" + data.tableId + ") from the Appwrite view: " +
+        changes.map(([key, value]) => key + " = " + JSON.stringify(value)).join(", ") + ".");
+    } catch (error) {
+      ui.busy = null;
+      ui.confirm = null;
+      flash(error.message, "danger");
+    }
+  }
+
+  function tellModel(text) {
+    if (!host.capabilities.updateModelContext) return;
+    request("ui/update-model-context", { content: [{ type: "text", text }] }).catch(() => {});
+  }
+
+  function pill(status) {
+    const tone = status === "ready" ? "ready"
+      : status === "failed" || status === "canceled" ? "failed"
+      : ["waiting", "processing", "building"].includes(status) ? "active" : "idle";
+    return el("span", { className: "pill " + tone }, status.charAt(0).toUpperCase() + status.slice(1));
+  }
+
+  function steps(status) {
+    const reached = STEPS.findIndex(([key]) => key === status);
+    const failed = status === "failed" || status === "canceled";
+    return el("ol", { className: "steps", "aria-label": "Deployment progress" },
+      STEPS.map(([key, label], index) => {
+        let state = "todo";
+        if (status === "ready" || index < reached) state = "done";
+        else if (index === reached) state = "current";
+        if (failed && index === STEPS.length - 1) state = "failed";
+        return el("li", { className: state },
+          el("span", { className: "track" }),
+          el("span", { className: "label" }, failed && index === STEPS.length - 1 ? (status === "failed" ? "Failed" : "Canceled") : label));
+      }));
+  }
+
+  function size(bytes) {
+    if (!bytes) return null;
+    const units = ["B", "KB", "MB", "GB"];
+    let value = bytes;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
+    return value.toFixed(unit ? 1 : 0) + " " + units[unit];
+  }
+
+  function deploymentView() {
+    const deployment = data.deployment;
+    const kind = data.kind === "site" ? "Site" : "Function";
+    const resourceKey = data.kind === "site" ? "site_id" : "function_id";
+    const args = showArgs({ [resourceKey]: data.resourceId, deployment_id: deployment.id });
+    if (ui.follow === undefined) ui.follow = true;
+
+    const head = el("header", { className: "bar" },
+      el("div", { className: "heading" },
+        el("span", { className: "eyebrow" }, kind),
+        el("span", { className: "title" }, data.resourceId, el("span", { className: "mono muted" }, deployment.id))),
+      el("div", { className: "actions" }, pill(deployment.status), fullscreenButton()));
+
+    const meta = el("div", { className: "meta" },
+      deployment.commit ? el("span", {}, (deployment.branch || "") + " @ ", el("span", { className: "mono" }, deployment.commit.slice(0, 7))) : null,
+      deployment.commitMessage ? el("span", {}, deployment.commitMessage) : null,
+      deployment.buildDuration ? el("span", {}, "Build " + deployment.buildDuration + "s") : null,
+      size(deployment.sourceSize) ? el("span", {}, "Source " + size(deployment.sourceSize)) : null,
+      deployment.activate ? el("span", {}, "Activates when ready") : null);
+
+    const logs = el("pre", { className: "logs", tabindex: "0", "aria-label": "Build logs" },
+      (deployment.truncated ? "… earlier lines omitted\n" : "") +
+      (deployment.logs.length ? deployment.logs.join("\n") : data.done ? "No build logs." : "Waiting for build output…"));
+
+    const footer = el("footer", { className: "bar" },
+      el("span", { className: "muted", style: "font-size: var(--font-text-xs-size)" },
+        ui.busy || (data.done ? "Finished" : "Updates every few seconds while the build runs")),
+      el("div", { className: "actions" },
+        el("button", {
+          type: "button", className: "button", disabled: Boolean(ui.busy),
+          onclick: () => reload(args, "Refreshing…"),
+        }, icon(ICONS.refresh), "Refresh"),
+        data.done ? null : el("button", {
+          type: "button", className: "button", disabled: Boolean(ui.busy),
+          onclick: () => { ui.confirm = { cancel: true }; render(); },
+        }, "Cancel build")));
+
+    const confirm = ui.confirm && ui.confirm.cancel
+      ? el("section", { className: "confirm", "aria-label": "Confirm cancel" },
+          el("div", { className: "confirm-head" },
+            el("span", { className: "confirm-icon" }, icon(ICONS.warning)),
+            el("div", { className: "heading" },
+              el("span", { className: "title" }, "Cancel this build?"),
+              el("span", { className: "muted", style: "font-size: var(--font-text-sm-size)" },
+                "Deployment ", el("span", { className: "mono" }, deployment.id), " of " + data.resourceId + " stops building and will not go live."))),
+          el("div", { className: "panel-foot" },
+            el("button", { type: "button", className: "button", onclick: () => { ui.confirm = null; render(); } }, "Keep building"),
+            el("button", { type: "button", className: "button primary", onclick: () => cancelBuild(args) }, "Cancel build")))
+      : null;
+
+    const nodes = [head, steps(deployment.status), meta,
+      el("div", { className: "logs-head" },
+        el("span", {}, "Build logs"),
+        el("label", { className: "checkbox" },
+          el("input", { type: "checkbox", checked: ui.follow, onchange: (event) => { ui.follow = event.target.checked; } }),
+          "Follow")),
+      logs, footer, notice(), confirm].filter(Boolean);
+
+    requestAnimationFrame(() => { if (ui.follow) logs.scrollTop = logs.scrollHeight; });
+    if (!data.done && !closed) {
+      poll = setTimeout(async () => {
+        try {
+          const result = await callTool(SHOW_TOOL, args);
+          const was = data.deployment.status;
+          show(result);
+          if (data.done && was !== data.deployment.status) {
+            tellModel("Deployment " + deployment.id + " of " + data.kind + " " + data.resourceId + " finished with status " + data.deployment.status + ".");
+          }
+        } catch (error) {
+          flash(error.message, "danger");
+        }
+      }, POLL_MS);
+    }
+    return nodes;
+  }
+
+  async function cancelBuild(args) {
+    ui.confirm = null;
+    ui.busy = "Cancelling…";
+    render();
+    try {
+      await callTool(WRITE_TOOL, {
+        tool_name: data.kind === "site" ? "sites_update_deployment_status" : "functions_update_deployment_status",
+        project_id: data.projectId || undefined,
+        confirm_write: true,
+        arguments: { [data.kind === "site" ? "site_id" : "function_id"]: data.resourceId, deployment_id: data.deployment.id },
+      });
+      ui.busy = null;
+      await reload(args, "Refreshing…");
+    } catch (error) {
+      ui.busy = null;
+      flash(error.message, "danger");
+    }
+  }
+
+  new ResizeObserver(() => {
+    const rect = document.documentElement.getBoundingClientRect();
+    notify("ui/notifications/size-changed", { width: Math.ceil(rect.width), height: Math.ceil(rect.height) });
+  }).observe(document.documentElement);
+
+  request("ui/initialize", {
+    appInfo: { name: "Appwrite", version: "1.0.0" },
+    appCapabilities: { availableDisplayModes: ["inline", "fullscreen"] },
+    protocolVersion: PROTOCOL_VERSION,
+  }).then((result) => {
+    host.capabilities = result.hostCapabilities || {};
+    applyContext(result.hostContext || {});
+    notify("ui/notifications/initialized", {});
+  }).catch((error) => status("Could not connect to the host: " + error.message, true));
+})();
+</script>
+</body>
+</html>
