@@ -230,11 +230,35 @@ details.headers td { height: 32px; max-width: none; white-space: normal; overflo
 .preview img { max-width: 100%; max-height: 360px; border-radius: var(--border-radius-sm); }
 :root[data-display="fullscreen"] .preview img { max-height: 60vh; }
 .field .value { font-size: var(--font-text-sm-size); overflow-wrap: anywhere; }
-.toolbar input[type="search"] {
-  height: 34px; width: 220px; padding: 0 10px; border-radius: var(--border-radius-md);
+.person { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.person .lines { display: flex; flex-direction: column; min-width: 0; }
+.person .lines span { overflow: hidden; text-overflow: ellipsis; }
+.avatar {
+  flex: none; width: 28px; height: 28px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent);
+  font-size: var(--font-text-xs-size); font-weight: var(--font-weight-semibold);
+}
+.avatar.large { width: 40px; height: 40px; font-size: var(--font-text-md-size); }
+.chips { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.chip {
+  display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px;
+  border-radius: var(--border-radius-full); border: 1px solid var(--color-border-primary);
+  font-size: var(--font-text-xs-size); white-space: nowrap;
+}
+.chip button { border: 0; background: none; padding: 0; cursor: pointer; color: var(--color-text-secondary); font-size: 14px; line-height: 1; }
+.badge { font-size: var(--font-text-xs-size); white-space: nowrap; }
+.badge.ok { color: var(--color-text-success); }
+.badge.off { color: var(--color-text-secondary); }
+.toolbar input[type="search"], .labels input {
+  height: 34px; padding: 0 10px; border-radius: var(--border-radius-md);
   border: 1px solid var(--color-border-primary); background: var(--color-background-primary);
   font-size: var(--font-text-sm-size); min-width: 0;
 }
+.toolbar input[type="search"] { width: 240px; }
+.labels { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 0 14px 14px; }
+.labels input { width: 160px; }
+.button.danger { color: var(--color-text-danger); }
 @media (max-width: 560px) {
   .fields { grid-template-columns: minmax(0, 1fr); }
   .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -438,6 +462,7 @@ details.headers td { height: 32px; max-width: none; white-space: normal; overflo
     else if (data.view === "deployment") root.replaceChildren(...deploymentView());
     else if (data.view === "executions") root.replaceChildren(...executionsView());
     else if (data.view === "files") root.replaceChildren(...filesView());
+    else if (data.view === "users") root.replaceChildren(...usersView());
     else status("Unknown view " + data.view, true);
   }
 
@@ -721,8 +746,8 @@ details.headers td { height: 32px; max-width: none; white-space: normal; overflo
   }
 
   function pill(status) {
-    const tone = status === "ready" || status === "completed" ? "ready"
-      : status === "failed" || status === "canceled" ? "failed"
+    const tone = status === "ready" || status === "completed" || status === "active" ? "ready"
+      : status === "failed" || status === "canceled" || status === "blocked" ? "failed"
       : ["waiting", "processing", "building"].includes(status) ? "active" : "idle";
     return el("span", { className: "pill " + tone }, status.charAt(0).toUpperCase() + status.slice(1));
   }
@@ -1069,6 +1094,212 @@ details.headers td { height: 32px; max-width: none; white-space: normal; overflo
       big ? el("div", { className: "preview" }, big) : null,
       el("div", { className: "fields" }, facts.map(([key, value]) => el("div", { className: "field" },
         el("label", {}, key), el("span", { className: "value" }, value)))));
+  }
+
+  function initials(user) {
+    const source = (user.name || user.email || user.phone || user.id || "?").trim();
+    const words = source.split(/[\s@._-]+/).filter(Boolean);
+    return ((words[0] || "?")[0] + (words.length > 1 ? words[1][0] : "")).toUpperCase();
+  }
+
+  function person(user, large) {
+    return el("span", { className: "person" },
+      el("span", { className: "avatar" + (large ? " large" : ""), "aria-hidden": "true" }, initials(user)),
+      el("span", { className: "lines" },
+        el("span", {}, user.name || el("span", { className: "muted" }, "No name")),
+        el("span", { className: "muted", style: "font-size: var(--font-text-xs-size)" }, user.email || user.phone || user.id)));
+  }
+
+  function chips(labels) {
+    return labels.length ? el("span", { className: "chips" }, labels.map((label) => el("span", { className: "chip" }, label))) : el("span", { className: "muted" }, "–");
+  }
+
+  function verified(on, label) {
+    return el("span", { className: "badge " + (on ? "ok" : "off") }, (on ? "✓ " : "") + label);
+  }
+
+  function usersView() {
+    const rows = data.users || [];
+    const page = cursors.length;
+    const first = rows.length ? page * PAGE_SIZE + 1 : 0;
+    const last = page * PAGE_SIZE + rows.length;
+    const opened = data.user;
+    const args = (extra) => showArgs({
+      search: data.search || undefined, cursor: data.cursor || undefined,
+      user_id: opened ? opened.id : undefined, ...extra,
+    });
+
+    const head = el("header", { className: "bar" },
+      el("div", { className: "heading" },
+        el("span", { className: "eyebrow" }, "Auth"),
+        el("span", { className: "title" }, "Users")),
+      el("div", { className: "actions" }, fullscreenButton()));
+
+    const search = el("input", {
+      type: "search", placeholder: "Search name, email, phone or ID", "aria-label": "Search users",
+      value: data.search || "", disabled: Boolean(ui.busy),
+    });
+    const toolbar = el("form", {
+      className: "toolbar",
+      onsubmit: (event) => {
+        event.preventDefault();
+        cursors = [];
+        reload(args({ search: search.value.trim() || undefined, cursor: undefined, user_id: undefined }), "Searching…");
+      },
+    },
+      search,
+      el("button", { type: "submit", className: "button", disabled: Boolean(ui.busy) }, "Search"),
+      el("button", {
+        type: "button", className: "button", disabled: Boolean(ui.busy),
+        onclick: () => reload(args(), "Refreshing…"),
+      }, icon(ICONS.refresh), "Refresh"),
+      el("span", { className: "spacer" }),
+      el("span", { className: "muted", style: "font-size: var(--font-text-xs-size)" },
+        ui.busy || (rows.length ? "Users " + first + "–" + last + " of " + data.total : "No users")));
+
+    const table = rows.length
+      ? el("div", { className: "scroll" },
+          el("table", {},
+            el("thead", {}, el("tr", {}, ["User", "Status", "Email", "MFA", "Labels", "Joined", "Last active"].map((key) => el("th", { scope: "col" }, key)))),
+            el("tbody", {}, rows.map((user) => el("tr", { className: opened && opened.id === user.id ? "selected" : "" },
+              el("td", { style: "max-width: 280px" }, el("button", {
+                type: "button", className: "row-button", style: "text-decoration: none; color: inherit; font-family: inherit; font-size: inherit; text-align: left",
+                "aria-label": "Open user " + (user.name || user.id), disabled: Boolean(ui.busy),
+                onclick: () => { ui.confirm = null; reload(args({ user_id: user.id }), "Opening…"); },
+              }, person(user))),
+              el("td", {}, pill(user.status ? "active" : "blocked")),
+              el("td", {}, user.email ? verified(user.emailVerification, user.emailVerification ? "Verified" : "Unverified") : el("span", { className: "muted" }, "–")),
+              el("td", {}, user.mfa ? verified(true, "On") : el("span", { className: "muted" }, "Off")),
+              el("td", {}, chips(user.labels)),
+              el("td", {}, display(user.createdAt)),
+              el("td", {}, user.accessedAt ? display(user.accessedAt) : el("span", { className: "muted" }, "Never")))))))
+      : el("p", { className: "empty" }, data.search ? "No users match " + JSON.stringify(data.search) + "." : "This project has no users yet.");
+
+    const footer = el("footer", { className: "bar" },
+      el("span", { className: "muted", style: "font-size: var(--font-text-xs-size)" }, "Select a user to see sessions, block, verify or label them"),
+      el("div", { className: "actions" },
+        el("button", {
+          type: "button", className: "button", disabled: !page || Boolean(ui.busy),
+          onclick: () => { const previous = cursors.pop(); reload(args({ cursor: previous || undefined }), "Loading…"); },
+        }, "Previous"),
+        el("button", {
+          type: "button", className: "button", disabled: !data.next || Boolean(ui.busy),
+          onclick: () => { cursors.push(data.cursor || null); reload(args({ cursor: data.next }), "Loading…"); },
+        }, "Next")));
+
+    const panel = opened ? (ui.confirm ? userConfirm(opened) : userPanel(opened, args)) : null;
+    return [head, toolbar, notice(), panel, table, footer].filter(Boolean);
+  }
+
+  function userPanel(user, args) {
+    if (!ui.labels || ui.labels.id !== user.id) ui.labels = { id: user.id, values: [...user.labels] };
+    const draft = ui.labels;
+    const ask = (change) => { ui.confirm = change; ui.notice = null; render(); };
+    const label = el("input", { type: "text", placeholder: "Add label", "aria-label": "New label", maxlength: "36" });
+    const add = () => {
+      const value = label.value.trim();
+      if (!value) return;
+      if (!/^[A-Za-z0-9]+$/.test(value)) { flash("Labels are letters and digits only.", "danger"); return; }
+      if (!draft.values.includes(value)) draft.values.push(value);
+      render();
+    };
+    label.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); add(); } });
+    const changed = draft.values.join(",") !== user.labels.join(",");
+    const facts = [
+      ["Email", user.email ? [user.email, " ", verified(user.emailVerification, user.emailVerification ? "Verified" : "Unverified")] : "–"],
+      ["Phone", user.phone ? [user.phone, " ", verified(user.phoneVerification, user.phoneVerification ? "Verified" : "Unverified")] : "–"],
+      ["Joined", display(user.createdAt)],
+      ["Last active", user.accessedAt ? display(user.accessedAt) : "Never"],
+      ["MFA", user.mfa ? "On" : "Off"],
+      ["Sessions", String(user.sessionsTotal)],
+    ];
+    return el("section", { className: "panel", "aria-label": "User " + user.id },
+      el("div", { className: "panel-head" },
+        el("span", { className: "actions" }, person(user, true), el("span", { className: "mono muted" }, user.id), pill(user.status ? "active" : "blocked")),
+        el("button", { type: "button", className: "button", disabled: Boolean(ui.busy), onclick: () => { ui.labels = null; reload(args({ user_id: undefined }), "Closing…"); } }, "Close")),
+      el("div", { className: "fields" }, facts.map(([key, value]) => el("div", { className: "field" },
+        el("label", {}, key), el("span", { className: "value" }, value)))),
+      el("div", { className: "section-head", style: "padding-top: 0" }, "Labels"),
+      el("div", { className: "labels", style: "padding-top: 8px" },
+        draft.values.map((value) => el("span", { className: "chip" }, value,
+          el("button", { type: "button", "aria-label": "Remove label " + value, onclick: () => { draft.values = draft.values.filter((each) => each !== value); render(); } }, "×"))),
+        label,
+        el("button", { type: "button", className: "button", onclick: add }, "Add"),
+        changed ? el("button", {
+          type: "button", className: "button primary", disabled: Boolean(ui.busy),
+          onclick: () => ask({ tool: "users_update_labels", title: "Update labels", arguments: { user_id: user.id, labels: draft.values },
+            rows: [["labels", user.labels.join(", ") || "none", draft.values.join(", ") || "none"]] }),
+        }, "Review labels") : null),
+      user.sessions.length ? el("div", { className: "section-head", style: "padding-top: 0" }, "Recent sessions") : null,
+      user.sessions.length ? el("div", { className: "scroll", style: "margin: 8px 0 0" },
+        el("table", {},
+          el("thead", {}, el("tr", {}, ["Client", "OS", "Location", "IP", "Signed in", "Method"].map((key) => el("th", { scope: "col" }, key)))),
+          el("tbody", {}, user.sessions.map((session) => el("tr", {},
+            el("td", {}, session.client || session.device || "–"),
+            el("td", {}, session.os || "–"),
+            el("td", {}, session.country || "–"),
+            el("td", { className: "mono" }, session.ip || "–"),
+            el("td", {}, display(session.createdAt)),
+            el("td", {}, session.provider || "–")))))) : null,
+      el("div", { className: "panel-foot", style: "padding-top: 14px" },
+        user.email ? el("button", {
+          type: "button", className: "button", disabled: Boolean(ui.busy),
+          onclick: () => ask({ tool: "users_update_email_verification", title: user.emailVerification ? "Mark email unverified" : "Mark email verified",
+            arguments: { user_id: user.id, email_verification: !user.emailVerification },
+            rows: [["email verified", String(user.emailVerification), String(!user.emailVerification)]] }),
+        }, user.emailVerification ? "Mark email unverified" : "Mark email verified") : null,
+        el("button", {
+          type: "button", className: "button" + (user.status ? " danger" : ""), disabled: Boolean(ui.busy),
+          onclick: () => ask({ tool: "users_update_status", title: user.status ? "Block user" : "Unblock user",
+            detail: user.status ? "Blocked users cannot sign in, and their existing sessions stop working." : "The user can sign in again.",
+            arguments: { user_id: user.id, status: !user.status },
+            rows: [["status", user.status ? "active" : "blocked", user.status ? "blocked" : "active"]] }),
+        }, user.status ? "Block user" : "Unblock user")));
+  }
+
+  function userConfirm(user) {
+    const change = ui.confirm;
+    return el("section", { className: "confirm", "aria-label": "Confirm change" },
+      el("div", { className: "confirm-head" },
+        el("span", { className: "confirm-icon" }, icon(ICONS.warning)),
+        el("div", { className: "heading" },
+          el("span", { className: "title" }, change.title + "?"),
+          el("span", { className: "muted", style: "font-size: var(--font-text-sm-size)" },
+            "User ", el("span", { className: "mono" }, user.id), user.name ? " (" + user.name + ")" : "", ". ",
+            change.detail ? change.detail + " " : "", "Runs as you through your Appwrite connection."))),
+      el("table", { className: "diff" },
+        el("thead", {}, el("tr", {}, el("th", { scope: "col" }, "Field"), el("th", { scope: "col" }, "Before"), el("th", { scope: "col" }, "After"))),
+        el("tbody", {}, change.rows.map(([key, before, after]) => el("tr", {},
+          el("td", { className: "mono" }, key),
+          el("td", { className: "before" }, before),
+          el("td", { className: "after" }, after))))),
+      el("div", { className: "panel-foot", style: "padding-top: 14px" },
+        el("button", { type: "button", className: "button", disabled: Boolean(ui.busy), onclick: () => { ui.confirm = null; render(); } }, "Cancel"),
+        el("button", {
+          type: "button", className: "button primary", disabled: Boolean(ui.busy),
+          onclick: () => updateUser(user, change),
+        }, ui.busy || "Approve and run")));
+  }
+
+  async function updateUser(user, change) {
+    ui.busy = "Saving…";
+    render();
+    try {
+      const result = await callTool(WRITE_TOOL, {
+        tool_name: change.tool, project_id: data.projectId || undefined, confirm_write: true, arguments: change.arguments,
+      });
+      const updated = { ...user, ...(result.structuredContent || {}) };
+      data.user = updated;
+      data.users = data.users.map((each) => (each.id === user.id ? { ...each, ...(result.structuredContent || {}) } : each));
+      ui = { notice: { text: change.title + ": done.", tone: "success" } };
+      render();
+      tellModel("The user ran \"" + change.title + "\" on Appwrite user " + user.id + (user.name ? " (" + user.name + ")" : "") + " from the users view: " +
+        change.rows.map(([key, before, after]) => key + " " + before + " → " + after).join(", ") + ".");
+    } catch (error) {
+      ui.busy = null;
+      ui.confirm = null;
+      flash(error.message, "danger");
+    }
   }
 
   async function cancelBuild(args) {
