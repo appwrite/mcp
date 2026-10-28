@@ -36,6 +36,11 @@ UI = {"extensions": {EXTENSION: {"mimeTypes": [MIME_TYPE]}}}
 ROWS = 30
 PAGE = 25
 LOG_LINES = 250
+# How open-runtimes colors a build log line.
+ANSI_LINE = (
+    "\x1b[90m[13:23:45] \x1b[31m[\x1b[0mopen-runtimes\x1b[31m] "
+    "\x1b[32mBuild finished. \x1b[0m"
+)
 
 cloud: Cloud
 
@@ -71,7 +76,8 @@ def setUpModule() -> None:
             "dep_new",
             FUNCTION,
             "building",
-            "\n".join(f"line {index}" for index in range(1, LOG_LINES + 1)),
+            "\n".join(f"line {index}" for index in range(1, LOG_LINES))
+            + f"\n{ANSI_LINE}",
             providerBranch="main",
             providerCommitHash="a91c3e0f00",
         ),
@@ -310,12 +316,16 @@ class AppsFlow(unittest.TestCase):
         self.assertFalse(data["done"])
         # Only the end of a long log is carried.
         self.assertEqual(len(build["logs"]), 200)
-        self.assertEqual(build["logs"][-1], f"line {LOG_LINES}")
+        # The view gets the colors; the model's summary gets plain text.
+        self.assertEqual(build["logs"][-1], ANSI_LINE)
         self.assertTrue(build["truncated"])
         text = result["content"][0]["text"]
         self.assertIn(f"Deployment dep_new of function {FUNCTION} is building.", text)
         self.assertIn("Source: main @ a91c3e0.", text)
-        self.assertTrue(text.endswith(f"line {LOG_LINES}"))
+        self.assertTrue(
+            text.endswith("[13:23:45] [open-runtimes] Build finished. "), text
+        )
+        self.assertNotIn("\x1b", text)
 
         status_path = rf"/v1/functions/{FUNCTION}/deployments/dep_new/status"
         result = self.call(
