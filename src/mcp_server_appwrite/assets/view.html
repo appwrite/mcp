@@ -304,6 +304,8 @@ details.headers td { height: 32px; max-width: none; white-space: normal; overflo
   const PROTOCOL_VERSION = "2026-01-26";
   const SHOW_TOOL = "appwrite_show";
   const WRITE_TOOL = "appwrite_view_write";
+  // Tells the server's telemetry this call is the view's, not the model's.
+  const ORIGIN = { "io.appwrite/origin": "view" };
   const POLL_MS = 3000;
   const PAGE_SIZE = 25;
   const FILES_PAGE = 24;
@@ -352,7 +354,7 @@ details.headers td { height: 32px; max-width: none; white-space: normal; overflo
   }
 
   async function callTool(name, args) {
-    const result = await request("tools/call", { name, arguments: args });
+    const result = await request("tools/call", { name, arguments: args, _meta: ORIGIN });
     if (result && result.isError) {
       throw new Error(textOf(result) || "The Appwrite call failed.");
     }

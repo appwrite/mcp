@@ -29,8 +29,9 @@ from typing import Any
 import mcp.types as types
 from appwrite_console.query import Query
 
+from .. import telemetry
 from ..constants import SHOW_TOOL_NAME, VIEW_WRITE_TOOL_NAME
-from . import executions, files, resource, usage, users
+from . import executions, files, protocol, resource, usage, users
 
 Run = Callable[[dict[str, Any], bool], list[Any]]
 """Runs a hidden catalog tool from raw call arguments (``tool_name``,
@@ -87,6 +88,18 @@ class Views:
 
     def show(self, arguments: dict[str, Any]) -> types.CallToolResult:
         view = arguments.get("view")
+        status = "error"
+        try:
+            result = self._show(arguments)
+            status = "success"
+            return result
+        finally:
+            telemetry.record_view(
+                str(view) if view in View else "invalid", protocol.origin(), status
+            )
+
+    def _show(self, arguments: dict[str, Any]) -> types.CallToolResult:
+        view = arguments.get("view")
         if view == View.TABLE:
             data = self._table(arguments)
             text = _table_summary(data)
@@ -113,6 +126,18 @@ class Views:
         )
 
     def write(self, arguments: dict[str, Any]) -> types.CallToolResult:
+        tool_name = arguments.get("tool_name")
+        status = "error"
+        try:
+            result = self._write(arguments)
+            status = "success"
+            return result
+        finally:
+            telemetry.record_view_write(
+                tool_name if tool_name in WRITES else "invalid", status
+            )
+
+    def _write(self, arguments: dict[str, Any]) -> types.CallToolResult:
         tool_name = arguments.get("tool_name")
         if tool_name not in WRITES:
             raise ValueError(

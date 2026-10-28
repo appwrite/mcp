@@ -311,6 +311,20 @@ def _build_instruments(meter: Any, transport: str, version: str) -> None:
         ),
     )
 
+    _instruments["apps_views"] = meter.create_counter(
+        "mcp.apps.views",
+        unit="{call}",
+        description=(
+            "MCP Apps appwrite_show calls by view, origin (the model opening a "
+            "view, or the view refreshing and paging itself) and status."
+        ),
+    )
+    _instruments["apps_writes"] = meter.create_counter(
+        "mcp.apps.writes",
+        unit="{call}",
+        description="MCP Apps appwrite_view_write calls by action and status.",
+    )
+
     _instruments["token_usage"] = meter.create_counter(
         "mcp.token.usage",
         unit="{token}",
@@ -709,6 +723,30 @@ def record_tool_call(
             input_tokens + output_tokens,
             {"tool_name": tool_name},
         )
+
+
+def record_view(view: str, origin: str, status: str) -> None:
+    """One ``appwrite_show`` call. ``view`` is a view name, or ``invalid``."""
+    _safe_add(
+        "apps_views",
+        1,
+        {
+            "view": view,
+            "origin": origin,
+            "status": status,
+            "client_id": current_client_id(),
+        },
+    )
+
+
+def record_view_write(action: str, status: str) -> None:
+    """One ``appwrite_view_write`` call. ``action`` is an allowlisted catalog
+    write, or ``invalid``."""
+    _safe_add(
+        "apps_writes",
+        1,
+        {"action": action, "status": status, "client_id": current_client_id()},
+    )
 
 
 def record_hallucination(attempted_tool: Any) -> None:

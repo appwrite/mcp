@@ -1379,6 +1379,7 @@ def build_mcp_server(
         ctx: ServerRequestContext, params: types.CallToolRequestParams
     ) -> types.CallToolResult:
         _emit_initialize(ctx)
+        apps.bind_origin(ctx)
         start = time.monotonic()
         name = params.name
         arguments = params.arguments or {}

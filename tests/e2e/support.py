@@ -302,7 +302,7 @@ class Client:
         self, method: str, params: Mapping[str, Any] | None = None, *, path: str = "/"
     ) -> tuple[int, dict[str, Any]]:
         """One 2026-07-28 request: protocol version and method in the headers,
-        client identity in ``params._meta``."""
+        client identity in ``params._meta`` next to any ``_meta`` in ``params``."""
         body = {
             "jsonrpc": "2.0",
             "id": next(self._ids),
@@ -316,6 +316,7 @@ class Client:
                         "version": "1",
                     },
                     "io.modelcontextprotocol/clientCapabilities": self._capabilities,
+                    **(params or {}).get("_meta", {}),
                 },
             },
         }
