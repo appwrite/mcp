@@ -10,10 +10,11 @@ anything else, ``appwrite_call_write_tool`` is destructive and refuses reads.
 so a refused call is checked to have made no Appwrite request at all.
 """
 
+import base64
 import unittest
 from typing import Any
 
-from support import TOKEN, Client, Cloud, Project, Server, collector
+from support import PNG, SCOPES, TOKEN, Client, Cloud, Project, Server, collector
 
 PROJECT = "6630f1a2b3c4d5e6f7a8"
 HINTS = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
@@ -40,8 +41,8 @@ cloud: Cloud
 def setUpModule() -> None:
     global cloud
     cloud = Cloud()
-    cloud.add(Project(PROJECT))
-    cloud.grant(TOKEN, {PROJECT})
+    cloud.add(Project(PROJECT, buckets={"photos"}))
+    cloud.grant(TOKEN, {PROJECT}, SCOPES | {"files.read"})
 
 
 def tearDownModule() -> None:
@@ -209,6 +210,23 @@ class ToolsFlow(unittest.TestCase):
             ),
             wrong + 2,
         )
+
+    def test_binary_reads_reach_the_project(self):
+        # The SDK sends the project header in the call's own headers too; sent
+        # twice, Appwrite reads "id, id" and finds no such project.
+        result = self.call(
+            "appwrite_call_tool",
+            {
+                "tool_name": "storage_get_file_preview",
+                "project_id": PROJECT,
+                "arguments": {"bucket_id": "photos", "file_id": "sunrise", "width": 64},
+            },
+        )
+        self.assertFalse(result.get("isError"), result)
+        (image,) = result["content"]
+        self.assertEqual(image["type"], "image")
+        self.assertEqual(image["mimeType"], "image/png")
+        self.assertEqual(base64.b64decode(image["data"]), PNG)
 
 
 if __name__ == "__main__":

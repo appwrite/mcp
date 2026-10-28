@@ -988,8 +988,11 @@ def _perform_bounded_binary_client_call(
     if method.lower() != "get" or response_type != "json":
         raise RuntimeError(f"Unsupported bounded binary request for {tool_name}.")
 
+    # Merge by lowercased name: the SDK repeats the project header in the call's
+    # own headers with different casing, and both copies would be sent, which
+    # Appwrite reads as one comma-joined project ID that does not exist.
     request_headers = {
-        key: value
+        key.lower(): value
         for key, value in {**client._global_headers, **(headers or {})}.items()
         if value
     }

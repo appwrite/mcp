@@ -1027,6 +1027,11 @@ SCOPES = frozenset(
 APPS_SCOPES = frozenset({"rows.read", "rows.write", "functions.write", "sites.write"})
 """The scopes the MCP Apps views need on top of :data:`SCOPES`."""
 
+PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+"""A 1x1 PNG: what Appwrite's image previews return, in miniature."""
+
 CUSTOM_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,35}")
 
 AUTH_PASSWORD_MAX = 2048
@@ -1122,17 +1127,27 @@ class Cloud:
             def _serve(self) -> None:
                 length = int(self.headers.get("Content-Length", "0") or 0)
                 body = self.rfile.read(length) if length else b""
-                headers = {name.lower(): value for name, value in self.headers.items()}
+                # A header sent twice reaches Appwrite as one comma-joined
+                # value, as the proxies in front of it combine them.
+                headers: dict[str, str] = {}
+                for name, value in self.headers.items():
+                    name = name.lower()
+                    headers[name] = (
+                        f"{headers[name]}, {value}" if name in headers else value
+                    )
                 status, payload = cloud._handle(self.command, self.path, headers, body)
-                content = b"" if payload is None else json.dumps(payload).encode()
+                if isinstance(payload, bytes):
+                    content, kind = payload, "image/png"
+                else:
+                    content = b"" if payload is None else json.dumps(payload).encode()
+                    # Appwrite answers 204 with an HTML content type, which the
+                    # Python SDK returns as raw bytes.
+                    kind = (
+                        "text/html; charset=UTF-8"
+                        if payload is None
+                        else "application/json"
+                    )
                 self.send_response(status)
-                # Appwrite answers 204 with an HTML content type, which the
-                # Python SDK returns as raw bytes.
-                kind = (
-                    "text/html; charset=UTF-8"
-                    if payload is None
-                    else "application/json"
-                )
                 self.send_header("Content-Type", kind)
                 self.send_header("Content-Length", str(len(content)))
                 self.end_headers()
@@ -1396,6 +1411,13 @@ class Cloud:
                 "bytesMax": 0,
                 "bytesUsed": 0,
             }
+        if match := re.fullmatch(
+            r"/v1/storage/buckets/([^/]+)/files/([^/]+)/preview", path
+        ):
+            need("files.read")
+            if match.group(1) not in project.buckets:
+                raise _Refusal(404, "storage_bucket_not_found", "Bucket not found")
+            return 200, PNG
         if match := re.fullmatch(r"/v1/storage/buckets/([^/]+)", path):
             need("buckets.read")
             if match.group(1) not in project.buckets:
