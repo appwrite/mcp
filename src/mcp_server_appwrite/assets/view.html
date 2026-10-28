@@ -34,6 +34,8 @@
   --border-radius-full: 999px;
   --accent: light-dark(#c8124f, #ff7da5);
   --accent-text: light-dark(#ffffff, #1f1e1d);
+  --series-1: light-dark(#c8124f, #e0457a);
+  --series-2: light-dark(#1d5fb4, #4f86d9);
 }
 :root[data-theme="light"] { color-scheme: light; }
 :root[data-theme="dark"] { color-scheme: dark; }
@@ -259,6 +261,35 @@ details.headers td { height: 32px; max-width: none; white-space: normal; overflo
 .labels { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 0 14px 14px; }
 .labels input { width: 160px; }
 .button.danger { color: var(--color-text-danger); }
+.ranges { display: inline-flex; border: 1px solid var(--color-border-primary); border-radius: var(--border-radius-md); overflow: hidden; }
+.ranges button { border: 0; background: none; padding: 0 12px; min-height: 32px; cursor: pointer; font-size: var(--font-text-sm-size); }
+.ranges button + button { border-left: 1px solid var(--color-border-primary); }
+.ranges button[aria-pressed="true"] { background: var(--color-background-tertiary); font-weight: var(--font-weight-semibold); }
+.ranges button:focus-visible { outline: 2px solid var(--color-ring-primary); outline-offset: -2px; }
+.tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; padding: 14px 18px 0; }
+.tile { border: 1px solid var(--color-border-secondary); border-radius: var(--border-radius-md); padding: 12px 14px; min-width: 0; }
+.tile .label { font-size: var(--font-text-xs-size); color: var(--color-text-secondary); }
+.tile .value { font-size: 22px; font-weight: var(--font-weight-semibold); line-height: 1.3; font-variant-numeric: tabular-nums; }
+.tile .sub { font-size: var(--font-text-xs-size); color: var(--color-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); align-items: start; gap: 12px; padding: 12px 18px 0; }
+.chart { border: 1px solid var(--color-border-secondary); border-radius: var(--border-radius-md); padding: 12px 14px 10px; min-width: 0; }
+.chart-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.chart-head .name { font-size: var(--font-text-sm-size); font-weight: var(--font-weight-semibold); }
+.chart-head .readout { font-size: var(--font-text-xs-size); color: var(--color-text-secondary); font-variant-numeric: tabular-nums; }
+.legend { display: flex; gap: 12px; font-size: var(--font-text-xs-size); color: var(--color-text-secondary); margin-top: 4px; }
+.legend span::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; background: var(--swatch); }
+.chart svg { display: block; width: 100%; height: 150px; margin-top: 6px; overflow: visible; }
+.chart svg text { fill: var(--color-text-secondary); font-size: 10px; font-family: var(--font-sans); }
+.chart svg .grid { stroke: var(--color-border-secondary); stroke-width: 1; }
+.chart svg .hit { fill: transparent; cursor: default; }
+.chart svg .hit:hover { fill: color-mix(in srgb, var(--color-text-primary) 6%, transparent); }
+.chart details { margin-top: 6px; font-size: var(--font-text-xs-size); }
+.chart details summary { cursor: pointer; color: var(--color-text-secondary); }
+.chart details td, .chart details th { height: 26px; padding: 0 8px; }
+.resources { display: flex; flex-wrap: wrap; gap: 8px 20px; padding: 14px 18px; font-size: var(--font-text-sm-size); }
+.resources span { white-space: nowrap; }
+.resources strong { font-weight: var(--font-weight-semibold); font-variant-numeric: tabular-nums; }
+@media (max-width: 720px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 560px) {
   .fields { grid-template-columns: minmax(0, 1fr); }
   .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -463,6 +494,7 @@ details.headers td { height: 32px; max-width: none; white-space: normal; overflo
     else if (data.view === "executions") root.replaceChildren(...executionsView());
     else if (data.view === "files") root.replaceChildren(...filesView());
     else if (data.view === "users") root.replaceChildren(...usersView());
+    else if (data.view === "usage") root.replaceChildren(...usageView());
     else status("Unknown view " + data.view, true);
   }
 
@@ -1300,6 +1332,177 @@ details.headers td { height: 32px; max-width: none; white-space: normal; overflo
       ui.confirm = null;
       flash(error.message, "danger");
     }
+  }
+
+  function count(value) {
+    try {
+      return new Intl.NumberFormat(host.context.locale || undefined, { notation: value >= 10000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value);
+    } catch {
+      return String(value);
+    }
+  }
+
+  function bytes(value) {
+    if (value === null || value === undefined) return "–";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let amount = value;
+    let unit = 0;
+    while (amount >= 1000 && unit < units.length - 1) { amount /= 1000; unit++; }
+    return (unit ? amount.toFixed(1) : String(amount)) + " " + units[unit];
+  }
+
+  function seconds(milliseconds) {
+    const total = milliseconds / 1000;
+    if (total < 60) return total.toFixed(1) + " s";
+    if (total < 3600) return (total / 60).toFixed(1) + " min";
+    return (total / 3600).toFixed(1) + " h";
+  }
+
+  function moment(value, hourly) {
+    const date = new Date(value);
+    try {
+      return date.toLocaleString(host.context.locale || undefined, hourly
+        ? { hour: "numeric", minute: "2-digit", timeZone: host.context.timeZone || undefined }
+        : { month: "short", day: "numeric", timeZone: host.context.timeZone || undefined });
+    } catch {
+      return date.toISOString().slice(0, hourly ? 16 : 10);
+    }
+  }
+
+  function svg(tag, attributes, ...children) {
+    const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const [key, value] of Object.entries(attributes || {})) {
+      if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else node.setAttribute(key, String(value));
+    }
+    for (const child of children.flat()) {
+      if (child !== null && child !== undefined) node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+    }
+    return node;
+  }
+
+  // A bar whose top corners are rounded and whose base sits flat on the axis
+  // (or on the segment below it).
+  function bar(x, y, width, height, radius) {
+    const r = Math.min(radius, width / 2, height);
+    return "M" + x + "," + (y + height) + "V" + (y + r) + "Q" + x + "," + y + " " + (x + r) + "," + y +
+      "H" + (x + width - r) + "Q" + (x + width) + "," + y + " " + (x + width) + "," + (y + r) + "V" + (y + height) + "Z";
+  }
+
+  function barChart(title, total, series, format) {
+    const times = data.times;
+    const hourly = data.interval === "1h";
+    const width = 600;
+    const height = 150;
+    const top = 14;
+    const bottom = 18;
+    const plot = height - top - bottom;
+    const slot = width / times.length;
+    const gap = 2;
+    const sums = times.map((_, index) => series.reduce((sum, each) => sum + each.values[index], 0));
+    const max = Math.max(...sums, 0);
+    const readout = el("span", { className: "readout" }, max ? "Peak " + format(max) : "No activity");
+    const marks = [];
+    times.forEach((time, index) => {
+      let base = top + plot;
+      const x = index * slot + gap / 2;
+      const w = Math.max(slot - gap, 1);
+      series.forEach((each, layer) => {
+        const value = each.values[index];
+        if (!value || !max) return;
+        const h = Math.max((value / max) * plot, 1.5);
+        // A 2px surface gap between stacked segments.
+        const lift = layer ? gap : 0;
+        marks.push(svg("path", { d: layer === series.length - 1 || series.slice(layer + 1).every((next) => !next.values[index])
+          ? bar(x, base - h - lift, w, h, 4) : bar(x, base - h - lift, w, h, 0), fill: "var(" + each.color + ")" }));
+        base -= h + lift;
+      });
+      const label = moment(time, hourly) + " · " + series.map((each) => (series.length > 1 ? each.label + " " : "") + format(each.values[index])).join(", ");
+      marks.push(svg("rect", {
+        class: "hit", x: index * slot, y: top, width: slot, height: plot,
+        onmouseenter: () => { readout.textContent = label; },
+        onmouseleave: () => { readout.textContent = max ? "Peak " + format(max) : "No activity"; },
+      }, svg("title", {}, label)));
+    });
+    const labels = [0, Math.floor((times.length - 1) / 2), times.length - 1];
+    const chart = svg("svg", { viewBox: "0 0 " + width + " " + height, preserveAspectRatio: "none", role: "img", "aria-label": title + ", " + total },
+      svg("line", { class: "grid", x1: 0, x2: width, y1: top, y2: top }),
+      svg("line", { class: "grid", x1: 0, x2: width, y1: top + plot, y2: top + plot }),
+      max ? svg("text", { x: 0, y: top - 4 }, format(max)) : null,
+      marks,
+      labels.map((index, position) => svg("text", {
+        x: position === 0 ? 0 : position === 1 ? (index + 0.5) * slot : width, y: height - 4,
+        "text-anchor": position === 0 ? "start" : position === 1 ? "middle" : "end",
+      }, moment(times[index], hourly))));
+    // Text in a viewBox scaled without preserving its aspect ratio stretches;
+    // counter the horizontal scale once the chart has a width.
+    requestAnimationFrame(() => {
+      const scale = chart.getBoundingClientRect().width / width;
+      if (!scale) return;
+      for (const text of chart.querySelectorAll("text")) {
+        const x = Number(text.getAttribute("x"));
+        text.setAttribute("transform", "translate(" + x + " 0) scale(" + (1 / scale) + " 1) translate(" + (-x) + " 0)");
+      }
+    });
+    return el("section", { className: "chart", "aria-label": title },
+      el("div", { className: "chart-head" },
+        el("span", {}, el("span", { className: "name" }, title), " ", el("span", { className: "muted", style: "font-size: var(--font-text-xs-size)" }, total)),
+        readout),
+      series.length > 1 ? el("div", { className: "legend" }, series.map((each) => el("span", { style: "--swatch: var(" + each.color + ")" }, each.label))) : null,
+      chart,
+      el("details", {},
+        el("summary", {}, "Table"),
+        el("table", {},
+          el("thead", {}, el("tr", {}, el("th", { scope: "col" }, hourly ? "Hour" : "Day"), series.map((each) => el("th", { scope: "col" }, each.label)))),
+          el("tbody", {}, times.map((time, index) => el("tr", {},
+            el("td", {}, moment(time, hourly)),
+            series.map((each) => el("td", {}, format(each.values[index])))))))));
+  }
+
+  function usageView() {
+    const totals = data.totals;
+    const resources = data.resources;
+    const series = data.series;
+    const ranges = el("div", { className: "ranges", role: "group", "aria-label": "Range" },
+      [["24h", "24 hours"], ["7d", "7 days"], ["30d", "30 days"]].map(([value, label]) => el("button", {
+        type: "button", "aria-pressed": data.range === value ? "true" : "false", disabled: Boolean(ui.busy),
+        onclick: () => { if (data.range !== value) reload(showArgs({ range: value }), "Loading " + label + "…"); },
+      }, label)));
+
+    const head = el("header", { className: "bar" },
+      el("div", { className: "heading" },
+        el("span", { className: "eyebrow" }, "Usage"),
+        el("span", { className: "title" }, "Project", el("span", { className: "mono muted" }, data.projectId || ""))),
+      el("div", { className: "actions" },
+        ui.busy ? el("span", { className: "muted", style: "font-size: var(--font-text-xs-size)" }, ui.busy) : null,
+        ranges,
+        el("button", { type: "button", className: "button icon", "aria-label": "Refresh", title: "Refresh", disabled: Boolean(ui.busy), onclick: () => reload(showArgs({ range: data.range }), "Refreshing…") }, icon(ICONS.refresh)),
+        fullscreenButton()));
+
+    const tile = (label, value, sub) => el("div", { className: "tile" },
+      el("div", { className: "label" }, label), el("div", { className: "value" }, value), el("div", { className: "sub" }, sub));
+    const tiles = el("div", { className: "tiles" },
+      tile("Requests", count(totals.requests), "in the last " + data.range),
+      tile("Bandwidth", bytes(totals.inbound + totals.outbound), bytes(totals.inbound) + " in · " + bytes(totals.outbound) + " out"),
+      tile("Executions", count(totals.executions), seconds(totals.compute) + " of compute"),
+      tile("Users", resources.users === null ? "–" : count(resources.users), "registered now"));
+
+    const charts = el("div", { className: "charts" },
+      barChart("Requests", count(totals.requests) + " total", [{ label: "Requests", values: series.requests, color: "--series-1" }], count),
+      barChart("Bandwidth", bytes(totals.inbound + totals.outbound) + " total", [
+        { label: "Outbound", values: series.outbound, color: "--series-1" },
+        { label: "Inbound", values: series.inbound, color: "--series-2" },
+      ], bytes),
+      barChart("Executions", count(totals.executions) + " total", [{ label: "Executions", values: series.executions, color: "--series-1" }], count));
+
+    const counts = [["Functions", "functions"], ["Sites", "sites"], ["Databases", "databases"], ["Buckets", "buckets"]]
+      .filter(([, key]) => resources[key] !== null)
+      .map(([label, key]) => el("span", {}, label + " ", el("strong", {}, count(resources[key]))));
+    const storage = [["Files", "filesStorage"], ["Deployments", "deploymentsStorage"], ["Builds", "buildsStorage"]]
+      .filter(([, key]) => resources[key] !== null)
+      .map(([label, key]) => el("span", {}, label + " storage ", el("strong", {}, bytes(resources[key]))));
+    const footer = el("div", { className: "resources", "aria-label": "Resources now" }, counts, storage);
+    return [head, notice(), tiles, charts, footer].filter(Boolean);
   }
 
   async function cancelBuild(args) {

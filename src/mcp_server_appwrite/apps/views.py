@@ -2,11 +2,12 @@
 
 ``appwrite_show`` is the one tool the model sees. It reads what a view shows
 (a page of a table's rows, a Function or Site deployment with its build logs,
-a Function's executions, a Storage bucket's files, or a project's Auth
-users) through the hidden catalog, and returns it twice: a text summary in
-``content`` for the model and for hosts without MCP Apps, and the data in
-``structuredContent`` for the view. The view calls it again to page, refresh
-and follow a build, so every read it makes is one the model could make too.
+a Function's executions, a Storage bucket's files, a project's Auth users,
+or a project's usage) through the hidden catalog, and returns it twice: a
+text summary in ``content`` for the model and for hosts without MCP Apps,
+and the data in ``structuredContent`` for the view. The view calls it again to page,
+refresh and follow a build, so every read it makes is one the model could
+make too.
 
 ``appwrite_view_write`` is visible to the view only (``visibility: ["app"]``).
 It runs a short allowlist of catalog writes the view offers buttons for, and
@@ -29,7 +30,7 @@ import mcp.types as types
 from appwrite_console.query import Query
 
 from ..constants import SHOW_TOOL_NAME, VIEW_WRITE_TOOL_NAME
-from . import executions, files, resource, users
+from . import executions, files, resource, usage, users
 
 Run = Callable[[dict[str, Any], bool], list[Any]]
 """Runs a hidden catalog tool from raw call arguments (``tool_name``,
@@ -74,6 +75,7 @@ class View(StrEnum):
     EXECUTIONS = "executions"
     FILES = "files"
     USERS = "users"
+    USAGE = "usage"
 
 
 class Views:
@@ -100,6 +102,9 @@ class Views:
         elif view == View.USERS:
             data = users.read(self._read, arguments)
             text = users.summary(data)
+        elif view == View.USAGE:
+            data = usage.read(self._read, arguments)
+            text = usage.summary(data)
         else:
             raise ValueError(f"view must be one of: {', '.join(View)}. Got {view!r}.")
         return types.CallToolResult(
@@ -277,6 +282,8 @@ def _show_tool() -> types.Tool:
             "view=users lists the project's Auth users (search by name, email, "
             "phone or ID) and opens one with their sessions, where the user can "
             "block, verify or label them. "
+            "view=usage charts a project's requests, bandwidth and executions "
+            "over a range, with its users, resources and storage. "
             "Use it when the user wants to see or browse this data rather than "
             "reason over it; the result also carries a short text summary. Calls "
             "the Appwrite REST API."
@@ -357,6 +364,11 @@ def _show_tool() -> types.Tool:
                 "user_id": {
                     "type": "string",
                     "description": "view=users: also open this user with their sessions.",
+                },
+                "range": {
+                    "type": "string",
+                    "enum": list(usage.RANGES),
+                    "description": "view=usage: how far back to chart. Defaults to 7d.",
                 },
             },
             "required": ["view"],

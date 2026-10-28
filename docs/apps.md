@@ -9,7 +9,7 @@ interactive view inside the chat. This server offers one view,
 
 | Name | Seen by | What it does |
 | --- | --- | --- |
-| `appwrite_show` | model and view | `view=table`: a page of a table's rows, newest first, with `cursor` paging. `view=deployment`: a Function or Site deployment (the latest unless `deployment_id` is given) with the last 200 build log lines. `view=executions`: a Function's executions, newest first, optionally one `status`, with `cursor` paging; `execution_id` also opens one with its request and response headers, status code, duration, and the last 200 lines of logs and of errors. `view=files`: a Storage bucket's files, newest first, with `search` (file name) and `cursor` paging; `file_id` also opens one. `view=users`: the project's Auth users, newest first, with `search` (name, email, phone or ID) and `cursor` paging; `user_id` also opens one with their ten newest sessions. Read-only. |
+| `appwrite_show` | model and view | `view=table`: a page of a table's rows, newest first, with `cursor` paging. `view=deployment`: a Function or Site deployment (the latest unless `deployment_id` is given) with the last 200 build log lines. `view=executions`: a Function's executions, newest first, optionally one `status`, with `cursor` paging; `execution_id` also opens one with its request and response headers, status code, duration, and the last 200 lines of logs and of errors. `view=files`: a Storage bucket's files, newest first, with `search` (file name) and `cursor` paging; `file_id` also opens one. `view=users`: the project's Auth users, newest first, with `search` (name, email, phone or ID) and `cursor` paging; `user_id` also opens one with their ten newest sessions. `view=usage`: a project's requests, bandwidth (in and out) and executions per interval over `range` (`24h` hourly, `7d` or `30d` daily), with totals and the newest snapshot of its users, resource counts and storage. Read-only. |
 | `appwrite_view_write` | view only (`visibility: ["app"]`) | Runs one of `tables_db_update_row`, `functions_update_deployment_status`, `sites_update_deployment_status`, `users_update_status`, `users_update_labels`, `users_update_email_verification`, only with `confirm_write=true`. |
 | `ui://appwrite/view` | host | One HTML document (`assets/view.html`) that renders every view. |
 
@@ -32,6 +32,11 @@ renders the page's images through Appwrite's image transformations
 (`storage_get_file_preview`, eight at a time) and returns them as data URIs.
 The model's own call leaves them out, since some hosts put
 `structuredContent` in the model's context.
+
+The usage view reads the Usage API (`usage_list_events` and
+`usage_list_gauges`). Appwrite keeps usage history for as long as the plan
+allows; a range past it returns Appwrite's own error, which the view shows in
+place of the chart it was switching to.
 
 ## Who is offered the view
 

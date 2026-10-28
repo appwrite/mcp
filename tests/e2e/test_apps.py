@@ -9,6 +9,7 @@ checked to have reached no Appwrite write at all.
 """
 
 import base64
+import datetime
 import hashlib
 import json
 import re
@@ -152,6 +153,24 @@ def setUpModule() -> None:
         session(f"ses_{index}", "ada", ip=f"203.0.113.{index}")
         for index in range(1, 13)
     ]
+    today = datetime.datetime.now(datetime.UTC).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+
+    def day(back: int) -> str:
+        return (today - datetime.timedelta(days=back)).isoformat()
+
+    project.usage = {
+        # The day ten days back is outside a 7d range.
+        "network.requests": {day(0): 120, day(2): 30, day(10): 999},
+        "network.inbound": {day(0): 2_000, day(2): 500},
+        "network.outbound": {day(0): 1_500_000},
+        "executions": {day(1): 4},
+        "executions.compute": {day(1): 9_500},
+        "users": {day(3): 40, day(0): 42},
+        "files.storage": {day(0): 3_200_000},
+        "functions": {day(0): 3},
+    }
     cloud.grant(TOKEN, {PROJECT}, SCOPES | APPS_SCOPES)
 
 
@@ -665,11 +684,59 @@ class AppsFlow(unittest.TestCase):
             grace["content"][0]["text"],
         )
 
+    def test_usage_view_charts_a_range(self):
+        show = {"view": "usage", "project_id": PROJECT}
+        result = self.call("appwrite_show", show)
+        self.assertFalse(result.get("isError"), result)
+        data = result["structuredContent"]
+        self.assertEqual(data["view"], "usage")
+        self.assertEqual(data["range"], "7d")
+        self.assertEqual(data["interval"], "1d")
+        self.assertEqual(len(data["times"]), 7)
+        # Days without traffic are zeros, so the chart keeps its shape.
+        self.assertEqual(data["series"]["requests"], [0, 0, 0, 0, 30, 0, 120])
+        self.assertEqual(data["series"]["executions"], [0, 0, 0, 0, 0, 4, 0])
+        self.assertEqual(
+            data["totals"],
+            {
+                "requests": 150,
+                "inbound": 2_500,
+                "outbound": 1_500_000,
+                "executions": 4,
+                "compute": 9_500,
+            },
+        )
+        # Gauges are the newest snapshot; a metric with none is null.
+        self.assertEqual(data["resources"]["users"], 42)
+        self.assertEqual(data["resources"]["filesStorage"], 3_200_000)
+        self.assertIsNone(data["resources"]["sites"])
+        text = result["content"][0]["text"]
+        self.assertIn(f"Usage of project {PROJECT} over the last 7d", text)
+        self.assertIn("Requests: 150", text)
+        self.assertIn("Bandwidth: 1.5 MB (2.5 KB in, 1.5 MB out)", text)
+        self.assertIn("Executions: 4 (9.5 s of compute)", text)
+        self.assertIn("Now: users 42, functions 3.", text)
+        self.assertIn(f"Busiest interval: {data['times'][-1]} with 120 requests.", text)
+
+        day = self.call("appwrite_show", {**show, "range": "24h"})["structuredContent"]
+        self.assertEqual(day["interval"], "1h")
+        self.assertEqual(len(day["times"]), 24)
+        month = self.call("appwrite_show", {**show, "range": "30d"})[
+            "structuredContent"
+        ]
+        self.assertEqual(month["totals"]["requests"], 1_149)
+
+        # A range past the plan's history is Appwrite's own refusal.
+        cloud.fail("GET", r"/v1/usage/events", 402, "limit_history_exceeded")
+        refused = self.call("appwrite_show", {**show, "range": "30d"})
+        self.assertTrue(refused["isError"])
+        self.assertIn("limit_history_exceeded", refused["content"][0]["text"])
+
     def test_bad_requests_are_tool_errors(self):
         cases = [
             (
                 {"view": "chart"},
-                "view must be one of: table, deployment, executions, files, users",
+                "view must be one of: table, deployment, executions, files, users, usage",
             ),
             (
                 {"view": "table", "project_id": PROJECT, "table_id": TABLE},
@@ -695,6 +762,10 @@ class AppsFlow(unittest.TestCase):
             (
                 {"view": "files", "project_id": PROJECT},
                 "bucket_id is required for view=files.",
+            ),
+            (
+                {"view": "usage", "project_id": PROJECT, "range": "1y"},
+                "range must be one of: 24h, 7d, 30d.",
             ),
         ]
         for arguments, error in cases:
