@@ -16,6 +16,7 @@ from mcp.server.lowlevel.helper_types import ReadResourceContents
 
 from . import telemetry
 from .constants import (
+    API_REFERENCE_URL,
     CALL_TOOL_NAME,
     CATALOG_URI,
     CONTEXT_TOOL_NAME,
@@ -285,7 +286,8 @@ class Operator:
                         "Put Appwrite parameters inside `arguments`. Create, update, delete "
                         f"and every other mutating tool runs through {WRITE_TOOL_NAME}. "
                         "Hidden Appwrite parameters accept canonical snake_case names and "
-                        "common camelCase aliases."
+                        "common camelCase aliases. Calls the Appwrite REST API, see "
+                        f"{API_REFERENCE_URL}."
                     ),
                     input_schema=_call_input_schema(write=False),
                 ),
@@ -304,7 +306,8 @@ class Operator:
                         "by name. Put Appwrite parameters inside `arguments` and set "
                         f"confirm_write=true. Read-only tools run through {CALL_TOOL_NAME}. "
                         "Hidden Appwrite parameters accept canonical snake_case names and "
-                        "common camelCase aliases."
+                        "common camelCase aliases. Calls the Appwrite REST API, see "
+                        f"{API_REFERENCE_URL}."
                     ),
                     input_schema=_call_input_schema(write=True),
                 ),
