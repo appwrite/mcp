@@ -8,7 +8,9 @@ the view pages, refreshes, follows a build and saves an edit.
 checked to have reached no Appwrite write at all.
 """
 
+import hashlib
 import json
+import re
 import unittest
 from typing import Any
 
@@ -164,15 +166,18 @@ class AppsFlow(unittest.TestCase):
 
         listed = tools(self.host)
         show = listed["appwrite_show"]
+        # Hosts cache UI resources by URI, so the URI carries the HTML's hash:
+        # a release that changes the view makes hosts fetch it again.
+        uri = show["_meta"]["ui"]["resourceUri"]
+        self.assertRegex(uri, rf"^{re.escape(VIEW_URI)}/[0-9a-f]{{12}}$")
         self.assertEqual(
-            show["_meta"]["ui"],
-            {"resourceUri": VIEW_URI, "visibility": ["model", "app"]},
+            show["_meta"]["ui"], {"resourceUri": uri, "visibility": ["model", "app"]}
         )
-        self.assertEqual(show["_meta"]["ui/resourceUri"], VIEW_URI)
+        self.assertEqual(show["_meta"]["ui/resourceUri"], uri)
         self.assertTrue(show["annotations"]["readOnlyHint"])
         write = listed["appwrite_view_write"]
         self.assertEqual(
-            write["_meta"]["ui"], {"resourceUri": VIEW_URI, "visibility": ["app"]}
+            write["_meta"]["ui"], {"resourceUri": uri, "visibility": ["app"]}
         )
         self.assertTrue(write["annotations"]["destructiveHint"])
         # The operator tools are unchanged.
@@ -182,12 +187,13 @@ class AppsFlow(unittest.TestCase):
 
         _, response = self.host.call("resources/list")
         view = next(
-            each for each in response["result"]["resources"] if each["uri"] == VIEW_URI
+            each for each in response["result"]["resources"] if each["uri"] == uri
         )
         self.assertEqual(view["mimeType"], MIME_TYPE)
 
-        _, response = self.host.call("resources/read", {"uri": VIEW_URI})
+        _, response = self.host.call("resources/read", {"uri": uri})
         (contents,) = response["result"]["contents"]
+        self.assertEqual(contents["uri"], uri)
         self.assertEqual(contents["mimeType"], MIME_TYPE)
         # No CSP domains: the host's restrictive default, no network access.
         self.assertEqual(contents["_meta"]["ui"], {"csp": {}, "prefersBorder": True})
@@ -197,6 +203,12 @@ class AppsFlow(unittest.TestCase):
         # Appwrite data reaches the DOM as text only.
         self.assertNotIn("innerHTML", html)
         self.assertNotIn("insertAdjacentHTML", html)
+        digest = hashlib.sha256(html.encode("utf-8")).hexdigest()[:12]
+        self.assertEqual(uri, f"{VIEW_URI}/{digest}")
+
+        # Tool lists cached before the URI was versioned still resolve.
+        _, response = self.host.call("resources/read", {"uri": VIEW_URI})
+        self.assertEqual(response["result"]["contents"][0]["text"], html)
 
     def test_hosts_without_apps_are_not_offered_the_view(self):
         with self.server.client() as plain:
@@ -205,7 +217,7 @@ class AppsFlow(unittest.TestCase):
             self.assertNotIn("appwrite_view_write", listed)
             _, response = plain.call("resources/list")
             uris = {each["uri"] for each in response["result"]["resources"]}
-            self.assertNotIn(VIEW_URI, uris)
+            self.assertFalse(any(each.startswith(VIEW_URI) for each in uris))
 
         # A 2025-era client on the stateless transport lists tools without a
         # session, so its capabilities are unknown and the view is offered.

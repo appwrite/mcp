@@ -33,7 +33,6 @@ from .constants import (
     SEARCH_TOOL_NAME,
     UPDATE_HINTS,
     VERBS,
-    VIEW_URI,
     WRITE_TOOL_NAME,
 )
 from .docs_search import DocsSearch
@@ -437,7 +436,7 @@ class Operator:
         if uri == CATALOG_URI:
             return [ReadResourceContents(self._cached_catalog_json, "application/json")]
 
-        if apps and uri == VIEW_URI:
+        if apps and view_resource.serves(uri):
             return [view_resource.read()]
 
         if (

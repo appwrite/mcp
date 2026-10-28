@@ -27,7 +27,8 @@ from typing import Any
 import mcp.types as types
 from appwrite_console.query import Query
 
-from ..constants import SHOW_TOOL_NAME, VIEW_URI, VIEW_WRITE_TOOL_NAME
+from ..constants import SHOW_TOOL_NAME, VIEW_WRITE_TOOL_NAME
+from . import resource
 
 Run = Callable[[dict[str, Any], bool], list[Any]]
 """Runs a hidden catalog tool from raw call arguments (``tool_name``,
@@ -278,10 +279,10 @@ def _show_tool() -> types.Tool:
             "additionalProperties": False,
         },
         _meta={
-            "ui": {"resourceUri": VIEW_URI, "visibility": ["model", "app"]},
+            "ui": {"resourceUri": resource.uri(), "visibility": ["model", "app"]},
             # The flat key hosts read before ``ui.resourceUri``; SEP-1865 drops
             # it at GA.
-            "ui/resourceUri": VIEW_URI,
+            "ui/resourceUri": resource.uri(),
         },
     )
 
@@ -307,7 +308,7 @@ def _write_tool() -> types.Tool:
             "required": ["tool_name", "arguments", "confirm_write"],
             "additionalProperties": False,
         },
-        _meta={"ui": {"resourceUri": VIEW_URI, "visibility": ["app"]}},
+        _meta={"ui": {"resourceUri": resource.uri(), "visibility": ["app"]}},
     )
 
 
