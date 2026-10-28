@@ -972,7 +972,7 @@ class ServerHelperTests(unittest.TestCase):
         """v2 no longer wraps exceptions; the handler must return is_error=True."""
 
         class RefusingOperator:
-            def has_public_tool(self, name):
+            def has_public_tool(self, name, *, apps=False):
                 return True
 
             def execute_public_tool(self, name, arguments):
@@ -981,16 +981,16 @@ class ServerHelperTests(unittest.TestCase):
                     "with confirm_write=true if you intend to mutate Appwrite state."
                 )
 
-            def get_public_tools(self):
+            def get_public_tools(self, *, apps=False):
                 return []
 
-            def list_resources(self):
+            def list_resources(self, *, apps=False):
                 return []
 
             def list_resource_templates(self):
                 return []
 
-            def read_resource(self, uri):
+            def read_resource(self, uri, *, apps=False):
                 raise ValueError(f"Unknown resource URI: {uri}")
 
         server = build_mcp_server(RefusingOperator(), transport="stdio")
@@ -1015,13 +1015,13 @@ class ServerHelperTests(unittest.TestCase):
 
     def test_call_tool_handler_returns_is_error_for_unknown_tool(self):
         class EmptyOperator:
-            def has_public_tool(self, name):
+            def has_public_tool(self, name, *, apps=False):
                 return False
 
-            def get_public_tools(self):
+            def get_public_tools(self, *, apps=False):
                 return []
 
-            def list_resources(self):
+            def list_resources(self, *, apps=False):
                 return []
 
             def list_resource_templates(self):

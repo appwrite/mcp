@@ -36,6 +36,7 @@ Flags are for testing overrides only — permanent configuration belongs in
 | `--console-url` | `MCP_CONSOLE_URL` | Send OAuth login/consent to an alternative Appwrite Console (HTTP transport only). |
 | `--events` | `MCP_EVENTS` | Advertise MCP Events, serve `events/list` and mount the Appwrite webhook ingress (HTTP transport only; needs `MCP_EVENTS_SEALING_KEYS`). See [events.md](events.md). |
 | `--events-push` | `MCP_EVENTS_PUSH` | Also offer push delivery (`events/stream`) for MCP Events (needs `--events` and `MCP_EVENTS_REDIS_URL`). See [events.md](events.md#push-delivery). |
+| `--apps` | `MCP_APPS` | Offer MCP Apps: the `appwrite_show` tool and its interactive `ui://appwrite/view`, rendered in the chat by hosts that support MCP Apps. See [apps.md](apps.md). |
 
 ### `--console-url` — test OAuth against a pre-release console
 
@@ -175,3 +176,21 @@ curl -sN http://localhost:8000/ \
 
 With the flag off, `events/list` advertises webhook only and `events/stream`
 returns `-32601` (method not found).
+
+### `--apps` — MCP Apps
+
+Adds `appwrite_show` (model and view), the view-only `appwrite_view_write`, and
+the `ui://appwrite/view` resource, and advertises the
+`io.modelcontextprotocol/ui` extension. Clients that declare their
+capabilities without the extension are not offered them. See
+[apps.md](apps.md) for the design and for driving it from a real host.
+
+**Enable it:**
+
+```bash
+MCP_PUBLIC_URL=http://localhost:8000 \
+  uv run mcp-server-appwrite --transport http --apps 1
+```
+
+With the flag off, `tools/list` is unchanged and `resources/read` of
+`ui://appwrite/view` is an error.

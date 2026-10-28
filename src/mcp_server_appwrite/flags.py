@@ -63,7 +63,16 @@ EVENTS_PUSH = Flag(
     ),
 )
 
-FLAGS: tuple[Flag, ...] = (CONSOLE_URL, EVENTS, EVENTS_PUSH)
+APPS = Flag(
+    name="apps",
+    env="MCP_APPS",
+    help=(
+        "Set to 1 to offer MCP Apps: the appwrite_show tool and its interactive "
+        "view, rendered in the chat by hosts that support MCP Apps."
+    ),
+)
+
+FLAGS: tuple[Flag, ...] = (CONSOLE_URL, EVENTS, EVENTS_PUSH, APPS)
 
 ENABLED_VALUES = frozenset({"1", "true", "yes", "on"})
 """Values that switch an on/off flag on (case-insensitive)."""

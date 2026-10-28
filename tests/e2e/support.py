@@ -122,6 +122,7 @@ STARTUP_SECONDS = 15.0
 
 CONTROLLED = (
     "APPWRITE_ENDPOINT",
+    "MCP_APPS",
     "MCP_EVENTS",
     "MCP_EVENTS_PUSH",
     "MCP_EVENTS_REDIS_URL",
@@ -253,8 +254,10 @@ class Server:
             patch.stop()
         self._patches = []
 
-    def client(self, token: str = TOKEN) -> Client:
-        return Client(self.url, token)
+    def client(
+        self, token: str = TOKEN, capabilities: Mapping[str, Any] | None = None
+    ) -> Client:
+        return Client(self.url, token, capabilities)
 
 
 NAMED = {"tools/call": "name", "prompts/get": "name", "resources/read": "uri"}
@@ -271,9 +274,16 @@ def message(response: httpx.Response) -> dict[str, Any]:
 
 
 class Client:
-    """A Streamable-HTTP MCP client speaking raw JSON-RPC, like ChatGPT."""
+    """A Streamable-HTTP MCP client speaking raw JSON-RPC, like ChatGPT.
+    ``capabilities`` are the client capabilities each request declares."""
 
-    def __init__(self, url: str, token: str = TOKEN) -> None:
+    def __init__(
+        self,
+        url: str,
+        token: str = TOKEN,
+        capabilities: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._capabilities = dict(capabilities or {})
         self._http = httpx.Client(base_url=url, timeout=30.0)
         self._headers = {
             "Authorization": f"Bearer {token}",
@@ -305,7 +315,7 @@ class Client:
                         "name": "e2e",
                         "version": "1",
                     },
-                    "io.modelcontextprotocol/clientCapabilities": {},
+                    "io.modelcontextprotocol/clientCapabilities": self._capabilities,
                 },
             },
         }
@@ -339,7 +349,7 @@ class Client:
             body["params"]["_meta"] = {
                 "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
                 "io.modelcontextprotocol/clientInfo": {"name": "e2e", "version": "1"},
-                "io.modelcontextprotocol/clientCapabilities": {},
+                "io.modelcontextprotocol/clientCapabilities": self._capabilities,
             }
             headers["MCP-Protocol-Version"] = PROTOCOL_VERSION
             headers["Mcp-Method"] = "events/stream"
@@ -347,17 +357,29 @@ class Client:
 
     def initialize(self, *, path: str = "/") -> tuple[int, dict[str, Any]]:
         """A 2025-11-25 ``initialize`` handshake."""
+        return self.legacy("initialize", path=path)
+
+    def legacy(
+        self, method: str, params: Mapping[str, Any] | None = None, *, path: str = "/"
+    ) -> tuple[int, dict[str, Any]]:
+        """A 2025-11-25 request: ``initialize`` carries the handshake params,
+        any other method arrives the way the stateless transport sees it,
+        without a session or client capabilities."""
+        handshake = {
+            "protocolVersion": LEGACY_PROTOCOL_VERSION,
+            "capabilities": self._capabilities,
+            "clientInfo": {"name": "e2e", "version": "1"},
+        }
         body = {
             "jsonrpc": "2.0",
             "id": next(self._ids),
-            "method": "initialize",
-            "params": {
-                "protocolVersion": LEGACY_PROTOCOL_VERSION,
-                "capabilities": {},
-                "clientInfo": {"name": "e2e", "version": "1"},
-            },
+            "method": method,
+            "params": handshake if method == "initialize" else dict(params or {}),
         }
-        response = self._http.post(path, json=body, headers=self._headers)
+        headers = {**self._headers, "MCP-Protocol-Version": LEGACY_PROTOCOL_VERSION}
+        if method == "initialize":
+            headers = self._headers
+        response = self._http.post(path, json=body, headers=headers)
         return response.status_code, message(response)
 
 
@@ -1002,6 +1024,9 @@ SCOPES = frozenset(
 )
 """Every Appwrite scope the events methods need."""
 
+APPS_SCOPES = frozenset({"rows.read", "rows.write", "functions.write", "sites.write"})
+"""The scopes the MCP Apps views need on top of :data:`SCOPES`."""
+
 CUSTOM_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,35}")
 
 AUTH_PASSWORD_MAX = 2048
@@ -1022,6 +1047,12 @@ class Project:
     """Webhooks the plan allows (Free: 2); ``None`` for unlimited."""
     webhooks: dict[str, dict[str, Any]] = field(default_factory=dict)
     """Stored webhook documents, write-only fields included."""
+    columns: dict[tuple[str, str], list[dict[str, Any]]] = field(default_factory=dict)
+    """Column models per ``(database id, table id)``."""
+    rows: dict[tuple[str, str], list[dict[str, Any]]] = field(default_factory=dict)
+    """Row documents per ``(database id, table id)``, oldest first."""
+    deployments: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    """Deployment models per Function or Site ID, oldest first."""
 
 
 @dataclass
@@ -1292,6 +1323,47 @@ class Cloud:
                     f'jane@example.com (role: owner) missing scopes (["{scope}"])',
                 )
 
+        if match := re.fullmatch(
+            r"/v1/(functions|sites)/([^/]+)/deployments(?:/([^/]+))?(/status)?",
+            path,
+        ):
+            service, resource, deployment, status = match.groups()
+            need(f"{service}.write" if status else f"{service}.read")
+            if resource not in (
+                project.functions if service == "functions" else project.sites
+            ):
+                raise _Refusal(404, f"{service[:-1]}_not_found", "Not found")
+            deployments = project.deployments.get(resource, [])
+            if deployment is None:
+                page = _page(list(reversed(deployments)), query)
+                return 200, {"total": len(deployments), "deployments": page}
+            found = next((d for d in deployments if d["$id"] == deployment), None)
+            if found is None:
+                raise _Refusal(404, "deployment_not_found", "Deployment not found")
+            if status and method == "PATCH":
+                found["status"] = "canceled"
+                found["$updatedAt"] = _stamp()
+            return 200, found
+        if match := re.fullmatch(
+            r"/v1/tablesdb/([^/]+)/tables/([^/]+)/rows(?:/([^/]+))?", path
+        ):
+            database, table, row = match.groups()
+            if (database, table) not in project.tables:
+                raise _Refusal(404, "table_not_found", "Table not found")
+            rows = project.rows.setdefault((database, table), [])
+            if row is None:
+                need("rows.read")
+                return 200, {"total": len(rows), "rows": _page(rows[::-1], query)}
+            found = next((each for each in rows if each["$id"] == row), None)
+            if found is None:
+                raise _Refusal(404, "row_not_found", "Row not found")
+            if method == "PATCH":
+                need("rows.write")
+                found.update(payload.get("data") or {})
+                found["$updatedAt"] = _stamp()
+            else:
+                need("rows.read")
+            return 200, found
         if match := re.fullmatch(r"/v1/functions/([^/]+)", path):
             need("functions.read")
             if match.group(1) not in project.functions:
@@ -1309,7 +1381,21 @@ class Cloud:
                 raise _Refusal(404, "database_not_found", "Database not found")
             if (database, table) not in project.tables:
                 raise _Refusal(404, "table_not_found", "Table not found")
-            return 200, {"$id": table, "databaseId": database}
+            stamp = _stamp()
+            return 200, {
+                "$id": table,
+                "$createdAt": stamp,
+                "$updatedAt": stamp,
+                "$permissions": [],
+                "databaseId": database,
+                "name": table,
+                "enabled": True,
+                "rowSecurity": False,
+                "columns": project.columns.get((database, table), []),
+                "indexes": [],
+                "bytesMax": 0,
+                "bytesUsed": 0,
+            }
         if match := re.fullmatch(r"/v1/storage/buckets/([^/]+)", path):
             need("buckets.read")
             if match.group(1) not in project.buckets:
@@ -1420,6 +1506,94 @@ class Cloud:
             document["attempts"] = 0
         document["$updatedAt"] = _stamp()
         return _model(id, document)
+
+
+def _page(
+    documents: list[dict[str, Any]], query: Mapping[str, list[str]]
+) -> list[dict[str, Any]]:
+    """``documents`` (newest first) narrowed by ``limit`` and ``cursorAfter``
+    queries; the views only ask for the newest first."""
+    limit = 25
+    for key, values in query.items():
+        if not key.startswith("queries["):
+            continue
+        parsed = json.loads(values[0])
+        if parsed["method"] == "limit":
+            limit = parsed["values"][0]
+        elif parsed["method"] == "cursorAfter":
+            ids = [document["$id"] for document in documents]
+            if parsed["values"][0] not in ids:
+                raise _Refusal(400, "general_cursor_not_found", "Cursor not found")
+            documents = documents[ids.index(parsed["values"][0]) + 1 :]
+    return documents[:limit]
+
+
+def column(key: str, type: str) -> dict[str, Any]:
+    """A ``Column`` model."""
+    stamp = _stamp()
+    return {
+        "key": key,
+        "type": type,
+        "status": "available",
+        "error": "",
+        "required": False,
+        "array": False,
+        "$createdAt": stamp,
+        "$updatedAt": stamp,
+        **({"size": 255} if type == "string" else {}),
+    }
+
+
+def row(id: str, database: str, table: str, sequence: int, **values: Any) -> Any:
+    """A ``Row`` model holding ``values``."""
+    stamp = _stamp()
+    return {
+        "$id": id,
+        "$sequence": str(sequence),
+        "$tableId": table,
+        "$databaseId": database,
+        "$createdAt": stamp,
+        "$updatedAt": stamp,
+        "$permissions": [],
+        **values,
+    }
+
+
+def deployment(
+    id: str, resource: str, status: str, logs: str = "", **values: Any
+) -> dict[str, Any]:
+    """A ``Deployment`` model of a Function."""
+    stamp = _stamp()
+    return {
+        "$id": id,
+        "$createdAt": stamp,
+        "$updatedAt": stamp,
+        "type": "vcs",
+        "resourceId": resource,
+        "resourceType": "functions",
+        "entrypoint": "index.js",
+        "sourceSize": 1843,
+        "buildSize": 0,
+        "totalSize": 1843,
+        "buildId": "",
+        "activate": True,
+        "screenshotLight": "",
+        "screenshotDark": "",
+        "status": status,
+        "buildLogs": logs,
+        "buildDuration": 0,
+        "providerRepositoryName": "",
+        "providerRepositoryOwner": "",
+        "providerRepositoryUrl": "",
+        "providerCommitHash": "",
+        "providerCommitAuthorUrl": "",
+        "providerCommitAuthor": "",
+        "providerCommitMessage": "",
+        "providerCommitUrl": "",
+        "providerBranch": "",
+        "providerBranchUrl": "",
+        **values,
+    }
 
 
 def _check(payload: Mapping[str, Any], secret: str | None) -> None:

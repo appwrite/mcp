@@ -36,6 +36,7 @@ Source lives in `src/mcp_server_appwrite/`:
 | `docs_source.py` | Fetches the published docs (`/docs/llms.txt` + per-page `.md` exports on appwrite.io) and chunks them for the index build. |
 | `docs_index.py` | Writes the index artifact deterministically and atomically: page and chunk hashes, reuse of cached chunk vectors, build lock, and the added/changed/removed page report. |
 | `events/` | MCP Events (behind `flags.EVENTS`, HTTP only): `catalog.py` (event catalog), `protocol.py` (capability, `events/list` and the subscribe methods), `subscriptions.py` + `webhooks.py` (`events/subscribe` / `events/unsubscribe`: one managed Appwrite webhook per subscription), `envelope.py` (subscription state sealed with the `mcp-event-subscriptions` JWE profile), `egress.py` + `delivery.py` (SSRF-safe signed delivery), `projection.py` + `ingress.py` (Appwrite webhook ingress at `/appwrite/webhooks/{id}`), `streams.py` + `bus.py` (push delivery: `events/stream`, behind `flags.EVENTS_PUSH`, with events routed between replicas over Redis pub/sub). See [docs/events.md](docs/events.md). |
+| `apps/` | MCP Apps (behind `flags.APPS`): `protocol.py` (the `io.modelcontextprotocol/ui` extension and per-client gating), `views.py` (`appwrite_show` and the view-only `appwrite_view_write`), `resource.py` (`ui://appwrite/view`, served from `assets/view.html`: plain JavaScript, no build step). See [docs/apps.md](docs/apps.md). |
 | `telemetry.py` | OpenTelemetry metrics layer (OTLP/HTTP). No-op unless an OTLP endpoint is configured and the transport is `http`. |
 | `data/` | Committed docs index artifact (`docs_index.npz`: vectors, chunk map, chunk hashes, embedded `meta.json`), shipped in the wheel/image. |
 
@@ -61,6 +62,11 @@ services) stays internal and is searched at runtime. API-key stdio uses a filter
 `appwrite_call_write_tool` and require `confirm_write=true`, so each exposed
 tool's annotations match every call it accepts. Large outputs are stored as MCP
 resources and returned as a preview + resource URI.
+
+With MCP Apps on (`flags.APPS`), hosts that render them also see
+`appwrite_show`, whose result the host renders as an interactive view
+(`ui://appwrite/view`), and the view can call `appwrite_view_write`, which the
+model never sees. See [docs/apps.md](docs/apps.md).
 
 ## Local development
 

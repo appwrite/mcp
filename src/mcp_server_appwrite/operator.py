@@ -15,6 +15,8 @@ import mcp.types as types
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 
 from . import telemetry
+from .apps import resource as view_resource
+from .apps.views import Views
 from .constants import (
     API_REFERENCE_URL,
     CALL_TOOL_NAME,
@@ -31,6 +33,7 @@ from .constants import (
     SEARCH_TOOL_NAME,
     UPDATE_HINTS,
     VERBS,
+    VIEW_URI,
     WRITE_TOOL_NAME,
 )
 from .docs_search import DocsSearch
@@ -74,10 +77,15 @@ class CatalogEntry:
         return WRITE_TOOL_NAME if self.mutating else CALL_TOOL_NAME
 
 
+ToolOutput = list[ToolContent] | types.CallToolResult
+"""A public tool's result: content, or a whole result when it also carries
+``structuredContent`` (the MCP Apps views)."""
+
+
 @dataclass(frozen=True)
 class PublicTool:
     tool: types.Tool
-    handler: Callable[[dict[str, Any]], list[ToolContent]]
+    handler: Callable[[dict[str, Any]], ToolOutput]
 
 
 @dataclass(frozen=True)
@@ -159,6 +167,10 @@ class Operator:
         self._cached_catalog_json = self._catalog_json()
         self._catalog_map = {entry.tool_name: entry for entry in self._catalog}
         self._public_tools = self._build_public_tools()
+        self._view_tools = {
+            tool.name: PublicTool(tool, handler)
+            for tool, handler in Views(self._run_hidden_tool).tools()
+        }
 
     def get_catalog_resource_uri(self) -> str:
         return CATALOG_URI
@@ -167,11 +179,15 @@ class Operator:
     def docs_enabled(self) -> bool:
         return self._docs_search is not None
 
-    def get_public_tools(self) -> list[types.Tool]:
-        return [public.tool for public in self._public_tools.values()]
+    def get_public_tools(self, *, apps: bool = False) -> list[types.Tool]:
+        """The exposed tools, with the MCP Apps view tools when ``apps``."""
+        return [public.tool for public in self._tools(apps).values()]
 
-    def has_public_tool(self, name: str) -> bool:
-        return name in self._public_tools
+    def has_public_tool(self, name: str, *, apps: bool = False) -> bool:
+        return name in self._tools(apps)
+
+    def _tools(self, apps: bool) -> dict[str, PublicTool]:
+        return self._public_tools | self._view_tools if apps else self._public_tools
 
     def _build_public_tools(self) -> dict[str, PublicTool]:
         tools = [
@@ -322,7 +338,7 @@ class Operator:
 
     def execute_public_tool(
         self, name: str, arguments: dict[str, Any] | None
-    ) -> list[ToolContent]:
+    ) -> ToolOutput:
         start = time.monotonic()
         status = "success"
         error_type: str | None = None
@@ -331,7 +347,15 @@ class Operator:
         telemetry.tool_call_started(name)
         try:
             result = self._dispatch_public_tool(name, arguments)
-            output_chars = _content_size(result)
+            output_chars = (
+                _content_size(result)
+                if isinstance(result, list)
+                else sum(
+                    len(item.text)
+                    for item in result.content
+                    if isinstance(item, types.TextContent)
+                )
+            )
             return result
         except Exception as exc:
             status = "error"
@@ -351,8 +375,8 @@ class Operator:
 
     def _dispatch_public_tool(
         self, name: str, arguments: dict[str, Any] | None
-    ) -> list[ToolContent]:
-        public = self._public_tools.get(name)
+    ) -> ToolOutput:
+        public = self._public_tools.get(name) or self._view_tools.get(name)
         if public is None:
             raise ValueError(f"Unknown public Appwrite tool {name}")
         return public.handler(arguments or {})
@@ -365,7 +389,7 @@ class Operator:
             context = {"notice": self._notice, **context}
         return [types.TextContent(type="text", text=json.dumps(context, indent=2))]
 
-    def list_resources(self) -> list[types.Resource]:
+    def list_resources(self, *, apps: bool = False) -> list[types.Resource]:
         resources = [
             types.Resource(
                 uri=CATALOG_URI,
@@ -375,6 +399,9 @@ class Operator:
                 size=len(self._cached_catalog_json.encode("utf-8")),
             )
         ]
+
+        if apps:
+            resources.append(view_resource.resource())
 
         for stored_result in self._result_store.list():
             resources.append(
@@ -402,11 +429,16 @@ class Operator:
             )
         ]
 
-    def read_resource(self, uri: str) -> list[ReadResourceContents]:
+    def read_resource(
+        self, uri: str, *, apps: bool = False
+    ) -> list[ReadResourceContents]:
         parsed = urlparse(uri)
 
         if uri == CATALOG_URI:
             return [ReadResourceContents(self._cached_catalog_json, "application/json")]
+
+        if apps and uri == VIEW_URI:
+            return [view_resource.read()]
 
         if (
             parsed.scheme == "appwrite"
@@ -539,6 +571,14 @@ class Operator:
         self, raw_arguments: dict[str, Any], *, write: bool
     ) -> list[ToolContent]:
         tool_name = raw_arguments.get("tool_name", raw_arguments.get("toolName"))
+        content = self._run_hidden_tool(raw_arguments, write)
+        return self._preview_or_store_result(str(tool_name), content)
+
+    def _run_hidden_tool(
+        self, raw_arguments: dict[str, Any], write: bool
+    ) -> list[ToolContent]:
+        """Validate and run a hidden tool, returning its whole result."""
+        tool_name = raw_arguments.get("tool_name", raw_arguments.get("toolName"))
         if not isinstance(tool_name, str) or not tool_name:
             raise ValueError("tool_name is required.")
 
@@ -590,10 +630,9 @@ class Operator:
                     "to select an organization, then retry with that organization ID."
                 )
         arguments_object = _normalize_arguments(raw_arguments)
-        result_content = self._execute_tool(
+        return self._execute_tool(
             tool_name, arguments_object, project_id, organization_id
         )
-        return self._preview_or_store_result(tool_name, result_content)
 
     def _preview_or_store_result(
         self, tool_name: str, content: list[ToolContent]
