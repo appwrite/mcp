@@ -25,6 +25,7 @@ from support import (
     Cloud,
     Project,
     Server,
+    collector,
     column,
     deployment,
     execution,
@@ -42,6 +43,10 @@ EXTENSION = "io.modelcontextprotocol/ui"
 MIME_TYPE = "text/html;profile=mcp-app"
 VIEW_URI = "ui://appwrite/view"
 UI = {"extensions": {EXTENSION: {"mimeTypes": [MIME_TYPE]}}}
+FROM_VIEW = {"io.appwrite/origin": "view"}
+"""The ``_meta`` the view sends on its own calls."""
+VIEWS = "mcp.apps.views"
+WRITES = "mcp.apps.writes"
 ROWS = 30
 PAGE = 25
 LOG_LINES = 250
@@ -225,10 +230,16 @@ class AppsFlow(unittest.TestCase):
         cls.host.__exit__(None, None, None)
         cls.server.__exit__(None, None, None)
 
-    def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        status, response = self.host.call(
-            "tools/call", {"name": name, "arguments": arguments}
-        )
+    def call(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"name": name, "arguments": arguments}
+        if meta is not None:
+            params["_meta"] = meta
+        status, response = self.host.call("tools/call", params)
         self.assertEqual(status, 200, response)
         return response["result"]
 
@@ -290,6 +301,9 @@ class AppsFlow(unittest.TestCase):
         # Appwrite data reaches the DOM as text only.
         self.assertNotIn("innerHTML", html)
         self.assertNotIn("insertAdjacentHTML", html)
+        # The view tags its own calls so telemetry can tell them apart.
+        self.assertIn('"io.appwrite/origin": "view"', html)
+        self.assertIn("_meta: ORIGIN", html)
         digest = hashlib.sha256(html.encode("utf-8")).hexdigest()[:12]
         self.assertEqual(uri, f"{VIEW_URI}/{digest}")
 
@@ -316,6 +330,8 @@ class AppsFlow(unittest.TestCase):
 
     def test_table_view_pages_through_rows(self):
         listed = cloud.calls("GET", rf"/v1/tablesdb/{DATABASE}/tables/{TABLE}/rows")
+        opened = collector().count(VIEWS, view="table", origin="model")
+        paged = collector().count(VIEWS, view="table", origin="view")
         result = self.show_table()
         data = result["structuredContent"]
         self.assertEqual(data["view"], "table")
@@ -353,9 +369,37 @@ class AppsFlow(unittest.TestCase):
             listed + 3,
         )
 
+        # The model opened the view; the view pages itself under its own origin.
+        self.call(
+            "appwrite_show",
+            {
+                "view": "table",
+                "project_id": PROJECT,
+                "database_id": DATABASE,
+                "table_id": TABLE,
+                "cursor": "ord_002",
+            },
+            meta=FROM_VIEW,
+        )
+        self.assertEqual(
+            collector().count(VIEWS, view="table", origin="view", status="success"),
+            paged + 1,
+        )
+        self.assertGreater(
+            collector().count(VIEWS, view="table", origin="model", status="success"),
+            opened,
+        )
+        self.assertEqual(
+            collector().count(VIEWS, view="table", origin="view"), paged + 1
+        )
+
     def test_view_writes_only_its_allowlist_and_only_when_confirmed(self):
         row_path = rf"/v1/tablesdb/{DATABASE}/tables/{TABLE}/rows/ord_001"
         writes = cloud.calls("PATCH", row_path)
+        action = "tables_db_update_row"
+        refused = collector().count(WRITES, action=action, status="error")
+        succeeded = collector().count(WRITES, action=action, status="success")
+        invalid = collector().count(WRITES, action="invalid")
         update = {
             "tool_name": "tables_db_update_row",
             "project_id": PROJECT,
@@ -396,6 +440,16 @@ class AppsFlow(unittest.TestCase):
         self.assertFalse(result.get("isError"), result)
         self.assertEqual(result["structuredContent"]["status"], "refunded")
         self.assertEqual(cloud.calls("PATCH", row_path), writes + 1)
+        # Every refusal and the write itself are counted by action; a tool off
+        # the allowlist is never named.
+        self.assertEqual(
+            collector().count(WRITES, action=action, status="error"), refused + 4
+        )
+        self.assertEqual(
+            collector().count(WRITES, action=action, status="success"), succeeded + 1
+        )
+        self.assertEqual(collector().count(WRITES, action="invalid"), invalid + 1)
+        self.assertEqual(collector().count(WRITES, action="tables_db_delete_row"), 0)
         last = self.show_table(cursor="ord_002")["structuredContent"]["rows"]
         self.assertEqual(last[0]["$id"], "ord_001")
         self.assertEqual(last[0]["status"], "refunded")
@@ -733,6 +787,8 @@ class AppsFlow(unittest.TestCase):
         self.assertIn("limit_history_exceeded", refused["content"][0]["text"])
 
     def test_bad_requests_are_tool_errors(self):
+        invalid = collector().count(VIEWS, view="invalid", status="error")
+        files = collector().count(VIEWS, view="files", status="error")
         cases = [
             (
                 {"view": "chart"},
@@ -773,6 +829,14 @@ class AppsFlow(unittest.TestCase):
                 result = self.call("appwrite_show", arguments)
                 self.assertTrue(result["isError"])
                 self.assertIn(error, result["content"][0]["text"])
+        # An unknown view name is not a label; a known one fails under its name.
+        self.assertEqual(
+            collector().count(VIEWS, view="invalid", status="error"), invalid + 1
+        )
+        self.assertEqual(collector().count(VIEWS, view="chart"), 0)
+        self.assertEqual(
+            collector().count(VIEWS, view="files", status="error"), files + 1
+        )
 
 
 if __name__ == "__main__":

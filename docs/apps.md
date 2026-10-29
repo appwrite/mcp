@@ -48,6 +48,24 @@ text summary. 2026-07-28 clients send `clientCapabilities` with every request,
 and stdio has the handshake, so both are gated exactly. `tools/call` is not
 gated, because the view's own calls reach the server through the host.
 
+## Telemetry
+
+On the hosted transport, two counters show which views people use:
+
+- `mcp.apps.views` counts `appwrite_show` calls by `view` (`invalid` for a name
+  that is not one), `status` (`success` or `error`), `client_id`, and `origin`:
+  `model` when the model opens a view, `view` when the view refreshes, pages,
+  polls a build or opens a row on its own. Views opened per view type is
+  `origin="model"`; how much people then use each view is `origin="view"`.
+- `mcp.apps.writes` counts `appwrite_view_write` calls by `action` (the
+  allowlisted write, or `invalid`), `status` and `client_id`.
+
+The view marks its own calls with `"io.appwrite/origin": "view"` in the
+request's `_meta`. Hosts forward a view's `tools/call` params as sent; a host
+that drops `_meta` makes those calls count as `origin="model"`. Both counters
+feed the MCP Apps row of the MCP dashboard (appwrite-labs/monitoring
+`dashboards/Cloud/mcp.json`).
+
 ## Security
 
 - The resource declares no CSP domains, so hosts apply the spec's restrictive

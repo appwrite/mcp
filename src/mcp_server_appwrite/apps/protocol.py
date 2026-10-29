@@ -19,6 +19,8 @@ Apps are offered behind the ``apps`` flag (``MCP_APPS``); see :func:`enabled`.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextvars import ContextVar
+from enum import StrEnum
 from typing import Any
 
 from mcp.server import Server, ServerRequestContext
@@ -33,6 +35,22 @@ MIME_TYPE = "text/html;profile=mcp-app"
 """The only UI resource type the extension defines."""
 
 SETTINGS: dict[str, Any] = {"mimeTypes": [MIME_TYPE]}
+
+ORIGIN_META_KEY = "io.appwrite/origin"
+"""The request ``_meta`` key the view sets to ``"view"`` on its own calls, so
+telemetry can tell a view refreshing and paging itself from the model opening
+one. Hosts forward a view's ``tools/call`` params as sent; a host that drops
+``_meta`` makes those calls count as the model's."""
+
+
+class Origin(StrEnum):
+    MODEL = "model"
+    VIEW = "view"
+
+
+_origin: ContextVar[Origin] = ContextVar(
+    "appwrite_mcp_apps_origin", default=Origin.MODEL
+)
 
 
 def enabled() -> bool:
@@ -54,6 +72,20 @@ def supported(context: ServerRequestContext[Any, Any]) -> bool:
         return False
     mime_types = settings.get("mimeTypes")
     return not isinstance(mime_types, list) or MIME_TYPE in mime_types
+
+
+def bind_origin(context: ServerRequestContext[Any, Any]) -> None:
+    """Remember who made this ``tools/call``: the view, when its ``_meta``
+    says so, else the model. Contextvars reach the worker thread that runs the
+    tool."""
+    meta = context.meta
+    from_view = isinstance(meta, Mapping) and meta.get(ORIGIN_META_KEY) == Origin.VIEW
+    _origin.set(Origin.VIEW if from_view else Origin.MODEL)
+
+
+def origin() -> Origin:
+    """Who made the ``tools/call`` being served."""
+    return _origin.get()
 
 
 def register(server: Server[Any]) -> None:
