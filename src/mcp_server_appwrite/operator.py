@@ -395,11 +395,7 @@ class Operator:
     def _dispatch_public_tool(
         self, name: str, arguments: dict[str, Any] | None
     ) -> ToolOutput:
-        if (
-            self._zero is not None
-            and not self._zero.ready
-            and name in _PROJECT_TOOLS
-        ):
+        if self._zero is not None and not self._zero.ready and name in _PROJECT_TOOLS:
             raise ValueError(
                 "No Appwrite project is configured. Call "
                 f"{ZERO_CREATE_TOOL_NAME} to create a temporary one, or set "
