@@ -2134,5 +2134,144 @@ class RegionRoutingTests(unittest.TestCase):
         self.assertEqual(client._endpoint, "https://sgp.cloud.appwrite.io/v1")
 
 
+class ZeroModeTests(unittest.TestCase):
+    """Credential-less stdio: ``run_stdio`` with neither APPWRITE_PROJECT_ID nor
+    APPWRITE_API_KEY, against a local Appwrite that serves ``POST /v1/zero`` and
+    the API of the project it hands out under a different path."""
+
+    def setUp(self):
+        self.requests = []
+        requests = self.requests
+
+        class Handler(_SilentHTTPRequestHandler):
+            protocol_version = "HTTP/1.0"
+
+            def _record(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(length) if length else b""
+                requests.append(
+                    {
+                        "method": self.command,
+                        "path": self.path,
+                        "headers": {k.lower(): v for k, v in self.headers.items()},
+                        "body": json.loads(body) if body else None,
+                    }
+                )
+
+            def do_POST(self):
+                self._record()
+                port = self.server.server_address[1]
+                manifest = {
+                    "$id": "zero1",
+                    "secret": "zero-secret",
+                    "endpoint": f"http://127.0.0.1:{port}/zero-region/v1",
+                    "projectId": "zero-project",
+                    "apiKey": "zero-key",
+                    "claimUrl": "https://cloud.appwrite.io/claim/zero1",
+                    "expiresAt": "2026-10-30T01:00:00.000+00:00",
+                    "claimBy": "2026-11-06T00:00:00.000+00:00",
+                }
+                _write_http(
+                    self,
+                    201,
+                    {"Content-Type": "application/json"},
+                    json.dumps(manifest).encode(),
+                )
+
+            def do_GET(self):
+                self._record()
+                _write_http(
+                    self,
+                    200,
+                    {"Content-Type": "application/json"},
+                    json.dumps({"total": 0, "users": []}).encode(),
+                )
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.operator = self._start_stdio(
+            f"http://127.0.0.1:{self.server.server_address[1]}/v1"
+        )
+
+    def _start_stdio(self, endpoint):
+        operators = []
+        real_build_operator = server_module.build_operator
+
+        def spy_build_operator(*args, **kwargs):
+            operator = real_build_operator(*args, **kwargs)
+            operators.append(operator)
+            return operator
+
+        async def skip_run(*args, **kwargs):
+            return None
+
+        @contextlib.asynccontextmanager
+        async def fake_stdio_server():
+            yield (Mock(), Mock())
+
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in {"APPWRITE_PROJECT_ID", "APPWRITE_API_KEY"}
+        }
+        environment["APPWRITE_ENDPOINT"] = endpoint
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch.object(server_module, "load_environment"),
+            patch.object(server_module, "build_operator", spy_build_operator),
+            patch.object(server_module.Server, "run", skip_run),
+            patch("mcp.server.stdio.stdio_server", fake_stdio_server),
+            patch("sys.stderr", new_callable=io.StringIO),
+        ):
+            asyncio.run(server_module.run_stdio())
+        (operator,) = operators
+        return operator
+
+    def test_create_points_later_tool_calls_at_the_zero_project(self):
+        created = self.operator.execute_public_tool("appwrite_create_zero_project", {})
+        self.assertIn("https://cloud.appwrite.io/claim/zero1", created[0].text)
+
+        self.operator.execute_public_tool(
+            "appwrite_call_tool", {"tool_name": "users_list"}
+        )
+
+        zero, users = self.requests
+        self.assertEqual(zero["method"], "POST")
+        self.assertEqual(zero["path"], "/v1/zero")
+        self.assertEqual(zero["body"], {"source": "mcp"})
+        self.assertEqual(zero["headers"]["x-appwrite-project"], "console")
+        self.assertNotIn("x-appwrite-key", zero["headers"])
+        self.assertEqual(users["method"], "GET")
+        self.assertTrue(users["path"].startswith("/zero-region/v1/users"))
+        self.assertEqual(users["headers"]["x-appwrite-project"], "zero-project")
+        self.assertEqual(users["headers"]["x-appwrite-key"], "zero-key")
+
+    def test_project_tools_refuse_before_a_zero_project_exists(self):
+        names = {tool.name for tool in self.operator.get_public_tools(apps=True)}
+        self.assertTrue(
+            {"appwrite_create_zero_project", "appwrite_get_zero_project"} <= names
+        )
+        for name in (
+            "appwrite_get_context",
+            "appwrite_call_tool",
+            "appwrite_call_write_tool",
+            "appwrite_show",
+            "appwrite_view_write",
+        ):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, "appwrite_create_zero_project"):
+                    self.operator.execute_public_tool(
+                        name, {"tool_name": "users_list", "confirm_write": True}
+                    )
+
+        searched = self.operator.execute_public_tool(
+            "appwrite_search_tools", {"query": "list users"}
+        )
+        self.assertIn("users_list", searched[0].text)
+        self.assertEqual(self.requests, [])
+
+
 if __name__ == "__main__":
     unittest.main()
