@@ -50,6 +50,10 @@ _ERRORS = {
 }
 
 
+class _NotFound(Exception):
+    """``zero_not_found``: the project is no longer an unclaimed Zero project."""
+
+
 class Zero:
     """Creates Zero projects and re-points ``client`` at the latest one."""
 
@@ -108,16 +112,18 @@ class Zero:
                     idempotent_hint=True,
                 ),
                 description=(
-                    "Get the status, expiresAt and claimBy of an Appwrite Zero "
-                    f"project. Defaults to the project {ZERO_CREATE_TOOL_NAME} "
-                    "created in this session."
+                    "Get the status (active or expired), expiresAt and claimBy of "
+                    "an unclaimed Appwrite Zero project. Defaults to the project "
+                    f"{ZERO_CREATE_TOOL_NAME} created in this session. A project "
+                    "that was claimed or deleted is reported as no longer an "
+                    "unclaimed Zero project."
                 ),
                 input_schema={
                     "type": "object",
                     "properties": {
                         "zero_id": {
                             "type": "string",
-                            "description": "Zero project ID ($id). Defaults to this session's.",
+                            "description": "Zero project ID ($id, the same as projectId). Defaults to this session's.",
                         },
                         "secret": {
                             "type": "string",
@@ -168,7 +174,21 @@ class Zero:
                 f"zero_id and secret are required until {ZERO_CREATE_TOOL_NAME} "
                 "has created a project in this session."
             )
-        status = self._request("get", f"/zero/{zero_id}", params={"secret": secret})
+        try:
+            status = self._request("get", f"/zero/{zero_id}", params={"secret": secret})
+        except _NotFound:
+            # A uniform 404 covers claimed, deleted, unknown ID and wrong secret,
+            # so the endpoint cannot say which.
+            return [
+                types.TextContent(
+                    type="text",
+                    text=(
+                        f"{zero_id} is no longer an unclaimed Zero project: it was "
+                        "claimed or deleted (or the ID or secret is wrong). If the "
+                        "user claimed it, it lives on in their Appwrite account."
+                    ),
+                )
+            ]
         return [types.TextContent(type="text", text=json.dumps(status, indent=2))]
 
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
@@ -193,6 +213,8 @@ class Zero:
             return body
 
         error_type = body.get("type", "") if isinstance(body, dict) else ""
+        if error_type == "zero_not_found":
+            raise _NotFound()
         message = body.get("message", "") if isinstance(body, dict) else ""
         if response.status_code == 429:
             guidance = (

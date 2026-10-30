@@ -2142,6 +2142,10 @@ class ZeroModeTests(unittest.TestCase):
     def setUp(self):
         self.requests = []
         requests = self.requests
+        # GET /v1/zero/{id} answers 200 while the project is active or expired,
+        # and a uniform 404 zero_not_found once it is claimed or deleted (or the
+        # ID or secret is wrong).
+        zero_status = self.zero_status = [200, {}]
 
         class Handler(_SilentHTTPRequestHandler):
             protocol_version = "HTTP/1.0"
@@ -2162,7 +2166,7 @@ class ZeroModeTests(unittest.TestCase):
                 self._record()
                 port = self.server.server_address[1]
                 manifest = {
-                    "$id": "zero1",
+                    "$id": "zero-project",
                     "secret": "zero-secret",
                     "endpoint": f"http://127.0.0.1:{port}/zero-region/v1",
                     "projectId": "zero-project",
@@ -2180,11 +2184,16 @@ class ZeroModeTests(unittest.TestCase):
 
             def do_GET(self):
                 self._record()
+                status, body = (
+                    zero_status
+                    if self.path.startswith("/v1/zero/")
+                    else (200, {"total": 0, "users": []})
+                )
                 _write_http(
                     self,
-                    200,
+                    status,
                     {"Content-Type": "application/json"},
-                    json.dumps({"total": 0, "users": []}).encode(),
+                    json.dumps(body).encode(),
                 )
 
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -2247,6 +2256,43 @@ class ZeroModeTests(unittest.TestCase):
         self.assertTrue(users["path"].startswith("/zero-region/v1/users"))
         self.assertEqual(users["headers"]["x-appwrite-project"], "zero-project")
         self.assertEqual(users["headers"]["x-appwrite-key"], "zero-key")
+
+    def test_status_reads_this_session_zero_project(self):
+        self.operator.execute_public_tool("appwrite_create_zero_project", {})
+        self.zero_status[1] = {
+            "$id": "zero-project",
+            "secret": "zero-secret",
+            "status": "active",
+        }
+
+        result = self.operator.execute_public_tool("appwrite_get_zero_project", {})
+
+        self.assertEqual(json.loads(result[0].text)["status"], "active")
+        status = self.requests[-1]
+        self.assertEqual(status["method"], "GET")
+        self.assertEqual(status["path"], "/v1/zero/zero-project?secret=zero-secret")
+        self.assertNotIn("x-appwrite-key", status["headers"])
+
+    def test_status_reports_a_claimed_or_deleted_project_as_no_longer_unclaimed(
+        self,
+    ):
+        self.operator.execute_public_tool("appwrite_create_zero_project", {})
+        self.zero_status[:] = [
+            404,
+            {
+                "message": "Zero project not found.",
+                "code": 404,
+                "type": "zero_not_found",
+            },
+        ]
+
+        result = self.operator.execute_public_tool("appwrite_get_zero_project", {})
+
+        self.assertIn("no longer an unclaimed Zero project", result[0].text)
+        self.assertIn("claimed or deleted", result[0].text)
+        self.assertEqual(
+            self.requests[-1]["path"], "/v1/zero/zero-project?secret=zero-secret"
+        )
 
     def test_project_tools_refuse_before_a_zero_project_exists(self):
         names = {tool.name for tool in self.operator.get_public_tools(apps=True)}
