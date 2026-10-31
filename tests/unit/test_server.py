@@ -23,6 +23,7 @@ from appwrite_console.input_file import InputFile
 from appwrite_console.models.row_list import RowList
 
 from mcp_server_appwrite import server as server_module
+from mcp_server_appwrite import zero as zero_module
 from mcp_server_appwrite.catalog_policy import API_KEY_PROFILE, OAUTH_PROFILE
 from mcp_server_appwrite.error_classification import WriteConfirmationRequired
 from mcp_server_appwrite.server import (
@@ -2132,6 +2133,249 @@ class RegionRoutingTests(unittest.TestCase):
         # _endpoint is SDK-internal, but it is the only place the resolved
         # endpoint is observable without a network call (context.py reads it too).
         self.assertEqual(client._endpoint, "https://sgp.cloud.appwrite.io/v1")
+
+
+class ZeroModeTests(unittest.TestCase):
+    """Credential-less stdio: ``run_stdio`` with neither APPWRITE_PROJECT_ID nor
+    APPWRITE_API_KEY, against a local Appwrite that serves ``POST /v1/zero`` and
+    the API of the project it hands out under a different path."""
+
+    def setUp(self):
+        self.requests = []
+        requests = self.requests
+        # GET /v1/zero/{id} answers 200 while the project is active or expired,
+        # and a uniform 404 zero_not_found once it is claimed or deleted (or the
+        # ID or secret is wrong).
+        zero_status = self.zero_status = [200, {}]
+
+        class Handler(_SilentHTTPRequestHandler):
+            protocol_version = "HTTP/1.0"
+
+            def _record(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(length) if length else b""
+                requests.append(
+                    {
+                        "method": self.command,
+                        "path": self.path,
+                        "headers": {k.lower(): v for k, v in self.headers.items()},
+                        "body": json.loads(body) if body else None,
+                    }
+                )
+
+            def do_POST(self):
+                self._record()
+                # Like Appwrite Cloud, report the host that served the create.
+                manifest = {
+                    "$id": "zero-project",
+                    "secret": "zero-secret",
+                    "endpoint": f"http://{self.headers['Host']}/zero-region/v1",
+                    "projectId": "zero-project",
+                    "apiKey": "zero-key",
+                    "claimUrl": "https://cloud.appwrite.io/claim/zero1",
+                    "expiresAt": "2026-10-30T01:00:00.000+00:00",
+                    "claimBy": "2026-11-06T00:00:00.000+00:00",
+                }
+                _write_http(
+                    self,
+                    201,
+                    {"Content-Type": "application/json"},
+                    json.dumps(manifest).encode(),
+                )
+
+            def do_GET(self):
+                self._record()
+                status, body = (
+                    zero_status
+                    if self.path.startswith("/v1/zero/")
+                    else (200, {"total": 0, "users": []})
+                )
+                _write_http(
+                    self,
+                    status,
+                    {"Content-Type": "application/json"},
+                    json.dumps(body).encode(),
+                )
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.operator = self._start_stdio(
+            f"http://127.0.0.1:{self.server.server_address[1]}/v1"
+        )
+
+    def _start_stdio(self, endpoint):
+        operators = []
+        real_build_operator = server_module.build_operator
+
+        def spy_build_operator(*args, **kwargs):
+            operator = real_build_operator(*args, **kwargs)
+            operators.append(operator)
+            return operator
+
+        async def skip_run(*args, **kwargs):
+            return None
+
+        @contextlib.asynccontextmanager
+        async def fake_stdio_server():
+            yield (Mock(), Mock())
+
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in {"APPWRITE_PROJECT_ID", "APPWRITE_API_KEY"}
+        }
+        environment["APPWRITE_ENDPOINT"] = endpoint
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch.object(server_module, "load_environment"),
+            patch.object(server_module, "build_operator", spy_build_operator),
+            patch.object(server_module.Server, "run", skip_run),
+            patch("mcp.server.stdio.stdio_server", fake_stdio_server),
+            patch("sys.stderr", new_callable=io.StringIO),
+        ):
+            asyncio.run(server_module.run_stdio())
+        (operator,) = operators
+        return operator
+
+    def test_create_points_later_tool_calls_at_the_zero_project(self):
+        created = self.operator.execute_public_tool("appwrite_create_zero_project", {})
+        self.assertIn("https://cloud.appwrite.io/claim/zero1", created[0].text)
+
+        self.operator.execute_public_tool(
+            "appwrite_call_tool", {"tool_name": "users_list"}
+        )
+
+        zero, users = self.requests
+        self.assertEqual(zero["method"], "POST")
+        self.assertEqual(zero["path"], "/v1/zero")
+        self.assertEqual(zero["body"], {"source": "mcp"})
+        self.assertEqual(zero["headers"]["x-appwrite-project"], "console")
+        self.assertNotIn("x-appwrite-key", zero["headers"])
+        self.assertEqual(users["method"], "GET")
+        self.assertTrue(users["path"].startswith("/zero-region/v1/users"))
+        self.assertEqual(users["headers"]["x-appwrite-project"], "zero-project")
+        self.assertEqual(users["headers"]["x-appwrite-key"], "zero-key")
+
+    def test_status_reads_this_session_zero_project(self):
+        self.operator.execute_public_tool("appwrite_create_zero_project", {})
+        self.zero_status[1] = {
+            "$id": "zero-project",
+            "secret": "zero-secret",
+            "status": "active",
+        }
+
+        result = self.operator.execute_public_tool("appwrite_get_zero_project", {})
+
+        self.assertEqual(json.loads(result[0].text)["status"], "active")
+        status = self.requests[-1]
+        self.assertEqual(status["method"], "GET")
+        self.assertEqual(status["path"], "/v1/zero/zero-project?secret=zero-secret")
+        self.assertNotIn("x-appwrite-key", status["headers"])
+
+    def test_status_reports_a_claimed_or_deleted_project_as_no_longer_unclaimed(
+        self,
+    ):
+        self.operator.execute_public_tool("appwrite_create_zero_project", {})
+        self.zero_status[:] = [
+            404,
+            {
+                "message": "Zero project not found.",
+                "code": 404,
+                "type": "zero_not_found",
+            },
+        ]
+
+        result = self.operator.execute_public_tool("appwrite_get_zero_project", {})
+
+        self.assertIn("no longer an unclaimed Zero project", result[0].text)
+        self.assertIn("claimed or deleted", result[0].text)
+        self.assertEqual(
+            self.requests[-1]["path"], "/v1/zero/zero-project?secret=zero-secret"
+        )
+
+    def test_region_creates_and_keeps_the_project_on_the_regional_host(self):
+        port = self.server.server_address[1]
+        default = f"http://zero.test:{port}/v1"
+        real_getaddrinfo = socket.getaddrinfo
+
+        def resolve_zero_test(host, *args, **kwargs):
+            if host == "zero.test" or str(host).endswith(".zero.test"):
+                host = "127.0.0.1"
+            return real_getaddrinfo(host, *args, **kwargs)
+
+        with (
+            patch.object(zero_module, "DEFAULT_ENDPOINT", default),
+            patch("socket.getaddrinfo", resolve_zero_test),
+        ):
+            operator = self._start_stdio(default)
+            operator.execute_public_tool(
+                "appwrite_create_zero_project", {"region": "fra"}
+            )
+            operator.execute_public_tool(
+                "appwrite_call_tool", {"tool_name": "users_list"}
+            )
+            operator.execute_public_tool("appwrite_get_zero_project", {})
+
+        zero, users, status = self.requests
+        regional = f"fra.zero.test:{port}"
+        self.assertEqual(zero["path"], "/v1/zero")
+        self.assertEqual(zero["headers"]["host"], regional)
+        self.assertEqual(users["headers"]["host"], regional)
+        self.assertEqual(users["headers"]["x-appwrite-key"], "zero-key")
+        self.assertEqual(status["headers"]["host"], regional)
+        self.assertEqual(status["path"], "/v1/zero/zero-project?secret=zero-secret")
+
+    def test_region_with_a_custom_endpoint_is_refused_before_any_request(self):
+        with self.assertRaisesRegex(ValueError, "APPWRITE_ENDPOINT"):
+            self.operator.execute_public_tool(
+                "appwrite_create_zero_project", {"region": "fra"}
+            )
+
+        self.assertEqual(self.requests, [])
+        with self.assertRaisesRegex(ValueError, "appwrite_create_zero_project"):
+            self.operator.execute_public_tool(
+                "appwrite_call_tool", {"tool_name": "users_list"}
+            )
+
+    def test_unknown_region_is_refused_with_the_valid_ones(self):
+        with self.assertRaisesRegex(ValueError, "fra, nyc"):
+            self.operator.execute_public_tool(
+                "appwrite_create_zero_project", {"region": "frankfurt"}
+            )
+
+        self.assertEqual(self.requests, [])
+        (tool,) = [
+            tool
+            for tool in self.operator.get_public_tools(apps=True)
+            if tool.name == "appwrite_create_zero_project"
+        ]
+        self.assertIn("fra", tool.input_schema["properties"]["region"]["enum"])
+
+    def test_project_tools_refuse_before_a_zero_project_exists(self):
+        names = {tool.name for tool in self.operator.get_public_tools(apps=True)}
+        self.assertTrue(
+            {"appwrite_create_zero_project", "appwrite_get_zero_project"} <= names
+        )
+        for name in (
+            "appwrite_get_context",
+            "appwrite_call_tool",
+            "appwrite_call_write_tool",
+            "appwrite_show",
+            "appwrite_view_write",
+        ):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, "appwrite_create_zero_project"):
+                    self.operator.execute_public_tool(
+                        name, {"tool_name": "users_list", "confirm_write": True}
+                    )
+
+        searched = self.operator.execute_public_tool(
+            "appwrite_search_tools", {"query": "list users"}
+        )
+        self.assertIn("users_list", searched[0].text)
+        self.assertEqual(self.requests, [])
 
 
 if __name__ == "__main__":
