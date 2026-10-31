@@ -23,6 +23,7 @@ from appwrite_console.input_file import InputFile
 from appwrite_console.models.row_list import RowList
 
 from mcp_server_appwrite import server as server_module
+from mcp_server_appwrite import zero as zero_module
 from mcp_server_appwrite.catalog_policy import API_KEY_PROFILE, OAUTH_PROFILE
 from mcp_server_appwrite.error_classification import WriteConfirmationRequired
 from mcp_server_appwrite.server import (
@@ -2164,11 +2165,11 @@ class ZeroModeTests(unittest.TestCase):
 
             def do_POST(self):
                 self._record()
-                port = self.server.server_address[1]
+                # Like Appwrite Cloud, report the host that served the create.
                 manifest = {
                     "$id": "zero-project",
                     "secret": "zero-secret",
-                    "endpoint": f"http://127.0.0.1:{port}/zero-region/v1",
+                    "endpoint": f"http://{self.headers['Host']}/zero-region/v1",
                     "projectId": "zero-project",
                     "apiKey": "zero-key",
                     "claimUrl": "https://cloud.appwrite.io/claim/zero1",
@@ -2293,6 +2294,64 @@ class ZeroModeTests(unittest.TestCase):
         self.assertEqual(
             self.requests[-1]["path"], "/v1/zero/zero-project?secret=zero-secret"
         )
+
+    def test_region_creates_and_keeps_the_project_on_the_regional_host(self):
+        port = self.server.server_address[1]
+        default = f"http://zero.test:{port}/v1"
+        real_getaddrinfo = socket.getaddrinfo
+
+        def resolve_zero_test(host, *args, **kwargs):
+            if host == "zero.test" or str(host).endswith(".zero.test"):
+                host = "127.0.0.1"
+            return real_getaddrinfo(host, *args, **kwargs)
+
+        with (
+            patch.object(zero_module, "DEFAULT_ENDPOINT", default),
+            patch("socket.getaddrinfo", resolve_zero_test),
+        ):
+            operator = self._start_stdio(default)
+            operator.execute_public_tool(
+                "appwrite_create_zero_project", {"region": "fra"}
+            )
+            operator.execute_public_tool(
+                "appwrite_call_tool", {"tool_name": "users_list"}
+            )
+            operator.execute_public_tool("appwrite_get_zero_project", {})
+
+        zero, users, status = self.requests
+        regional = f"fra.zero.test:{port}"
+        self.assertEqual(zero["path"], "/v1/zero")
+        self.assertEqual(zero["headers"]["host"], regional)
+        self.assertEqual(users["headers"]["host"], regional)
+        self.assertEqual(users["headers"]["x-appwrite-key"], "zero-key")
+        self.assertEqual(status["headers"]["host"], regional)
+        self.assertEqual(status["path"], "/v1/zero/zero-project?secret=zero-secret")
+
+    def test_region_with_a_custom_endpoint_is_refused_before_any_request(self):
+        with self.assertRaisesRegex(ValueError, "APPWRITE_ENDPOINT"):
+            self.operator.execute_public_tool(
+                "appwrite_create_zero_project", {"region": "fra"}
+            )
+
+        self.assertEqual(self.requests, [])
+        with self.assertRaisesRegex(ValueError, "appwrite_create_zero_project"):
+            self.operator.execute_public_tool(
+                "appwrite_call_tool", {"tool_name": "users_list"}
+            )
+
+    def test_unknown_region_is_refused_with_the_valid_ones(self):
+        with self.assertRaisesRegex(ValueError, "fra, nyc"):
+            self.operator.execute_public_tool(
+                "appwrite_create_zero_project", {"region": "frankfurt"}
+            )
+
+        self.assertEqual(self.requests, [])
+        (tool,) = [
+            tool
+            for tool in self.operator.get_public_tools(apps=True)
+            if tool.name == "appwrite_create_zero_project"
+        ]
+        self.assertIn("fra", tool.input_schema["properties"]["region"]["enum"])
 
     def test_project_tools_refuse_before_a_zero_project_exists(self):
         names = {tool.name for tool in self.operator.get_public_tools(apps=True)}

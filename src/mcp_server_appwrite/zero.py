@@ -11,6 +11,11 @@ so the whole catalog works against the new project for the rest of the session.
 The API key is valid until ``expiresAt``. The project is kept only if the human
 opens ``claimUrl`` and signs in before ``claimBy``; otherwise it is deleted, so
 the agent must hand that link to the user.
+
+The project lands in whichever region serves ``POST /zero``; the default
+endpoint is geo-routed. An optional ``region`` sends the request to that
+region's host instead (``https://<region>.cloud.appwrite.io/v1``), so no API
+change is needed to pick one.
 """
 
 from __future__ import annotations
@@ -21,10 +26,12 @@ from typing import Any
 import httpx
 import mcp.types as types
 from appwrite_console.client import Client
+from appwrite_console.enums.region import Region
 
 from .constants import (
     CALL_TOOL_NAME,
     CONTEXT_TOOL_NAME,
+    DEFAULT_ENDPOINT,
     DEFAULT_PROJECT_ID,
     SEARCH_TOOL_NAME,
     SERVER_VERSION,
@@ -39,6 +46,7 @@ ToolContent = types.TextContent | types.ImageContent | types.EmbeddedResource
 
 _CREATE_TITLE = "Create Appwrite Zero project"
 _GET_TITLE = "Get Appwrite Zero project"
+_REGIONS = [region.value for region in Region]
 
 _ERRORS = {
     "zero_unavailable": (
@@ -59,6 +67,9 @@ class Zero:
 
     def __init__(self, client: Client, endpoint: str):
         self._client = client
+        # The configured endpoint; a regional create leaves it untouched.
+        self._configured = endpoint
+        # Where /zero is called: the regional host once a project was created there.
         self._endpoint = endpoint
         self._manifest: dict[str, Any] | None = None
 
@@ -93,11 +104,19 @@ class Zero:
                     "you fetch a domain, and give the user "
                     "https://<domain>/__appwrite/zero?token=<accessToken> to open one "
                     "in a browser. "
-                    "Use this only when the user has no Appwrite project of their own."
+                    "Use this only when the user has no Appwrite project of their own. "
+                    "Pass region to choose where the project lives; by default it "
+                    "is the region nearest to this machine."
                 ),
                 input_schema={
                     "type": "object",
-                    "properties": {},
+                    "properties": {
+                        "region": {
+                            "type": "string",
+                            "enum": _REGIONS,
+                            "description": "Appwrite Cloud region for the project. Defaults to the nearest one.",
+                        },
+                    },
                     "additionalProperties": False,
                 },
             ),
@@ -140,14 +159,30 @@ class Zero:
 
     def execute(self, name: str, arguments: dict[str, Any]) -> list[ToolContent]:
         if name == ZERO_CREATE_TOOL_NAME:
-            return self._create()
+            return self._create(arguments.get("region"))
         if name == ZERO_GET_TOOL_NAME:
             return self._get(arguments)
         raise ValueError(f"Unknown Appwrite Zero tool {name}")
 
-    def _create(self) -> list[ToolContent]:
-        manifest = self._request("post", "/zero", json={"source": ZERO_SOURCE})
-        endpoint = str(manifest.get("endpoint") or self._endpoint).rstrip("/")
+    def _create(self, region: Any) -> list[ToolContent]:
+        base = self._configured
+        if region is not None:
+            if region not in _REGIONS:
+                raise ValueError(
+                    f"Unknown region {region!r}. Use one of: {', '.join(_REGIONS)}."
+                )
+            if self._configured != DEFAULT_ENDPOINT:
+                raise ValueError(
+                    f"region works only with the Appwrite Cloud endpoint "
+                    f"{DEFAULT_ENDPOINT}; APPWRITE_ENDPOINT is {self._configured}. "
+                    "Unset it or omit region."
+                )
+            base = DEFAULT_ENDPOINT.replace("://", f"://{region}.", 1)
+        manifest = self._request(
+            "post", "/zero", endpoint=base, json={"source": ZERO_SOURCE}
+        )
+        self._endpoint = base
+        endpoint = str(manifest.get("endpoint") or base).rstrip("/")
         self._client.set_endpoint(endpoint)
         self._client.set_project(manifest["projectId"])
         self._client.set_key(manifest["apiKey"])
@@ -191,13 +226,15 @@ class Zero:
             ]
         return [types.TextContent(type="text", text=json.dumps(status, indent=2))]
 
-    def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+    def _request(
+        self, method: str, path: str, endpoint: str | None = None, **kwargs: Any
+    ) -> dict[str, Any]:
         # A plain HTTP client rather than the SDK one: the SDK client carries the
         # current Zero project's API key, and /zero must be called without auth.
         with httpx.Client(timeout=ZERO_TIMEOUT_SECONDS) as http:
             response = http.request(
                 method,
-                f"{self._endpoint}{path}",
+                f"{endpoint or self._endpoint}{path}",
                 headers={
                     "x-appwrite-project": DEFAULT_PROJECT_ID,
                     "x-sdk-name": "mcp",
