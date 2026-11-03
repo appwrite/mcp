@@ -43,6 +43,31 @@ For a local Docker Appwrite instance the endpoint is typically
 `http://localhost:9501/v1` (HTTP, not HTTPS). The value must be the API base
 (`…/v1`), not the Console URL.
 
+## Project environments
+
+On Appwrite Cloud, a project can have environments (for example `staging`).
+To point a local server at one, keep `APPWRITE_PROJECT_ID` set to the ID of
+the project it belongs to and add the environment's ID:
+
+```bash
+APPWRITE_PROJECT_ID=<YOUR_PROJECT_ID> \
+APPWRITE_ENVIRONMENT_ID=staging \
+APPWRITE_API_KEY=<YOUR_API_KEY> \
+uvx mcp-server-appwrite
+```
+
+Every request then carries `X-Appwrite-Environment: staging` next to the
+project's ID. The environment is fixed for the server's lifetime: a tool call
+that names another `environment_id` is refused rather than run in this one.
+Run one server per environment you want the agent to reach.
+
+## Reasons on writes
+
+Every write the agent makes through `appwrite_call_write_tool` carries a
+one-line `reason`, which Appwrite records on the project's audit log
+(`X-Appwrite-Reason`). Self-hosted Appwrite versions that predate the header
+ignore it.
+
 ## Connect your client
 
 <details open>
