@@ -13,7 +13,8 @@ operator-style tools, supporting two deployments from one codebase:
   Appwrite REST API. Served primarily at `mcp.appwrite.io/`, with `/mcp` also
   available as a conventional alias.
 - **Self-hosted (`stdio`):** runs locally and authenticates with a project API
-  key (`APPWRITE_PROJECT_ID`, `APPWRITE_API_KEY`, `APPWRITE_ENDPOINT`).
+  key (`APPWRITE_PROJECT_ID`, `APPWRITE_API_KEY`, `APPWRITE_ENDPOINT`, and
+  optionally `APPWRITE_ENVIRONMENT_ID` for a project environment).
 
 Python ≥ 3.12, packaged with `hatchling`, managed with `uv`.
 
@@ -31,7 +32,8 @@ Source lives in `src/mcp_server_appwrite/`:
 | `tool_manager.py` | Registry of all services and their generated tools. |
 | `operator.py` | The compact "operator" surface — `appwrite_search_tools`, `appwrite_call_tool` / `appwrite_call_write_tool`, tool annotations, result/resource storage, write confirmation. |
 | `instructions.py` | `serverInfo.description` and the server instructions sent on initialize, rendered from `assets/instructions.json` (a description plus ordered, transport/docs-conditional Markdown sections). Edit the JSON to change the wording; keep the `pyproject.toml` description in sync (a test enforces it). |
-| `context.py` | `appwrite_get_context` — workspace summary (project, services, account/org for OAuth). |
+| `context.py` | `appwrite_get_context` — workspace summary (project, services, account/org for OAuth, a focused project's environments). |
+| `headers.py` | Per-call request headers: `X-Appwrite-Environment` (a project environment, next to the project's ID) and `X-Appwrite-Reason` (why a write is made, validated and percent-encoded as Appwrite expects). |
 | `docs_search.py` | In-process semantic docs search (`appwrite_search_docs`) over a prebuilt index. |
 | `docs_source.py` | Fetches the published docs (`/docs/llms.txt` + per-page `.md` exports on appwrite.io) and chunks them for the index build. |
 | `docs_index.py` | Writes the index artifact deterministically and atomically: page and chunk hashes, reuse of cached chunk vectors, build lock, and the added/changed/removed page report. |
@@ -59,8 +61,9 @@ reads, `appwrite_call_write_tool` for everything else, and optionally
 `appwrite_search_docs`), while the full OAuth Appwrite catalog (41
 services) stays internal and is searched at runtime. API-key stdio uses a filtered
 27-service catalog. Mutating hidden tools run only through
-`appwrite_call_write_tool` and require `confirm_write=true`, so each exposed
-tool's annotations match every call it accepts. Large outputs are stored as MCP
+`appwrite_call_write_tool` and require `confirm_write=true` and a one-line
+`reason` (sent as `X-Appwrite-Reason`, recorded on the audit log), so each
+exposed tool's annotations match every call it accepts. Large outputs are stored as MCP
 resources and returned as a preview + resource URI.
 
 With MCP Apps on (`flags.APPS`), hosts that render them also see

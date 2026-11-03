@@ -625,6 +625,7 @@ class OperatorTests(unittest.TestCase):
             {
                 "tool_name": "tables_db_create",
                 "confirm_write": True,
+                "reason": "Store the imported orders",
                 "database_id": "db",
             },
         )

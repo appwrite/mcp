@@ -627,6 +627,7 @@ class ServerHelperTests(unittest.TestCase):
                 arguments={
                     "tool_name": "functions_create_variable",
                     "confirm_write": True,
+                    "reason": "Configure the greeting",
                     "arguments": {
                         "functionId": "function-id",
                         "key": "GREETING",
@@ -675,6 +676,7 @@ class ServerHelperTests(unittest.TestCase):
                 arguments={
                     "tool_name": "functions_create_variable",
                     "confirm_write": True,
+                    "reason": "Configure the greeting",
                     "arguments": {
                         "functionId": "function-id",
                         "variableId": "variable-id",
@@ -1361,6 +1363,8 @@ class ServerHelperTests(unittest.TestCase):
             client=None,
             target_project=None,
             organization_id=None,
+            environment_id=None,
+            reason=None,
         ):
             seen["client"] = client
             seen["target_project"] = target_project
