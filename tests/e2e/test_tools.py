@@ -8,15 +8,29 @@ public tools: ``appwrite_call_tool`` is read-only and idempotent and refuses
 anything else, ``appwrite_call_write_tool`` is destructive and refuses reads.
 :class:`support.Cloud` is the Appwrite API both reach with the caller's token,
 so a refused call is checked to have made no Appwrite request at all.
+
+Writes give a ``reason``, which Appwrite records on the audit log from the
+``X-Appwrite-Reason`` header, and any call can act in one of a project's
+environments, which Appwrite reaches through ``X-Appwrite-Environment`` next to
+the project's own ID.
 """
 
 import base64
+import json
 import unittest
 from typing import Any
+from urllib.parse import unquote
 
 from support import PNG, SCOPES, TOKEN, Client, Cloud, Project, Server, collector
 
 PROJECT = "6630f1a2b3c4d5e6f7a8"
+STAGING = Project("internal-staging", buckets={"photos"}, name="Staging")
+"""The project's ``staging`` environment, a project whose own ID is internal."""
+REASON = "Notify the café's Slack: 100% of sign-ups, ticket #42"
+REASON_HEADER = (
+    "Notify%20the%20caf%C3%A9's%20Slack%3A%20100%25%20of%20sign-ups%2C%20ticket%20%2342"
+)
+"""``REASON`` as ``encodeURIComponent`` sends it."""
 HINTS = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
 READ = {
     "readOnlyHint": True,
@@ -41,8 +55,8 @@ cloud: Cloud
 def setUpModule() -> None:
     global cloud
     cloud = Cloud()
-    cloud.add(Project(PROJECT, buckets={"photos"}))
-    cloud.grant(TOKEN, {PROJECT}, SCOPES | {"files.read"})
+    cloud.add(Project(PROJECT, buckets={"photos"}, environments={"staging": STAGING}))
+    cloud.grant(TOKEN, {PROJECT}, SCOPES | {"files.read", "project.read"})
 
 
 def tearDownModule() -> None:
@@ -116,6 +130,17 @@ class ToolsFlow(unittest.TestCase):
             "confirm_write",
             tools["appwrite_call_write_tool"]["inputSchema"]["properties"],
         )
+        # Every write says why; reads have nothing to explain.
+        self.assertIn(
+            "reason", tools["appwrite_call_write_tool"]["inputSchema"]["required"]
+        )
+        self.assertNotIn(
+            "reason", tools["appwrite_call_tool"]["inputSchema"]["properties"]
+        )
+        for name in ("appwrite_call_tool", "appwrite_call_write_tool"):
+            self.assertIn(
+                "environment_id", tools[name]["inputSchema"]["properties"], name
+            )
 
     def test_search_names_the_call_tool_for_each_match(self):
         result = self.call(
@@ -197,6 +222,7 @@ class ToolsFlow(unittest.TestCase):
                 "tool_name": "webhooks_create",
                 "project_id": PROJECT,
                 "confirm_write": True,
+                "reason": "Hook sign-ups into the CRM",
                 "arguments": WEBHOOK,
             },
         )
@@ -227,6 +253,157 @@ class ToolsFlow(unittest.TestCase):
         self.assertEqual(image["type"], "image")
         self.assertEqual(image["mimeType"], "image/png")
         self.assertEqual(base64.b64decode(image["data"]), PNG)
+
+    def test_writes_give_the_reason_appwrite_records(self):
+        refused = collector().count(
+            "mcp.tool.errors", error_category="write_confirmation"
+        )
+        created = cloud.calls("POST", "/v1/webhooks")
+        write = {
+            "tool_name": "webhooks_create",
+            "project_id": PROJECT,
+            "confirm_write": True,
+            "arguments": {**WEBHOOK, "webhook_id": "e2e-reason"},
+        }
+
+        # What Appwrite would refuse never reaches it, and the model is told
+        # how to fix it.
+        for reason, message in (
+            (None, "Re-run appwrite_call_write_tool with reason set to why"),
+            ("   ", "Re-run appwrite_call_write_tool with reason set to why"),
+            ("x" * 257, "at most 256 characters; it has 257"),
+            ("Rotate\nthe hook", "one line of text without control characters"),
+            ("Rotate \u202ethe hook", "one line of text without control characters"),
+        ):
+            with self.subTest(reason=reason):
+                arguments = write if reason is None else {**write, "reason": reason}
+                result = self.call("appwrite_call_write_tool", arguments)
+                self.assertTrue(result["isError"])
+                self.assertIn(message, self.text(result))
+        self.assertEqual(cloud.calls("POST", "/v1/webhooks"), created)
+
+        # Surrounding whitespace is dropped; the rest is sent percent-encoded,
+        # spaces as %20, which Appwrite decodes back.
+        result = self.call(
+            "appwrite_call_write_tool", {**write, "reason": f"  {REASON}\n"}
+        )
+        self.assertFalse(result.get("isError"), result)
+        sent = cloud.headers("POST", "/v1/webhooks")[-1]["x-appwrite-reason"]
+        self.assertEqual(sent, REASON_HEADER)
+        self.assertEqual(unquote(sent), REASON)
+        # Classified like a missing confirm_write: a model mistake, not an outage.
+        self.assertEqual(
+            collector().wait(
+                "mcp.tool.errors", refused + 5, error_category="write_confirmation"
+            ),
+            refused + 5,
+        )
+
+        # A read sends no reason, even when given one.
+        result = self.call(
+            "appwrite_call_tool",
+            {"tool_name": "webhooks_list", "project_id": PROJECT, "reason": REASON},
+        )
+        self.assertFalse(result.get("isError"), result)
+        self.assertNotIn("x-appwrite-reason", cloud.headers("GET", "/v1/webhooks")[-1])
+
+    def test_calls_act_in_a_project_environment(self):
+        listed = cloud.calls("GET", "/v1/webhooks")
+        result = self.call(
+            "appwrite_call_tool",
+            {"tool_name": "webhooks_list", "environment_id": "staging"},
+        )
+        self.assertTrue(result["isError"])
+        self.assertIn("environment_id requires project_id", self.text(result))
+        self.assertEqual(cloud.calls("GET", "/v1/webhooks"), listed)
+
+        result = self.call(
+            "appwrite_call_write_tool",
+            {
+                "tool_name": "webhooks_create",
+                "project_id": PROJECT,
+                "environment_id": "staging",
+                "confirm_write": True,
+                "reason": "Mirror the sign-up hook in staging",
+                "arguments": {**WEBHOOK, "webhook_id": "e2e-staging"},
+            },
+        )
+        self.assertFalse(result.get("isError"), result)
+        headers = cloud.headers("POST", "/v1/webhooks")[-1]
+        # The environment is reached through its project's ID, never its own.
+        self.assertEqual(headers["x-appwrite-project"], PROJECT)
+        self.assertEqual(headers["x-appwrite-environment"], "staging")
+        self.assertIn("e2e-staging", STAGING.webhooks)
+        self.assertNotIn("e2e-staging", cloud.documents(PROJECT))
+
+        # Binary reads take their own request path.
+        result = self.call(
+            "appwrite_call_tool",
+            {
+                "tool_name": "storage_get_file_preview",
+                "project_id": PROJECT,
+                "environment_id": "staging",
+                "arguments": {"bucket_id": "photos", "file_id": "sunrise"},
+            },
+        )
+        self.assertFalse(result.get("isError"), result)
+        self.assertEqual(result["content"][0]["type"], "image")
+        preview = cloud.headers(
+            "GET", "/v1/storage/buckets/photos/files/sunrise/preview"
+        )
+        self.assertEqual(preview[-1]["x-appwrite-environment"], "staging")
+        # Environments live in their project's region, so only the project's
+        # region is ever looked up.
+        self.assertEqual(
+            cloud.calls("GET", "/v1/projects/(staging|internal-staging)"), 0
+        )
+
+        result = self.call(
+            "appwrite_call_tool",
+            {
+                "tool_name": "webhooks_list",
+                "project_id": PROJECT,
+                "environment_id": "production",
+            },
+        )
+        self.assertTrue(result["isError"])
+        self.assertIn("project_environment_not_found", self.text(result))
+
+        result = self.call(
+            "appwrite_call_tool", {"tool_name": "webhooks_list", "project_id": PROJECT}
+        )
+        self.assertFalse(result.get("isError"), result)
+        self.assertNotIn(
+            "x-appwrite-environment", cloud.headers("GET", "/v1/webhooks")[-1]
+        )
+
+    def test_context_lists_and_summarizes_environments(self):
+        result = self.call(
+            "appwrite_get_context", {"project_id": PROJECT, "include_services": False}
+        )
+        (project,) = json.loads(self.text(result))["projects"]
+        self.assertEqual(
+            project["environments"], [{"$id": "staging", "name": "Staging"}]
+        )
+        self.assertNotIn("environmentId", project)
+
+        result = self.call(
+            "appwrite_get_context",
+            {
+                "project_id": PROJECT,
+                "environment_id": "staging",
+                "include_services": False,
+            },
+        )
+        (project,) = json.loads(self.text(result))["projects"]
+        self.assertEqual(project["environmentId"], "staging")
+        self.assertEqual(
+            cloud.headers("GET", "/v1/project")[-1]["x-appwrite-environment"], "staging"
+        )
+
+        result = self.call("appwrite_get_context", {"environment_id": "staging"})
+        self.assertTrue(result["isError"])
+        self.assertIn("environment_id requires project_id", self.text(result))
 
 
 if __name__ == "__main__":

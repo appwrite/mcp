@@ -11,6 +11,7 @@ from appwrite_console.models.user import User
 from appwrite_console.query import Query
 
 from .constants import REDACTED_KEYS, SERVICE_PROBES
+from .headers import environment, scoped
 
 ContextClientFactory = Callable[[str | None, str | None], Client]
 DEFAULT_SERVICE_PROJECT_LIMIT = 5
@@ -25,10 +26,17 @@ def get_appwrite_context(
     client_factory: ContextClientFactory | None = None,
     project_id: str | None = None,
     organization_id: str | None = None,
+    environment_id: str | None = None,
     include_services: bool = True,
     sample_limit: int = 5,
     service_detail: str = DEFAULT_SERVICE_DETAIL,
 ) -> dict[str, Any]:
+    """Summarize what the connection can reach.
+
+    A project in focus (``project_id``, or the API key's project) lists its
+    environments, so the model can pass one as ``environment_id``. With
+    ``environment_id`` (or ``APPWRITE_ENVIRONMENT_ID`` on the API-key client)
+    the project is summarized as that environment instead."""
     sample_limit = _normalize_sample_limit(sample_limit)
     service_detail = _normalize_service_detail(service_detail)
     client_factory = client_factory or (
@@ -50,15 +58,22 @@ def get_appwrite_context(
         project = _get_current_project(project_client, configured_project_id)
         if project is None:
             project = {"$id": configured_project_id}
-        context["projects"] = [
-            _project_context(
-                project,
-                project_client,
-                include_services=include_services,
-                sample_limit=sample_limit,
-                service_detail=service_detail,
-            )
-        ]
+        summary = _project_context(
+            project,
+            project_client,
+            include_services=include_services,
+            sample_limit=sample_limit,
+            service_detail=service_detail,
+        )
+        acting_in = environment(project_client)
+        if acting_in:
+            summary["environmentId"] = acting_in
+        else:
+            # Listed only from the project itself: an environment has none.
+            environments = _list_environments(project_client)
+            if environments is not None:
+                summary["environments"] = environments
+        context["projects"] = [summary]
         context["serviceSummary"] = _service_summary_metadata(
             include_services=include_services,
             effective_include_services=include_services,
@@ -137,18 +152,36 @@ def get_appwrite_context(
             if needs_project_client
             else console_client
         )
+        environments = None
+        requested = project_id is not None and discovered_project_id == project_id
+        if project_id and requested:
+            # Environments are listed through the project they belong to, and
+            # only for the project asked about: a request per discovered
+            # project would multiply with the account's projects.
+            parent_client = (
+                project_client
+                if needs_project_client
+                else client_factory(project_id, project_organization_id)
+            )
+            environments = _list_environments(parent_client)
+            if environment_id:
+                project_client = scoped(parent_client, environment_id=environment_id)
+                project = _get_current_project(project_client, project_id) or project
         if project_id and project == {"$id": project_id}:
             project = _get_current_project(project_client, project_id) or project
-        projects.append(
-            _project_context(
-                project,
-                project_client,
-                organization_id=project_organization_id,
-                include_services=effective_include_services,
-                sample_limit=sample_limit,
-                service_detail=service_detail,
-            )
+        summary = _project_context(
+            project,
+            project_client,
+            organization_id=project_organization_id,
+            include_services=effective_include_services,
+            sample_limit=sample_limit,
+            service_detail=service_detail,
         )
+        if requested and environment_id:
+            summary["environmentId"] = environment_id
+        if environments is not None:
+            summary["environments"] = environments
+        projects.append(summary)
 
     context["projects"] = projects
     context["serviceSummary"] = _service_summary_metadata(
@@ -200,6 +233,28 @@ def _get_current_project(client: Client, project_id: str) -> dict[str, Any] | No
     if result.ok and isinstance(result.value, dict):
         return result.value
     return {"$id": project_id, "error": result.error} if not result.ok else None
+
+
+def _list_environments(client: Client) -> list[dict[str, Any]] | None:
+    """The environments of ``client``'s project, by the ID passed as
+    ``environment_id``. ``None`` when they cannot be listed: environments are
+    an Appwrite Cloud feature (self-hosted Appwrite has no such route), and
+    listing them needs the ``project.read`` scope."""
+    result = _safe_call(client, "get", "/project/environments")
+    if not result.ok or not isinstance(result.value, dict):
+        return None
+    items = result.value.get("environments")
+    if not isinstance(items, list):
+        return None
+    return [
+        {
+            key: item[key]
+            for key in ("$id", "name")
+            if isinstance(item.get(key), str) and item[key]
+        }
+        for item in items
+        if isinstance(item, dict) and isinstance(item.get("$id"), str)
+    ]
 
 
 def _accessible_resource_ids(client: Client, resource: str) -> list[dict[str, Any]]:

@@ -133,6 +133,7 @@ def capture_appwrite_exception(
     classification: str,
     project_id: str | None = None,
     organization_id: str | None = None,
+    environment_id: str | None = None,
 ) -> bool:
     """Capture publishable Appwrite API failures.
 
@@ -147,6 +148,7 @@ def capture_appwrite_exception(
         "appwrite.error_type": getattr(exc, "type", None),
         "appwrite.project_id": project_id,
         "appwrite.organization_id": organization_id,
+        "appwrite.environment_id": environment_id,
     }
     return capture_exception(
         exc,
@@ -160,6 +162,7 @@ def capture_appwrite_exception(
                 "error_type": getattr(exc, "type", None),
                 "project_id": project_id,
                 "organization_id": organization_id,
+                "environment_id": environment_id,
             },
         },
         transaction=f"appwrite.{service or 'unknown'}.{action or 'unknown'}",

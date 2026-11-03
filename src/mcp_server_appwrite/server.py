@@ -80,6 +80,7 @@ from .events import protocol as events
 from .events.ingress import Ingress
 from .events.streams import Streams
 from .events.subscriptions import Subscriptions
+from .headers import environment, scoped, set_environment
 from .instructions import build_instructions, load_description
 from .operator import Operator, ToolOutput, _parse_tool_name
 from .service import Service
@@ -120,6 +121,9 @@ class AppwriteConfig:
     project_id: str
     api_key: str
     endpoint: str
+    environment_id: str | None = None
+    """A project environment (Appwrite Cloud) to act in instead of the project:
+    ``project_id`` stays the project's ID, as ``X-Appwrite-Project`` takes it."""
 
 
 def _log_startup(message: str) -> None:
@@ -194,13 +198,19 @@ def load_appwrite_config() -> AppwriteConfig:
     project_id = os.getenv("APPWRITE_PROJECT_ID")
     api_key = os.getenv("APPWRITE_API_KEY")
     endpoint = _normalize_endpoint(os.getenv("APPWRITE_ENDPOINT", DEFAULT_ENDPOINT))
+    environment_id = (os.getenv("APPWRITE_ENVIRONMENT_ID") or "").strip() or None
 
     if not project_id or not api_key:
         raise ValueError(
             "APPWRITE_PROJECT_ID and APPWRITE_API_KEY must be set in environment variables"
         )
 
-    return AppwriteConfig(project_id=project_id, api_key=api_key, endpoint=endpoint)
+    return AppwriteConfig(
+        project_id=project_id,
+        api_key=api_key,
+        endpoint=endpoint,
+        environment_id=environment_id,
+    )
 
 
 def _configure_mcp_client_headers(client: Client) -> Client:
@@ -219,6 +229,8 @@ def build_client(config: AppwriteConfig | None = None) -> Client:
     client.set_endpoint(config.endpoint)
     client.set_project(config.project_id)
     client.set_key(config.api_key)
+    if config.environment_id:
+        set_environment(client, config.environment_id)
     return _configure_mcp_client_headers(client)
 
 
@@ -236,6 +248,7 @@ def build_client_for_request(
     endpoint: str | None = None,
     target_project: str | None = None,
     organization_id: str | None = None,
+    environment_id: str | None = None,
 ) -> Client:
     """Build a per-request client authenticated with a user's OAuth2 access token.
     The Appwrite REST API accepts the OAuth2 access token directly as a Bearer token
@@ -252,7 +265,10 @@ def build_client_for_request(
     user as the project owner); without it the token is not a valid identity on
     another project and the request falls back to the guest role. Admin mode is
     only valid against a real project — the API rejects it on the console project —
-    so it is not sent for ``organization_id``-only (console) operations."""
+    so it is not sent for ``organization_id``-only (console) operations.
+
+    ``environment_id`` acts in one of ``target_project``'s environments: it is
+    sent as ``X-Appwrite-Environment`` next to the project's own ID."""
     client = Client()
     client.set_endpoint(endpoint or os.getenv("APPWRITE_ENDPOINT", DEFAULT_ENDPOINT))
     client.set_project(target_project or project_id)
@@ -267,6 +283,8 @@ def build_client_for_request(
         # targeting a real project — the API rejects admin mode on the console
         # project itself — so it is gated on target_project, not organization_id.
         client.set_mode("admin")
+        if environment_id:
+            set_environment(client, environment_id)
     if organization_id:
         client.set_organization(organization_id)
     return client
@@ -337,14 +355,18 @@ def _lookup_project_region(
 
 
 def resolve_client(
-    target_project: str | None = None, organization_id: str | None = None
+    target_project: str | None = None,
+    organization_id: str | None = None,
+    environment_id: str | None = None,
 ) -> Client:
     """Build the Appwrite client for the current request from its OAuth access
     token. The token is read from the request context populated by the auth
     middleware and carries the project it was issued for (the console). Pass
     ``target_project``/``organization_id`` to scope the call to one of the user's
-    own projects/organizations. Project-scoped calls are routed to the target
-    project's home-region endpoint (see ``resolve_region_endpoint``)."""
+    own projects/organizations, and ``environment_id`` to act in one of the target
+    project's environments. Project-scoped calls are routed to the target
+    project's home-region endpoint (see ``resolve_region_endpoint``), which is
+    its environments' region too."""
     access_token = get_access_token()
     if access_token is None:
         raise RuntimeError("No authenticated Appwrite access token in request context.")
@@ -365,6 +387,7 @@ def resolve_client(
         endpoint=endpoint,
         target_project=target_project,
         organization_id=organization_id,
+        environment_id=environment_id,
     )
 
 
@@ -1083,6 +1106,8 @@ def execute_registered_tool(
     client: Client | None = None,
     target_project: str | None = None,
     organization_id: str | None = None,
+    environment_id: str | None = None,
+    reason: str | None = None,
 ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
     tool_info = tools_manager.get_tool(name)
     if not tool_info:
@@ -1101,7 +1126,21 @@ def execute_registered_tool(
     # from the request's OAuth access token.
     hosted = client is None
     if client is None:
-        client = resolve_client(target_project, organization_id)
+        client = resolve_client(target_project, organization_id, environment_id)
+    elif environment_id and environment_id != environment(client):
+        # The stdio client acts where APPWRITE_PROJECT_ID and
+        # APPWRITE_ENVIRONMENT_ID point, with that place's API key. A call meant
+        # for another environment must not land there instead.
+        configured = environment(client)
+        acting_in = f"environment {configured}" if configured else "the project itself"
+        raise ValueError(
+            f"This server acts in {acting_in}, as configured by "
+            "APPWRITE_ENVIRONMENT_ID. To act in environment "
+            f"{environment_id}, start a server with "
+            f"APPWRITE_ENVIRONMENT_ID={environment_id}."
+        )
+    # Sent on this call only: the stdio client is shared by every call.
+    client = scoped(client, reason=reason)
     service = service_cls(client)
     if _selects_attributes(prepared_arguments):
         # A select query returns only the chosen attributes, which the SDK's
@@ -1147,6 +1186,7 @@ def execute_registered_tool(
             classification=parsed["classification"],
             project_id=target_project,
             organization_id=organization_id,
+            environment_id=environment_id,
         )
         raise RuntimeError(_format_appwrite_error(exc, tool_name=name)) from exc
     except Exception as exc:
@@ -1158,6 +1198,7 @@ def execute_registered_tool(
                 "appwrite.classification": parsed["classification"],
                 "appwrite.project_id": target_project,
                 "appwrite.organization_id": organization_id,
+                "appwrite.environment_id": environment_id,
             },
             context={
                 "appwrite": {
@@ -1166,6 +1207,7 @@ def execute_registered_tool(
                     "classification": parsed["classification"],
                     "project_id": target_project,
                     "organization_id": organization_id,
+                    "environment_id": environment_id,
                 },
             },
             transaction=(f"appwrite.{parsed['service_name']}.{parsed['action_verb']}"),
@@ -1686,11 +1728,13 @@ def _target_context(arguments: dict | None) -> dict[str, Any]:
 
     project_id = arguments.get("project_id", arguments.get("projectId"))
     organization_id = arguments.get("organization_id", arguments.get("organizationId"))
+    environment_id = arguments.get("environment_id", arguments.get("environmentId"))
     return {
         key: value
         for key, value in {
             "project_id": project_id,
             "organization_id": organization_id,
+            "environment_id": environment_id,
         }.items()
         if value is not None
     }
@@ -1703,6 +1747,7 @@ def _target_context_tags(arguments: dict | None) -> dict[str, Any]:
         for key, source in {
             "appwrite.project_id": "project_id",
             "appwrite.organization_id": "organization_id",
+            "appwrite.environment_id": "environment_id",
         }.items()
         if source in context
     }
@@ -1778,7 +1823,7 @@ def build_operator(
 
     return Operator(
         tools_manager,
-        lambda tool_name, tool_arguments, target_project=None, organization_id=None: (
+        lambda tool_name, tool_arguments, target_project=None, organization_id=None, environment_id=None, reason=None: (
             execute_registered_tool(
                 tools_manager,
                 tool_name,
@@ -1786,6 +1831,8 @@ def build_operator(
                 client=client,
                 target_project=target_project,
                 organization_id=organization_id,
+                environment_id=environment_id,
+                reason=reason,
             )
         ),
         context_provider=lambda arguments: _get_context_for_request(arguments, client),
@@ -1801,6 +1848,9 @@ def _get_context_for_request(
 ) -> dict[str, Any]:
     project_id = arguments.get("project_id", arguments.get("projectId"))
     organization_id = arguments.get("organization_id", arguments.get("organizationId"))
+    environment_id = (
+        arguments.get("environment_id", arguments.get("environmentId")) or None
+    )
     include_services = bool(
         arguments.get("include_services", arguments.get("includeServices", True))
     )
@@ -1812,6 +1862,12 @@ def _get_context_for_request(
     )
 
     if client is not None:
+        if environment_id and environment_id != environment(client):
+            raise ValueError(
+                "This server acts where APPWRITE_ENVIRONMENT_ID points; start a "
+                f"server with APPWRITE_ENVIRONMENT_ID={environment_id} to summarize "
+                "that environment."
+            )
         return get_appwrite_context(
             client,
             mode="api_key_project",
@@ -1819,6 +1875,11 @@ def _get_context_for_request(
             include_services=include_services,
             sample_limit=sample_limit,
             service_detail=service_detail,
+        )
+    if environment_id and not project_id:
+        raise ValueError(
+            "environment_id requires project_id: pass the ID of the project the "
+            "environment belongs to as project_id."
         )
 
     base_client = resolve_client()
@@ -1834,6 +1895,7 @@ def _get_context_for_request(
         client_factory=client_factory,
         project_id=project_id,
         organization_id=organization_id,
+        environment_id=environment_id,
         include_services=include_services,
         sample_limit=sample_limit,
         service_detail=service_detail,

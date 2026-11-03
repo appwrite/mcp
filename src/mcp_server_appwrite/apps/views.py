@@ -35,7 +35,12 @@ from . import executions, files, protocol, resource, usage, users
 
 Run = Callable[[dict[str, Any], bool], list[Any]]
 """Runs a hidden catalog tool from raw call arguments (``tool_name``,
-``arguments``, ``project_id``, ``confirm_write``), as a write or a read."""
+``arguments``, ``project_id``, ``environment_id``, ``confirm_write``,
+``reason``), as a write or a read."""
+
+Read = Callable[[str, Any, dict[str, Any]], dict[str, Any]]
+"""Reads one catalog tool's JSON result in the project (and environment) a
+view shows: ``(tool_name, project_id, arguments)``."""
 
 Handler = Callable[[dict[str, Any]], types.CallToolResult]
 
@@ -100,26 +105,39 @@ class Views:
 
     def _show(self, arguments: dict[str, Any]) -> types.CallToolResult:
         view = arguments.get("view")
+        # A view shows one project, or one of its environments, and every read
+        # it makes stays there.
+        environment_id = arguments.get("environment_id") or None
+
+        def read(tool_name: str, project_id: Any, target: dict[str, Any]) -> Any:
+            return self._read(tool_name, project_id, target, environment_id)
+
+        def preview(project_id: Any, target: dict[str, Any]) -> str | None:
+            return self._preview(project_id, target, environment_id)
+
         if view == View.TABLE:
-            data = self._table(arguments)
+            data = self._table(read, arguments)
             text = _table_summary(data)
         elif view == View.DEPLOYMENT:
-            data = self._deployment(arguments)
+            data = self._deployment(read, arguments)
             text = _deployment_summary(data)
         elif view == View.EXECUTIONS:
-            data = executions.read(self._read, arguments)
+            data = executions.read(read, arguments)
             text = executions.summary(data)
         elif view == View.FILES:
-            data = files.read(self._read, self._preview, arguments)
+            data = files.read(read, preview, arguments)
             text = files.summary(data)
         elif view == View.USERS:
-            data = users.read(self._read, arguments)
+            data = users.read(read, arguments)
             text = users.summary(data)
         elif view == View.USAGE:
-            data = usage.read(self._read, arguments)
+            data = usage.read(read, arguments)
             text = usage.summary(data)
         else:
             raise ValueError(f"view must be one of: {', '.join(View)}. Got {view!r}.")
+        if environment_id:
+            # The view sends it back on every call it makes, as it does projectId.
+            data["environmentId"] = environment_id
         return types.CallToolResult(
             content=[types.TextContent(type="text", text=text)],
             structured_content=data,
@@ -160,13 +178,18 @@ class Views:
         )
 
     def _read(
-        self, tool_name: str, project_id: Any, arguments: dict[str, Any]
+        self,
+        tool_name: str,
+        project_id: Any,
+        arguments: dict[str, Any],
+        environment_id: str | None = None,
     ) -> dict[str, Any]:
         result = _json(
             self._run(
                 {
                     "tool_name": tool_name,
                     "project_id": project_id,
+                    "environment_id": environment_id,
                     "arguments": arguments,
                 },
                 False,
@@ -176,7 +199,12 @@ class Views:
             raise ValueError(f"{tool_name} returned an unexpected response.")
         return result
 
-    def _preview(self, project_id: Any, arguments: dict[str, Any]) -> str | None:
+    def _preview(
+        self,
+        project_id: Any,
+        arguments: dict[str, Any],
+        environment_id: str | None = None,
+    ) -> str | None:
         """A file preview as a data URI. A file Appwrite cannot transform
         shows without one rather than failing the page."""
         try:
@@ -184,6 +212,7 @@ class Views:
                 {
                     "tool_name": "storage_get_file_preview",
                     "project_id": project_id,
+                    "environment_id": environment_id,
                     "arguments": arguments,
                 },
                 False,
@@ -195,21 +224,19 @@ class Views:
                 return f"data:{item.mime_type};base64,{item.data}"
         return None
 
-    def _table(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _table(self, read: Read, arguments: dict[str, Any]) -> dict[str, Any]:
         project_id = arguments.get("project_id")
         database_id = _required(arguments, "database_id")
         table_id = _required(arguments, "table_id")
         cursor = arguments.get("cursor")
         target = {"database_id": database_id, "table_id": table_id}
 
-        table = self._read("tables_db_get_table", project_id, target)
+        table = read("tables_db_get_table", project_id, target)
         # One row past the page tells whether another page follows.
         queries = [Query.order_desc("$createdAt"), Query.limit(PAGE_SIZE + 1)]
         if cursor:
             queries.append(Query.cursor_after(str(cursor)))
-        page = self._read(
-            "tables_db_list_rows", project_id, {**target, "queries": queries}
-        )
+        page = read("tables_db_list_rows", project_id, {**target, "queries": queries})
         rows = [_row(each) for each in page.get("rows") or []]
         more = len(rows) > PAGE_SIZE
         rows = rows[:PAGE_SIZE]
@@ -231,7 +258,7 @@ class Views:
             "next": rows[-1].get("$id") if more else None,
         }
 
-    def _deployment(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _deployment(self, read: Read, arguments: dict[str, Any]) -> dict[str, Any]:
         project_id = arguments.get("project_id")
         function_id = arguments.get("function_id")
         site_id = arguments.get("site_id")
@@ -247,13 +274,13 @@ class Views:
 
         deployment_id = arguments.get("deployment_id")
         if deployment_id:
-            deployment = self._read(
+            deployment = read(
                 f"{service}_get_deployment",
                 project_id,
                 {**target, "deployment_id": deployment_id},
             )
         else:
-            latest = self._read(
+            latest = read(
                 f"{service}_list_deployments",
                 project_id,
                 {
@@ -320,6 +347,14 @@ def _show_tool() -> types.Tool:
                 "project_id": {
                     "type": "string",
                     "description": "Appwrite project ID the data lives in.",
+                },
+                "environment_id": {
+                    "type": "string",
+                    "description": (
+                        "ID of the project environment (Appwrite Cloud) the data "
+                        "lives in, with project_id set to the project it belongs "
+                        "to. Omit for the project itself."
+                    ),
                 },
                 "database_id": {
                     "type": "string",
@@ -424,7 +459,9 @@ def _write_tool() -> types.Tool:
                 "tool_name": {"type": "string", "enum": list(WRITES)},
                 "arguments": {"type": "object"},
                 "project_id": {"type": "string"},
+                "environment_id": {"type": "string"},
                 "confirm_write": {"type": "boolean"},
+                "reason": {"type": "string"},
             },
             "required": ["tool_name", "arguments", "confirm_write"],
             "additionalProperties": False,

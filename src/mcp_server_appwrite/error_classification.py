@@ -40,6 +40,13 @@ class WriteConfirmationRequired(RuntimeError):
     """A mutating hidden tool was called without explicit confirmation."""
 
 
+class WriteReasonRequired(WriteConfirmationRequired):
+    """A mutating hidden tool was called without a usable ``reason``.
+
+    Like a missing ``confirm_write``, this is the model leaving out something a
+    write must carry, so it is classified and monitored the same way."""
+
+
 class WrongCallTool(ValueError):
     """A hidden tool was called through the public tool for the other
     classification: a mutation through the read-only call tool, or a read
