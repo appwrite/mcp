@@ -36,7 +36,7 @@ integration = [
 
 [dependency-groups]
 dev = [
-    "black==26.3.1",
+    "black==26.10.1",
     "ruff==0.15.18",
     "pyright==1.1.411",
 ]
