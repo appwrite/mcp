@@ -13,6 +13,9 @@ Builds a single-tenant Starlette ASGI app for the served Appwrite project:
   following ``resource_metadata`` from the 401 challenge. Mirrors the Appwrite
   authorization server's discovery document verbatim.
 * ``/healthz`` — liveness probe.
+* ``/docs/search`` — public documentation search for the deprecated docs MCP
+  server, whose clients have no user to sign in. Results and limits are fixed, so
+  a call costs one small embedding.
 * ``/.well-known/openai-apps-challenge`` — public domain verification token.
 * ``/appwrite/webhooks/{id}`` — MCP Events ingress for Appwrite webhooks, only
   with the events flag on. Unauthenticated by bearer token: the Appwrite
@@ -39,6 +42,7 @@ from importlib.resources import files
 from types import FrameType
 from urllib.parse import urlsplit
 
+import anyio.to_thread
 import httpx
 import uvicorn
 from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
@@ -71,7 +75,14 @@ from .auth import (
     public_base_url,
     resource_metadata_url,
 )
-from .constants import CORS_HEADERS, SERVER_VERSION
+from .constants import (
+    CORS_HEADERS,
+    DOCS_DEFAULT_LIMIT,
+    DOCS_MAX_BODY_BYTES,
+    DOCS_MAX_QUERY_LENGTH,
+    SERVER_VERSION,
+)
+from .docs_search import DocsSearch
 from .events import protocol as events_protocol
 from .events.ingress import Ingress
 from .events.streams import Settings, Streams
@@ -449,6 +460,34 @@ async def oauth_authorize_proxy_endpoint(request: Request) -> Response:
     )
 
 
+def docs_search_endpoint(docs_search: DocsSearch):
+    async def endpoint(request: Request) -> JSONResponse:
+        try:
+            raw = b""
+            async for chunk in request.stream():
+                raw += chunk
+                if len(raw) > DOCS_MAX_BODY_BYTES:
+                    return JSONResponse({"error": "body_too_large"}, status_code=413)
+            body = json.loads(raw)
+            query = body.get("query") if isinstance(body, dict) else None
+            if not isinstance(query, str) or len(query) > DOCS_MAX_QUERY_LENGTH:
+                raise ValueError(
+                    f"query must be a string of at most {DOCS_MAX_QUERY_LENGTH} characters."
+                )
+            _query, results = await anyio.to_thread.run_sync(
+                docs_search.find,
+                {"query": query, "limit": DOCS_DEFAULT_LIMIT},
+                abandon_on_cancel=True,
+            )
+        except ValueError as error:
+            return JSONResponse({"error": str(error)}, status_code=400)
+        except RuntimeError as error:
+            return JSONResponse({"error": str(error)}, status_code=502)
+        return JSONResponse({"results": results})
+
+    return endpoint
+
+
 async def health_endpoint(request: Request) -> PlainTextResponse:
     return PlainTextResponse(f"appwrite-mcp {SERVER_VERSION} ok")
 
@@ -560,6 +599,17 @@ def build_app(
         Route("/favicon.ico", endpoint=favicon_ico_endpoint, methods=["GET"]),
         Route("/healthz", endpoint=health_endpoint, methods=["GET"]),
         *([ingress.route] if ingress is not None else []),
+        *(
+            [
+                Route(
+                    "/docs/search",
+                    endpoint=docs_search_endpoint(operator.docs_search),
+                    methods=["POST"],
+                )
+            ]
+            if operator.docs_search is not None
+            else []
+        ),
         Route(
             "/",
             endpoint=mcp_endpoint,

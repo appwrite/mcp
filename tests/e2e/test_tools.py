@@ -19,9 +19,13 @@ import base64
 import json
 import unittest
 from typing import Any
+from unittest import mock
 from urllib.parse import unquote
 
+import httpx
 from support import PNG, SCOPES, TOKEN, Client, Cloud, Project, Server, collector
+
+from mcp_server_appwrite import docs_search
 
 PROJECT = "6630f1a2b3c4d5e6f7a8"
 STAGING = Project("internal-staging", buckets={"photos"}, name="Staging")
@@ -61,6 +65,61 @@ def setUpModule() -> None:
 
 def tearDownModule() -> None:
     cloud.close()
+
+
+class DocsSearchRoute(unittest.TestCase):
+    """``POST /docs/search``, which the deprecated docs MCP server calls without a
+    user. Only the OpenAI query embedding is stubbed; the index is the real one."""
+
+    def setUp(self) -> None:
+        patch = mock.patch.object(
+            docs_search,
+            "_default_embedder",
+            lambda: lambda _query: [1.0] + [0.0] * 1535,
+        )
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def server(self) -> Server:
+        return Server(
+            {
+                "APPWRITE_ENDPOINT": cloud.endpoint,
+                "DOCS_SEARCH_MIN_SCORE": "-1",
+                "OPENAI_API_KEY": "stubbed",
+            }
+        )
+
+    def test_returns_a_fixed_number_of_pages_without_auth(self):
+        with self.server() as server:
+            found = httpx.post(
+                f"{server.url}/docs/search",
+                json={"query": "create a row", "limit": 10},
+            )
+            self.assertEqual(found.status_code, 200)
+            results = found.json()["results"]
+            self.assertTrue(1 <= len(results) <= 5)
+            self.assertEqual(
+                set(results[0]), {"path", "title", "description", "score", "content"}
+            )
+
+    def test_rejects_invalid_queries_before_embedding_them(self):
+        with self.server() as server:
+            for invalid in (
+                {"query": "x"},
+                {"query": None},
+                {"query": "x" * 501},
+                ["create a row"],
+            ):
+                refused = httpx.post(f"{server.url}/docs/search", json=invalid)
+                self.assertEqual(refused.status_code, 400, invalid)
+
+            malformed = httpx.post(f"{server.url}/docs/search", content="nope")
+            self.assertEqual(malformed.status_code, 400)
+
+            oversized = httpx.post(
+                f"{server.url}/docs/search", content=b"x" * (16 * 1024 + 1)
+            )
+            self.assertEqual(oversized.status_code, 413)
 
 
 class ToolsFlow(unittest.TestCase):

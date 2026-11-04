@@ -20,6 +20,18 @@ otherwise the server boots without it.
 | `DOCS_SEARCH_MIN_SCORE` | No | `0.25` | Minimum cosine score for a match. |
 | `DOCS_SEARCH_LIMIT` | No | `5` (max `10`) | Default max pages returned. |
 
+## Search route
+
+The deprecated docs MCP server at `mcp-for-docs.appwrite.io` has no OAuth session to use, so it searches through this public route instead of the MCP endpoint:
+
+```bash
+curl -X POST https://mcp.appwrite.io/docs/search \
+  -H 'content-type: application/json' \
+  -d '{"query": "create a row"}'
+```
+
+It answers `{"results": [{"path", "title", "description", "score", "content"}]}` with up to 5 pages, `400` for an invalid query or one over 500 characters, `413` for a body over 16 KiB, and `502` when the embedding request fails. The route exists only when documentation search is available.
+
 ## Rebuilding the index
 
 Re-run when the docs change, then commit the refreshed artifact:
