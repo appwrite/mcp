@@ -30,7 +30,7 @@ curl -X POST https://mcp.appwrite.io/docs/search \
   -d '{"query": "create a row"}'
 ```
 
-It answers `{"results": [{"path", "title", "description", "score", "content"}]}` with up to 5 pages, `400` for an invalid query or one over 500 characters, and `502` when the embedding request fails. The route exists only when documentation search is available.
+It answers `{"results": [{"path", "title", "description", "score", "content"}]}` with up to 5 pages, `400` for an invalid query or one over 500 characters, `413` for a body over 16 KiB, and `502` when the embedding request fails. The route exists only when documentation search is available.
 
 ## Rebuilding the index
 

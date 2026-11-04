@@ -116,6 +116,11 @@ class DocsSearchRoute(unittest.TestCase):
             malformed = httpx.post(f"{server.url}/docs/search", content="nope")
             self.assertEqual(malformed.status_code, 400)
 
+            oversized = httpx.post(
+                f"{server.url}/docs/search", content=b"x" * (16 * 1024 + 1)
+            )
+            self.assertEqual(oversized.status_code, 413)
+
 
 class ToolsFlow(unittest.TestCase):
     server: Server

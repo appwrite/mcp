@@ -78,6 +78,7 @@ from .auth import (
 from .constants import (
     CORS_HEADERS,
     DOCS_DEFAULT_LIMIT,
+    DOCS_MAX_BODY_BYTES,
     DOCS_MAX_QUERY_LENGTH,
     SERVER_VERSION,
 )
@@ -462,7 +463,12 @@ async def oauth_authorize_proxy_endpoint(request: Request) -> Response:
 def docs_search_endpoint(docs_search: DocsSearch):
     async def endpoint(request: Request) -> JSONResponse:
         try:
-            body = await request.json()
+            raw = b""
+            async for chunk in request.stream():
+                raw += chunk
+                if len(raw) > DOCS_MAX_BODY_BYTES:
+                    return JSONResponse({"error": "body_too_large"}, status_code=413)
+            body = json.loads(raw)
             query = body.get("query") if isinstance(body, dict) else None
             if not isinstance(query, str) or len(query) > DOCS_MAX_QUERY_LENGTH:
                 raise ValueError(
