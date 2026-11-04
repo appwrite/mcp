@@ -182,6 +182,10 @@ class Operator:
     def docs_enabled(self) -> bool:
         return self._docs_search is not None
 
+    @property
+    def docs_search(self) -> DocsSearch | None:
+        return self._docs_search
+
     def get_public_tools(self, *, apps: bool = False) -> list[types.Tool]:
         """The exposed tools, with the MCP Apps view tools when ``apps``."""
         return [public.tool for public in self._tools(apps).values()]
