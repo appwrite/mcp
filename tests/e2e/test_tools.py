@@ -167,6 +167,7 @@ class ToolsFlow(unittest.TestCase):
             self.assertLessEqual(len(card["description"]), 100)
             self.assertEqual(card["icons"][0]["src"], f"{PUBLIC_URL}/favicon.svg")
             self.assertEqual(card["remotes"][0]["url"], f"{PUBLIC_URL}/")
+            self.assertIn("2025-11-25", card["remotes"][0]["supportedProtocolVersions"])
 
     def test_every_tool_has_a_title_and_explicit_hints(self):
         _, response = self.client.call("tools/list")

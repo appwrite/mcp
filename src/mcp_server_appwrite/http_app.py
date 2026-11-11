@@ -12,7 +12,7 @@ Builds a single-tenant Starlette ASGI app for the served Appwrite project:
   authorization-server metadata at the MCP server's own origin instead of
   following ``resource_metadata`` from the 401 challenge. Mirrors the Appwrite
   authorization server's discovery document verbatim.
-* ``/.well-known/mcp/server-card.json`` and ``/server-card`` — SEP-1649 server
+* ``/.well-known/mcp/server-card.json`` and ``/server-card`` — SEP-2127 server
   card (name, title, description, icon, remote) for pre-connection discovery.
 * ``/healthz`` — liveness probe.
 * ``/docs/search`` — public documentation search for the deprecated docs MCP
@@ -51,7 +51,10 @@ from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser, BearerAuthBackend
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.types import CLIENT_INFO_META_KEY, PROTOCOL_VERSION_META_KEY
-from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS
+from mcp_types.version import (
+    HANDSHAKE_PROTOCOL_VERSIONS,
+    SUPPORTED_PROTOCOL_VERSIONS,
+)
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.authentication import AuthenticationMiddleware
@@ -512,8 +515,8 @@ async def favicon_svg_endpoint(request: Request) -> Response:
 
 
 async def server_card_endpoint(request: Request) -> JSONResponse:
-    """SEP-1649 server card, so registries and agents can describe this server
-    before connecting."""
+    """Server card (SEP-2127, experimental-ext-server-card v1), so registries
+    and agents can describe this server before connecting."""
     card = {
         "$schema": SERVER_CARD_SCHEMA,
         "name": SERVER_REGISTRY_NAME,
@@ -523,7 +526,13 @@ async def server_card_endpoint(request: Request) -> JSONResponse:
         "websiteUrl": SERVER_WEBSITE_URL,
         "repository": {"url": SERVER_WEBSITE_URL, "source": "github"},
         "icons": [{"src": _icon_url(), "mimeType": "image/svg+xml", "sizes": ["any"]}],
-        "remotes": [{"type": "streamable-http", "url": canonical_resource()}],
+        "remotes": [
+            {
+                "type": "streamable-http",
+                "url": canonical_resource(),
+                "supportedProtocolVersions": list(SUPPORTED_PROTOCOL_VERSIONS),
+            }
+        ],
     }
     headers = {**CORS_HEADERS, "Cache-Control": "public, max-age=3600"}
     return JSONResponse(card, headers=headers)
