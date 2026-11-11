@@ -12,6 +12,8 @@ Builds a single-tenant Starlette ASGI app for the served Appwrite project:
   authorization-server metadata at the MCP server's own origin instead of
   following ``resource_metadata`` from the 401 challenge. Mirrors the Appwrite
   authorization server's discovery document verbatim.
+* ``/.well-known/mcp/server-card.json`` and ``/server-card`` — SEP-1649 server
+  card (name, title, description, icon, remote) for pre-connection discovery.
 * ``/healthz`` — liveness probe.
 * ``/docs/search`` — public documentation search for the deprecated docs MCP
   server, whose clients have no user to sign in. Results and limits are fixed, so
@@ -80,7 +82,11 @@ from .constants import (
     DOCS_DEFAULT_LIMIT,
     DOCS_MAX_BODY_BYTES,
     DOCS_MAX_QUERY_LENGTH,
+    SERVER_CARD_SCHEMA,
+    SERVER_REGISTRY_NAME,
+    SERVER_SUMMARY,
     SERVER_VERSION,
+    SERVER_WEBSITE_URL,
 )
 from .docs_search import DocsSearch
 from .events import protocol as events_protocol
@@ -505,6 +511,24 @@ async def favicon_svg_endpoint(request: Request) -> Response:
     )
 
 
+async def server_card_endpoint(request: Request) -> JSONResponse:
+    """SEP-1649 server card, so registries and agents can describe this server
+    before connecting."""
+    card = {
+        "$schema": SERVER_CARD_SCHEMA,
+        "name": SERVER_REGISTRY_NAME,
+        "title": "Appwrite",
+        "description": SERVER_SUMMARY,
+        "version": SERVER_VERSION,
+        "websiteUrl": SERVER_WEBSITE_URL,
+        "repository": {"url": SERVER_WEBSITE_URL, "source": "github"},
+        "icons": [{"src": _icon_url(), "mimeType": "image/svg+xml", "sizes": ["any"]}],
+        "remotes": [{"type": "streamable-http", "url": canonical_resource()}],
+    }
+    headers = {**CORS_HEADERS, "Cache-Control": "public, max-age=3600"}
+    return JSONResponse(card, headers=headers)
+
+
 async def favicon_ico_endpoint(request: Request) -> RedirectResponse:
     return RedirectResponse("/favicon.svg", status_code=307)
 
@@ -594,6 +618,14 @@ def build_app(
             "/oauth2/authorize",
             endpoint=oauth_authorize_proxy_endpoint,
             methods=["GET"],
+        ),
+        Route(
+            "/.well-known/mcp/server-card.json",
+            endpoint=server_card_endpoint,
+            methods=["GET", "OPTIONS"],
+        ),
+        Route(
+            "/server-card", endpoint=server_card_endpoint, methods=["GET", "OPTIONS"]
         ),
         Route("/favicon.svg", endpoint=favicon_svg_endpoint, methods=["GET"]),
         Route("/favicon.ico", endpoint=favicon_ico_endpoint, methods=["GET"]),
