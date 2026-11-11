@@ -23,7 +23,17 @@ from unittest import mock
 from urllib.parse import unquote
 
 import httpx
-from support import PNG, SCOPES, TOKEN, Client, Cloud, Project, Server, collector
+from support import (
+    PNG,
+    PUBLIC_URL,
+    SCOPES,
+    TOKEN,
+    Client,
+    Cloud,
+    Project,
+    Server,
+    collector,
+)
 
 from mcp_server_appwrite import docs_search
 
@@ -145,6 +155,19 @@ class ToolsFlow(unittest.TestCase):
 
     def text(self, result: dict[str, Any]) -> str:
         return result["content"][0]["text"]
+
+    def test_server_card_describes_the_server_without_auth(self):
+        for path in ("/.well-known/mcp/server-card.json", "/server-card"):
+            response = httpx.get(f"{self.server.url}{path}")
+            self.assertEqual(response.status_code, 200, path)
+            self.assertEqual(response.headers["access-control-allow-origin"], "*")
+            card = response.json()
+            self.assertEqual(card["name"], "io.github.appwrite/mcp")
+            self.assertEqual(card["title"], "Appwrite")
+            self.assertLessEqual(len(card["description"]), 100)
+            self.assertEqual(card["icons"][0]["src"], f"{PUBLIC_URL}/favicon.svg")
+            self.assertEqual(card["remotes"][0]["url"], f"{PUBLIC_URL}/")
+            self.assertIn("2025-11-25", card["remotes"][0]["supportedProtocolVersions"])
 
     def test_every_tool_has_a_title_and_explicit_hints(self):
         _, response = self.client.call("tools/list")
