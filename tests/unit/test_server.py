@@ -895,6 +895,12 @@ class ServerHelperTests(unittest.TestCase):
         self.assertNotIn("standard_0123456789abcdef", message)
         self.assertIn('"secret": "[redacted]"', message)
         self.assertIn("Secrets redacted from this result: secret.", message)
+        # A name that is an ordinary field elsewhere (a country's code) stays.
+        coded = AppwriteException(
+            "Unable to parse response into Country: 1 validation error",
+            response={"name": "Germany", "code": "DE"},
+        )
+        self.assertIn('"code": "DE"', _format_appwrite_error(coded))
 
         # Asked for, a one-time secret is not lost to a parse failure.
         revealed = _format_appwrite_error(exc, tool_name="projects_create", reveal=True)

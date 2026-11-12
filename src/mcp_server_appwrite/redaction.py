@@ -21,7 +21,7 @@ data, not Appwrite's secrets, and a column may share a secret field's name.
 
 import hashlib
 from functools import cache
-from typing import Any
+from typing import Any, get_args
 
 import appwrite_console.models
 from pydantic import BaseModel
@@ -116,14 +116,26 @@ def _mask(data: dict[str, Any], key: str, fields: set[str]) -> None:
 
 @cache
 def _secret_names() -> frozenset[str]:
-    """Every field name an SDK model marks secret."""
-    names: set[str] = set()
+    """The field names SDK models mark secret, less any that is an ordinary
+    string on another model: ``code`` is the MFA challenge code, but also a
+    country's code, and matched by name it would hide both."""
+    secret: set[str] = set()
+    plain: set[str] = set()
     for model in vars(appwrite_console.models).values():
         if isinstance(model, type) and issubclass(model, BaseModel):
             for name, field in model.model_fields.items():
                 if _secret(field):
-                    names.add(field.alias or name)
-    return frozenset(names)
+                    secret.add(field.alias or name)
+                elif _text(field.annotation):
+                    plain.add(field.alias or name)
+    return frozenset(secret - plain)
+
+
+def _text(annotation: Any) -> bool:
+    """A string, or a list or optional of one."""
+    if annotation is str:
+        return True
+    return any(_text(argument) for argument in get_args(annotation))
 
 
 def _secret(field: FieldInfo) -> bool:
