@@ -896,6 +896,11 @@ class ServerHelperTests(unittest.TestCase):
         self.assertIn('"secret": "[redacted]"', message)
         self.assertIn("Secrets redacted from this result: secret.", message)
 
+        # Asked for, a one-time secret is not lost to a parse failure.
+        revealed = _format_appwrite_error(exc, tool_name="projects_create", reveal=True)
+        self.assertIn("standard_0123456789abcdef", revealed)
+        self.assertNotIn("Secrets redacted", revealed)
+
     def test_format_appwrite_error_does_not_report_parse_failure_as_failure(self):
         exc = AppwriteException(
             "Unable to parse response into Project: 1 validation error for Project"

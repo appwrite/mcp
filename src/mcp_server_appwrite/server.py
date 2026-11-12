@@ -1190,7 +1190,9 @@ def execute_registered_tool(
             organization_id=organization_id,
             environment_id=environment_id,
         )
-        raise RuntimeError(_format_appwrite_error(exc, tool_name=name)) from exc
+        raise RuntimeError(
+            _format_appwrite_error(exc, tool_name=name, reveal=reveal)
+        ) from exc
     except Exception as exc:
         error_monitoring.capture_exception(
             exc,
@@ -1315,9 +1317,13 @@ def _format_tool_result(
     return [types.TextContent(type="text", text=str(result))]
 
 
-def _format_appwrite_error(exc: AppwriteException, tool_name: str | None = None) -> str:
+def _format_appwrite_error(
+    exc: AppwriteException, tool_name: str | None = None, reveal: bool = False
+) -> str:
     if is_response_parse_error(exc):
-        return _format_response_parse_error(tool_name, _parse_error_response(exc))
+        return _format_response_parse_error(
+            tool_name, _parse_error_response(exc), reveal
+        )
 
     details = []
     if getattr(exc, "code", None):
@@ -1340,7 +1346,9 @@ def _parse_error_response(exc: BaseException) -> Any:
     return None
 
 
-def _format_response_parse_error(tool_name: str | None, response: Any = None) -> str:
+def _format_response_parse_error(
+    tool_name: str | None, response: Any = None, reveal: bool = False
+) -> str:
     """Explain an SDK deserialization failure without implying the write failed.
 
     ``Service._parse_response`` raises this after Appwrite has already accepted
@@ -1350,7 +1358,7 @@ def _format_response_parse_error(tool_name: str | None, response: Any = None) ->
     """
     if response is not None:
         # Untyped, so secrets are redacted by name rather than by model.
-        response, redacted = redact_payload(response)
+        response, redacted = (response, []) if reveal else redact_payload(response)
         message = (
             "Appwrite accepted the request and it succeeded; the SDK could not "
             "deserialize the response into its model, so the raw payload "
