@@ -127,6 +127,35 @@ DOCS_MIN_QUERY_LENGTH = 3
 DOCS_MAX_QUERY_LENGTH = 500
 DOCS_MAX_BODY_BYTES = 16 * 1024
 
+# appwrite.io's in-page WebMCP tools (appwrite/appwrite apps/console
+# src/lib/webmcp/site/tools.ts). The page reports each call to
+# /webmcp/events; anything outside these sets is counted as "other", so a
+# caller cannot mint new label values.
+WEBMCP_TOOLS = frozenset(
+    {
+        "search_docs",
+        "get_doc_page",
+        "get_pricing",
+        "get_product_overview",
+        "list_changelog",
+        "search_community_threads",
+        "navigate_to_page",
+        "open_sign_up",
+    }
+)
+WEBMCP_STATUSES = frozenset({"success", "error", "exception"})
+WEBMCP_ERROR_CODES = frozenset(
+    {
+        "invalid_path",
+        "invalid_product",
+        "not_found",
+        "network_error",
+        "fetch_failed",
+        "search_failed",
+    }
+)
+WEBMCP_MAX_BODY_BYTES = 1024
+
 DATA_DIR = Path(__file__).parent / "data"
 INDEX_FILE = "docs_index.npz"
 META_MEMBER = "meta.json"

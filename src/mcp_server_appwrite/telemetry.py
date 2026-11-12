@@ -55,7 +55,13 @@ import time
 from contextvars import ContextVar
 from typing import Any, Iterable
 
-from .constants import ACTIVE_WINDOW_SECONDS, KNOWN_MCP_CLIENTS
+from .constants import (
+    ACTIVE_WINDOW_SECONDS,
+    KNOWN_MCP_CLIENTS,
+    WEBMCP_ERROR_CODES,
+    WEBMCP_STATUSES,
+    WEBMCP_TOOLS,
+)
 from .error_classification import ERROR_CATEGORIES, ErrorCategory
 
 _enabled = False
@@ -323,6 +329,21 @@ def _build_instruments(meter: Any, transport: str, version: str) -> None:
         "mcp.apps.writes",
         unit="{call}",
         description="MCP Apps appwrite_view_write calls by action and status.",
+    )
+
+    _instruments["webmcp_calls"] = meter.create_counter(
+        "mcp.webmcp.calls",
+        unit="{call}",
+        description=(
+            "WebMCP tool calls browser agents make on appwrite.io, reported by "
+            "the page, by tool, status and error code."
+        ),
+    )
+    _instruments["webmcp_duration"] = _histogram(
+        meter,
+        "mcp.webmcp.duration",
+        unit="s",
+        description="WebMCP tool duration in the browser, as the page reported it.",
     )
 
     _instruments["token_usage"] = meter.create_counter(
@@ -747,6 +768,24 @@ def record_view_write(action: str, status: str) -> None:
         1,
         {"action": action, "status": status, "client_id": current_client_id()},
     )
+
+
+def record_webmcp_call(
+    tool: str, status: str, code: str | None, duration_s: float
+) -> None:
+    """One WebMCP tool call reported by appwrite.io. Values outside the
+    allowlists in ``constants`` are counted as ``other``."""
+    tool_name = tool if tool in WEBMCP_TOOLS else "other"
+    status = status if status in WEBMCP_STATUSES else "other"
+    error_code = ""
+    if status == "error":
+        error_code = code if code in WEBMCP_ERROR_CODES else "other"
+    _safe_add(
+        "webmcp_calls",
+        1,
+        {"tool_name": tool_name, "status": status, "error_code": error_code},
+    )
+    _safe_record("webmcp_duration", duration_s, {"tool_name": tool_name})
 
 
 def record_hallucination(attempted_tool: Any) -> None:

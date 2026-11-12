@@ -25,7 +25,7 @@ Source lives in `src/mcp_server_appwrite/`:
 | File | Responsibility |
 | --- | --- |
 | `__main__.py` / `server.py` | Entry point, CLI args, transport selection (`--transport stdio\|http`), service registration, low-level MCP server. |
-| `http_app.py` | Hosted Streamable-HTTP transport: `/` plus the `/mcp` alias, RFC 9728 protected-resource metadata, `/healthz`. |
+| `http_app.py` | Hosted Streamable-HTTP transport: `/` plus the `/mcp` alias, RFC 9728 protected-resource metadata, `/healthz`, and the `/webmcp/events` beacon appwrite.io uses to report WebMCP tool calls. |
 | `auth.py` | OAuth 2.1 resource-server layer — bearer-token validation against the project's Appwrite authorization server. |
 | `flags.py` | Central registry of tester/testing flags (CLI arg + env var per flag). Enabling and testing them is documented in [docs/flags.md](docs/flags.md). |
 | `service.py` | `Service` base class: introspects an Appwrite SDK service and turns its methods into MCP tool definitions. |

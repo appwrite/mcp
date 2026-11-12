@@ -132,6 +132,87 @@ class DocsSearchRoute(unittest.TestCase):
             self.assertEqual(oversized.status_code, 413)
 
 
+class WebMcpEventsRoute(unittest.TestCase):
+    """``POST /webmcp/events``, where appwrite.io reports each WebMCP tool call
+    a browser agent makes. The page sends a text/plain beacon, so the route
+    parses any content type."""
+
+    CALLS = "mcp.webmcp.calls"
+
+    def test_counts_reported_calls_with_allowlisted_labels(self):
+        with Server({"APPWRITE_ENDPOINT": cloud.endpoint}) as server:
+            url = f"{server.url}/webmcp/events"
+            searched = collector().count(
+                self.CALLS, tool_name="search_docs", status="success"
+            )
+            missing = collector().count(
+                self.CALLS,
+                tool_name="get_doc_page",
+                status="error",
+                error_code="not_found",
+            )
+            invented = collector().count(self.CALLS, tool_name="other", status="other")
+
+            for event in (
+                {"tool": "search_docs", "status": "success", "durationMs": 12},
+                {
+                    "tool": "get_doc_page",
+                    "status": "error",
+                    "code": "not_found",
+                    "durationMs": 40.5,
+                },
+                {"tool": "made_up_tool", "status": "whatever", "durationMs": 1},
+            ):
+                beacon = httpx.post(
+                    url,
+                    content=json.dumps(event),
+                    headers={"Content-Type": "text/plain;charset=UTF-8"},
+                )
+                self.assertEqual(beacon.status_code, 204, event)
+                self.assertEqual(beacon.headers["access-control-allow-origin"], "*")
+
+            self.assertEqual(
+                collector().wait(
+                    self.CALLS, searched + 1, tool_name="search_docs", status="success"
+                ),
+                searched + 1,
+            )
+            self.assertEqual(
+                collector().wait(
+                    self.CALLS,
+                    missing + 1,
+                    tool_name="get_doc_page",
+                    status="error",
+                    error_code="not_found",
+                ),
+                missing + 1,
+            )
+            self.assertEqual(
+                collector().wait(
+                    self.CALLS, invented + 1, tool_name="other", status="other"
+                ),
+                invented + 1,
+            )
+
+    def test_rejects_malformed_events(self):
+        with Server({"APPWRITE_ENDPOINT": cloud.endpoint}) as server:
+            url = f"{server.url}/webmcp/events"
+            for invalid in (
+                {"tool": "search_docs", "status": "success"},
+                {"tool": "search_docs", "status": "success", "durationMs": -1},
+                {"tool": "search_docs", "status": "success", "durationMs": True},
+                {"tool": 1, "status": "success", "durationMs": 1},
+                {"tool": "search_docs", "status": "error", "code": 1, "durationMs": 1},
+                ["search_docs"],
+            ):
+                refused = httpx.post(url, content=json.dumps(invalid))
+                self.assertEqual(refused.status_code, 400, invalid)
+
+            self.assertEqual(httpx.post(url, content="nope").status_code, 400)
+            self.assertEqual(httpx.post(url, content=b"x" * 1025).status_code, 413)
+            self.assertEqual(httpx.options(url).status_code, 204)
+
+
 class ToolsFlow(unittest.TestCase):
     server: Server
     client: Client

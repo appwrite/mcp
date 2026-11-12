@@ -19,6 +19,9 @@ Builds a single-tenant Starlette ASGI app for the served Appwrite project:
   server, whose clients have no user to sign in. Results and limits are fixed, so
   a call costs one small embedding.
 * ``/.well-known/openai-apps-challenge`` — public domain verification token.
+* ``/webmcp/events`` — public beacon where appwrite.io reports each WebMCP tool
+  call a browser agent makes, counted as ``mcp.webmcp.*`` metrics with
+  allowlisted labels.
 * ``/appwrite/webhooks/{id}`` — MCP Events ingress for Appwrite webhooks, only
   with the events flag on. Unauthenticated by bearer token: the Appwrite
   signature authenticates it (see :mod:`.events.ingress`).
@@ -90,6 +93,7 @@ from .constants import (
     SERVER_SUMMARY,
     SERVER_VERSION,
     SERVER_WEBSITE_URL,
+    WEBMCP_MAX_BODY_BYTES,
 )
 from .docs_search import DocsSearch
 from .events import protocol as events_protocol
@@ -497,6 +501,44 @@ def docs_search_endpoint(docs_search: DocsSearch):
     return endpoint
 
 
+async def webmcp_events_endpoint(request: Request) -> Response:
+    """One WebMCP tool call a browser agent made on appwrite.io. The page sends
+    it with ``navigator.sendBeacon``: a text/plain body, so no CORS preflight.
+    Body: ``{"tool", "status", "code"?, "durationMs"}``. Labels are
+    allowlisted in ``telemetry.record_webmcp_call``."""
+    headers = dict(CORS_HEADERS)
+    if request.method == "OPTIONS":
+        return Response(status_code=204, headers=headers)
+    raw = b""
+    async for chunk in request.stream():
+        raw += chunk
+        if len(raw) > WEBMCP_MAX_BODY_BYTES:
+            return JSONResponse(
+                {"error": "body_too_large"}, status_code=413, headers=headers
+            )
+    try:
+        body = json.loads(raw)
+        tool = body["tool"]
+        status = body["status"]
+        code = body.get("code")
+        duration_ms = body["durationMs"]
+        if (
+            not isinstance(tool, str)
+            or not isinstance(status, str)
+            or not (code is None or isinstance(code, str))
+            or isinstance(duration_ms, bool)
+            or not isinstance(duration_ms, (int, float))
+            or not 0 <= duration_ms <= 600_000
+        ):
+            raise ValueError
+    except (ValueError, TypeError, KeyError):
+        return JSONResponse(
+            {"error": "invalid_event"}, status_code=400, headers=headers
+        )
+    telemetry.record_webmcp_call(tool, status, code, duration_ms / 1000)
+    return Response(status_code=204, headers=headers)
+
+
 async def health_endpoint(request: Request) -> PlainTextResponse:
     return PlainTextResponse(f"appwrite-mcp {SERVER_VERSION} ok")
 
@@ -639,6 +681,11 @@ def build_app(
         Route("/favicon.svg", endpoint=favicon_svg_endpoint, methods=["GET"]),
         Route("/favicon.ico", endpoint=favicon_ico_endpoint, methods=["GET"]),
         Route("/healthz", endpoint=health_endpoint, methods=["GET"]),
+        Route(
+            "/webmcp/events",
+            endpoint=webmcp_events_endpoint,
+            methods=["POST", "OPTIONS"],
+        ),
         *([ingress.route] if ingress is not None else []),
         *(
             [
