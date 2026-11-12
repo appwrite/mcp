@@ -13,13 +13,17 @@ A redacted value is replaced with ``[redacted]``. A string also gets a sibling
 tell which secret it got and check a stored copy against it. Empty values are
 kept: they only say a secret is unset, or that Appwrite already hid it.
 
-Only typed results are redacted. A ``select`` query returns its rows untyped,
-and those carry the caller's own data, not Appwrite's secrets.
+A payload the SDK could not hydrate into its model has no field types to go
+by, so it is redacted by name: every field name some SDK model marks secret.
+Rows from a ``select`` query are not redacted at all: they are the caller's own
+data, not Appwrite's secrets, and a column may share a secret field's name.
 """
 
 import hashlib
+from functools import cache
 from typing import Any
 
+import appwrite_console.models
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 
@@ -34,6 +38,13 @@ def redact(result: Any) -> tuple[Any, list[str]]:
     names of the fields that were, sorted."""
     fields: set[str] = set()
     return _clean(result, fields), sorted(fields)
+
+
+def redact_payload(payload: Any) -> tuple[Any, list[str]]:
+    """A raw response payload with every field named like a secret field
+    redacted, and the names that were, sorted."""
+    fields: set[str] = set()
+    return _clean_payload(payload, fields), sorted(fields)
 
 
 def fingerprint(value: str) -> str:
@@ -69,17 +80,50 @@ def _clean_model(model: BaseModel, fields: set[str]) -> dict[str, Any]:
         if key not in data:
             continue
         if _secret(field):
-            if data[key] in ("", [], None):
-                continue
-            fields.add(key)
-            if isinstance(data[key], str):
-                data[f"{key}Fingerprint"] = fingerprint(data[key])
-            data[key] = REDACTED
+            _mask(data, key, fields)
             continue
         item = getattr(model, name)
         if _holds_model(item):
             data[key] = _clean(item, fields)
     return data
+
+
+def _clean_payload(value: Any, fields: set[str]) -> Any:
+    if isinstance(value, list):
+        return [_clean_payload(item, fields) for item in value]
+    if not isinstance(value, dict):
+        return value
+    data = dict(value)
+    for key, item in value.items():
+        if key in _secret_names():
+            _mask(data, key, fields)
+        else:
+            data[key] = _clean_payload(item, fields)
+    return data
+
+
+def _mask(data: dict[str, Any], key: str, fields: set[str]) -> None:
+    """Replace a secret value in place. Empty values stay: they only say the
+    secret is unset, or that Appwrite already hid it."""
+    value = data[key]
+    if value in ("", [], None):
+        return
+    fields.add(key)
+    if isinstance(value, str):
+        data[f"{key}Fingerprint"] = fingerprint(value)
+    data[key] = REDACTED
+
+
+@cache
+def _secret_names() -> frozenset[str]:
+    """Every field name an SDK model marks secret."""
+    names: set[str] = set()
+    for model in vars(appwrite_console.models).values():
+        if isinstance(model, type) and issubclass(model, BaseModel):
+            for name, field in model.model_fields.items():
+                if _secret(field):
+                    names.add(field.alias or name)
+    return frozenset(names)
 
 
 def _secret(field: FieldInfo) -> bool:

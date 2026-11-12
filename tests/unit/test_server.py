@@ -876,7 +876,11 @@ class ServerHelperTests(unittest.TestCase):
     def test_format_appwrite_error_returns_the_unhydrated_payload(self):
         exc = AppwriteException(
             "Unable to parse response into Project: 1 validation error",
-            response={"$id": "proj-1", "name": "New Project"},
+            response={
+                "$id": "proj-1",
+                "name": "New Project",
+                "keys": [{"$id": "key-1", "secret": "standard_0123456789abcdef"}],
+            },
         )
 
         message = _format_appwrite_error(exc, tool_name="projects_create")
@@ -887,6 +891,10 @@ class ServerHelperTests(unittest.TestCase):
         self.assertIn("Do not retry", message)
         self.assertIn('"$id": "proj-1"', message)
         self.assertNotIn("validation error", message)
+        # With no model to go by, secrets are still redacted, by field name.
+        self.assertNotIn("standard_0123456789abcdef", message)
+        self.assertIn('"secret": "[redacted]"', message)
+        self.assertIn("Secrets redacted from this result: secret.", message)
 
     def test_format_appwrite_error_does_not_report_parse_failure_as_failure(self):
         exc = AppwriteException(

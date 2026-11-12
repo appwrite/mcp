@@ -83,7 +83,7 @@ from .events.subscriptions import Subscriptions
 from .headers import environment, scoped, set_environment
 from .instructions import build_instructions, load_description
 from .operator import Operator, ToolOutput, _parse_tool_name
-from .redaction import note, redact
+from .redaction import note, redact, redact_payload
 from .service import Service
 from .tool_manager import ToolManager
 
@@ -1349,11 +1349,14 @@ def _format_response_parse_error(tool_name: str | None, response: Any = None) ->
     completed mutation.
     """
     if response is not None:
-        return (
+        # Untyped, so secrets are redacted by name rather than by model.
+        response, redacted = redact_payload(response)
+        message = (
             "Appwrite accepted the request and it succeeded; the SDK could not "
             "deserialize the response into its model, so the raw payload "
             f"follows. Do not retry.\n{_serialize_result(response)}"
         )
+        return f"{message}\n{note(redacted)}" if redacted else message
 
     verify = (
         f" Verify with the matching get or list tool for {tool_name} before retrying."
