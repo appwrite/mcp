@@ -94,6 +94,7 @@ from .constants import (
     SERVER_VERSION,
     SERVER_WEBSITE_URL,
     WEBMCP_MAX_BODY_BYTES,
+    WEBMCP_ORIGINS,
 )
 from .docs_search import DocsSearch
 from .events import protocol as events_protocol
@@ -504,8 +505,9 @@ def docs_search_endpoint(docs_search: DocsSearch):
 async def webmcp_events_endpoint(request: Request) -> Response:
     """One WebMCP tool call a browser agent made on appwrite.io. The page sends
     it with ``navigator.sendBeacon``: a text/plain body, so no CORS preflight.
-    Body: ``{"tool", "status", "code"?, "durationMs"}``. Labels are
-    allowlisted in ``telemetry.record_webmcp_call``."""
+    Body: ``{"tool", "status", "code"?, "durationMs"}``. Only calls from
+    an origin in ``WEBMCP_ORIGINS`` are counted; labels are allowlisted in
+    ``telemetry.record_webmcp_call``."""
     headers = dict(CORS_HEADERS)
     if request.method == "OPTIONS":
         return Response(status_code=204, headers=headers)
@@ -535,7 +537,8 @@ async def webmcp_events_endpoint(request: Request) -> Response:
         return JSONResponse(
             {"error": "invalid_event"}, status_code=400, headers=headers
         )
-    telemetry.record_webmcp_call(tool, status, code, duration_ms / 1000)
+    if request.headers.get("origin") in WEBMCP_ORIGINS:
+        telemetry.record_webmcp_call(tool, status, code, duration_ms / 1000)
     return Response(status_code=204, headers=headers)
 
 

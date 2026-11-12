@@ -155,6 +155,8 @@ WEBMCP_ERROR_CODES = frozenset(
     }
 )
 WEBMCP_MAX_BODY_BYTES = 1024
+# Beacons from previews, staging and local builds are accepted but not counted.
+WEBMCP_ORIGINS = frozenset({"https://appwrite.io"})
 
 DATA_DIR = Path(__file__).parent / "data"
 INDEX_FILE = "docs_index.npz"

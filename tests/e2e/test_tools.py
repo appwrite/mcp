@@ -166,7 +166,10 @@ class WebMcpEventsRoute(unittest.TestCase):
                 beacon = httpx.post(
                     url,
                     content=json.dumps(event),
-                    headers={"Content-Type": "text/plain;charset=UTF-8"},
+                    headers={
+                        "Content-Type": "text/plain;charset=UTF-8",
+                        "Origin": "https://appwrite.io",
+                    },
                 )
                 self.assertEqual(beacon.status_code, 204, event)
                 self.assertEqual(beacon.headers["access-control-allow-origin"], "*")
@@ -192,6 +195,23 @@ class WebMcpEventsRoute(unittest.TestCase):
                     self.CALLS, invented + 1, tool_name="other", status="other"
                 ),
                 invented + 1,
+            )
+
+            # Previews, staging and local builds report too, but are not counted.
+            for origin in ("https://stage.appwrite.io", None):
+                ignored = httpx.post(
+                    url,
+                    content=json.dumps(
+                        {"tool": "search_docs", "status": "success", "durationMs": 5}
+                    ),
+                    headers={"Origin": origin} if origin else {},
+                )
+                self.assertEqual(ignored.status_code, 204, origin)
+            self.assertEqual(
+                collector().count(
+                    self.CALLS, tool_name="search_docs", status="success"
+                ),
+                searched + 1,
             )
 
     def test_rejects_malformed_events(self):
