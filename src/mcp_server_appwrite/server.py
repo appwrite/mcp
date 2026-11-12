@@ -83,6 +83,7 @@ from .events.subscriptions import Subscriptions
 from .headers import environment, scoped, set_environment
 from .instructions import build_instructions, load_description
 from .operator import Operator, ToolOutput, _parse_tool_name
+from .redaction import note, redact
 from .service import Service
 from .tool_manager import ToolManager
 
@@ -1108,6 +1109,7 @@ def execute_registered_tool(
     organization_id: str | None = None,
     environment_id: str | None = None,
     reason: str | None = None,
+    reveal: bool = False,
 ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
     tool_info = tools_manager.get_tool(name)
     if not tool_info:
@@ -1214,7 +1216,14 @@ def execute_registered_tool(
         )
         raise
 
-    return _format_tool_result(name, result, prepared_arguments)
+    if reveal:
+        return _format_tool_result(name, result, prepared_arguments)
+    # Secrets stay out of the model's context unless the call asks for them.
+    result, redacted = redact(result)
+    content = _format_tool_result(name, result, prepared_arguments)
+    if redacted:
+        content.append(types.TextContent(type="text", text=note(redacted)))
+    return content
 
 
 def _json_default(value: Any) -> Any:
@@ -1823,7 +1832,7 @@ def build_operator(
 
     return Operator(
         tools_manager,
-        lambda tool_name, tool_arguments, target_project=None, organization_id=None, environment_id=None, reason=None: (
+        lambda tool_name, tool_arguments, target_project=None, organization_id=None, environment_id=None, reason=None, reveal=False: (
             execute_registered_tool(
                 tools_manager,
                 tool_name,
@@ -1833,6 +1842,7 @@ def build_operator(
                 organization_id=organization_id,
                 environment_id=environment_id,
                 reason=reason,
+                reveal=reveal,
             )
         ),
         context_provider=lambda arguments: _get_context_for_request(arguments, client),

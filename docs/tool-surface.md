@@ -45,6 +45,14 @@ flowchart LR
 
 - **Large outputs** are stored as an MCP resource and returned as preview text
   plus a resource URI.
+- **Secrets** are redacted from results by default: every response field
+  Appwrite's API spec marks `format: password` (API key and token secrets,
+  webhook signing keys, password hashes, OAuth client secrets, MFA recovery
+  codes, database passwords). A redacted string becomes `[redacted]` with a
+  sibling `<field>Fingerprint` (a SHA-256 prefix) to tell secrets apart or check
+  a stored copy, and a note names the redacted fields. `reveal_secrets=true` on
+  `appwrite_call_tool` or `appwrite_call_write_tool` returns them in full, for
+  when the user asks to see a secret.
 - **Reads and writes** go through separate tools so each tool's annotations
   match every call it accepts: `appwrite_call_tool` is read-only and
   idempotent, `appwrite_call_write_tool` is destructive. Each search result

@@ -34,6 +34,7 @@ Source lives in `src/mcp_server_appwrite/`:
 | `instructions.py` | `serverInfo.description` and the server instructions sent on initialize, rendered from `assets/instructions.json` (a description plus ordered, transport/docs-conditional Markdown sections). Edit the JSON to change the wording; keep the `pyproject.toml` description in sync (a test enforces it). |
 | `context.py` | `appwrite_get_context` — workspace summary (project, services, account/org for OAuth, a focused project's environments). |
 | `headers.py` | Per-call request headers: `X-Appwrite-Environment` (a project environment, next to the project's ID) and `X-Appwrite-Reason` (why a write is made, validated and percent-encoded as Appwrite expects). |
+| `redaction.py` | Redacts the response fields Appwrite's spec marks `format: password` (carried on Console SDK model fields) from tool results, leaving a fingerprint, unless a call sets `reveal_secrets`. |
 | `docs_search.py` | In-process semantic docs search (`appwrite_search_docs`) over a prebuilt index. |
 | `docs_source.py` | Fetches the published docs (`/docs/llms.txt` + per-page `.md` exports on appwrite.io) and chunks them for the index build. |
 | `docs_index.py` | Writes the index artifact deterministically and atomically: page and chunk hashes, reuse of cached chunk vectors, build lock, and the added/changed/removed page report. |

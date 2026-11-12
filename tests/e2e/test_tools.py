@@ -16,6 +16,7 @@ the project's own ID.
 """
 
 import base64
+import hashlib
 import json
 import unittest
 from typing import Any
@@ -310,7 +311,37 @@ class ToolsFlow(unittest.TestCase):
         )
         self.assertFalse(result.get("isError"), result)
         self.assertEqual(cloud.calls("POST", "/v1/webhooks"), created + 1)
-        self.assertIn(WEBHOOK["webhook_id"], cloud.documents(PROJECT))
+        signing = cloud.documents(PROJECT)[WEBHOOK["webhook_id"]]["signatureKey"]
+
+        # The signing key Appwrite returns stays out of the model's context:
+        # only a fingerprint of it, and a note on how to see it if asked.
+        self.assertNotIn(signing, json.dumps(result["content"]))
+        webhook = json.loads(self.text(result))
+        self.assertEqual(webhook["secret"], "[redacted]")
+        self.assertEqual(
+            webhook["secretFingerprint"],
+            "sha256:" + hashlib.sha256(signing.encode()).hexdigest()[:12],
+        )
+        self.assertIn(
+            "Secrets redacted from this result: secret.", result["content"][1]["text"]
+        )
+
+        # Asked for, a rotated key comes back in full.
+        result = self.call(
+            "appwrite_call_write_tool",
+            {
+                "tool_name": "webhooks_update_secret",
+                "project_id": PROJECT,
+                "confirm_write": True,
+                "reason": "Show the user the rotated signing key",
+                "reveal_secrets": True,
+                "arguments": {"webhook_id": WEBHOOK["webhook_id"]},
+            },
+        )
+        self.assertFalse(result.get("isError"), result)
+        signing = cloud.documents(PROJECT)[WEBHOOK["webhook_id"]]["signatureKey"]
+        self.assertEqual(json.loads(self.text(result))["secret"], signing)
+        self.assertEqual(len(result["content"]), 1)
 
         self.assertEqual(
             collector().wait(
