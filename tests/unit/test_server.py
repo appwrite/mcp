@@ -876,7 +876,11 @@ class ServerHelperTests(unittest.TestCase):
     def test_format_appwrite_error_returns_the_unhydrated_payload(self):
         exc = AppwriteException(
             "Unable to parse response into Project: 1 validation error",
-            response={"$id": "proj-1", "name": "New Project"},
+            response={
+                "$id": "proj-1",
+                "name": "New Project",
+                "keys": [{"$id": "key-1", "secret": "standard_0123456789abcdef"}],
+            },
         )
 
         message = _format_appwrite_error(exc, tool_name="projects_create")
@@ -887,6 +891,15 @@ class ServerHelperTests(unittest.TestCase):
         self.assertIn("Do not retry", message)
         self.assertIn('"$id": "proj-1"', message)
         self.assertNotIn("validation error", message)
+        # With no model to go by, secrets are still redacted, by field name.
+        self.assertNotIn("standard_0123456789abcdef", message)
+        self.assertIn('"secret": "[redacted]"', message)
+        self.assertIn("Secrets redacted from this result: secret.", message)
+
+        # Asked for, a one-time secret is not lost to a parse failure.
+        revealed = _format_appwrite_error(exc, tool_name="projects_create", reveal=True)
+        self.assertIn("standard_0123456789abcdef", revealed)
+        self.assertNotIn("Secrets redacted", revealed)
 
     def test_format_appwrite_error_does_not_report_parse_failure_as_failure(self):
         exc = AppwriteException(
@@ -1060,7 +1073,7 @@ class ServerHelperTests(unittest.TestCase):
             set(SERVICE_CLASSES),
         )
         self.assertEqual(len(manager_a.services), 41)
-        self.assertEqual(len(manager_a.get_all_tools()), 1029)
+        self.assertEqual(len(manager_a.get_all_tools()), 1065)
 
     def test_console_sdk_0_7_surface(self):
         manager = register_services(object(), profile=OAUTH_PROFILE)
@@ -1182,7 +1195,7 @@ class ServerHelperTests(unittest.TestCase):
         tool_names = {tool.name for tool in manager.get_all_tools()}
 
         self.assertEqual(len(manager.services), 27)
-        self.assertEqual(len(tool_names), 689)
+        self.assertEqual(len(tool_names), 720)
         self.assertIn("waf_list_rules", tool_names)
         self.assertIn("waf_create_deny_rule", tool_names)
         self.assertIn("avatars_get_photo", tool_names)
@@ -1365,6 +1378,7 @@ class ServerHelperTests(unittest.TestCase):
             organization_id=None,
             environment_id=None,
             reason=None,
+            reveal=False,
         ):
             seen["client"] = client
             seen["target_project"] = target_project
@@ -1534,8 +1548,9 @@ class ServerHelperTests(unittest.TestCase):
         self.assertIsInstance(result[0], types.EmbeddedResource)
 
     def test_execute_registered_tool_returns_selected_attributes_untyped(self):
-        # A select query returns partial documents that the SDK's full models
-        # reject (Sentry MCP-12/MCP-13).
+        # A select query returns partial documents. They are passed through as
+        # Appwrite sent them, not filled with the full model's defaults
+        # (Sentry MCP-12/MCP-13).
         manager = register_services(object(), profile=OAUTH_PROFILE)
         partial = {
             "total": 1,
@@ -1554,15 +1569,6 @@ class ServerHelperTests(unittest.TestCase):
 
         self.assertIsInstance(result[0], types.TextContent)
         self.assertEqual(json.loads(result[0].text), partial)
-
-        with patch.object(server_module.error_monitoring, "capture_appwrite_exception"):
-            with self.assertRaises(RuntimeError):
-                execute_registered_tool(
-                    manager,
-                    "functions_list_deployments",
-                    {"function_id": "function"},
-                    client=client,
-                )
 
     def test_execute_registered_tool_captures_publishable_appwrite_error(self):
         tool = types.Tool(

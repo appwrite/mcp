@@ -497,8 +497,9 @@ def _row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _json(content: list[Any]) -> Any:
-    text = "\n".join(
-        item.text for item in content if isinstance(item, types.TextContent)
+    # The result is the first text item; a note on redacted secrets may follow.
+    text = next(
+        (item.text for item in content if isinstance(item, types.TextContent)), ""
     )
     try:
         return json.loads(text)

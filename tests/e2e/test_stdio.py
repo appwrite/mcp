@@ -169,6 +169,12 @@ class StdioTest(unittest.TestCase):
 
         # Every request is in the environment; the reason went with its write alone.
         self.assertFalse(session["read"].is_error, session["read"])
+        # Password hashes never reach the model, only their fingerprints.
+        listed_users = session["read"].content[0].text
+        self.assertNotIn("$argon2", listed_users)
+        for each in json.loads(listed_users)["users"]:
+            self.assertEqual(each["password"], "[redacted]")
+            self.assertTrue(each["passwordFingerprint"].startswith("sha256:"))
         listed = self.cloud.headers("GET", "/v1/users")
         self.assertTrue(listed)
         for headers in listed:

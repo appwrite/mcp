@@ -83,6 +83,7 @@ from .events.subscriptions import Subscriptions
 from .headers import environment, scoped, set_environment
 from .instructions import build_instructions, load_description
 from .operator import Operator, ToolOutput, _parse_tool_name
+from .redaction import note, redact, redact_payload
 from .service import Service
 from .tool_manager import ToolManager
 
@@ -1108,6 +1109,7 @@ def execute_registered_tool(
     organization_id: str | None = None,
     environment_id: str | None = None,
     reason: str | None = None,
+    reveal: bool = False,
 ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
     tool_info = tools_manager.get_tool(name)
     if not tool_info:
@@ -1188,7 +1190,9 @@ def execute_registered_tool(
             organization_id=organization_id,
             environment_id=environment_id,
         )
-        raise RuntimeError(_format_appwrite_error(exc, tool_name=name)) from exc
+        raise RuntimeError(
+            _format_appwrite_error(exc, tool_name=name, reveal=reveal)
+        ) from exc
     except Exception as exc:
         error_monitoring.capture_exception(
             exc,
@@ -1214,7 +1218,14 @@ def execute_registered_tool(
         )
         raise
 
-    return _format_tool_result(name, result, prepared_arguments)
+    if reveal:
+        return _format_tool_result(name, result, prepared_arguments)
+    # Secrets stay out of the model's context unless the call asks for them.
+    result, redacted = redact(result)
+    content = _format_tool_result(name, result, prepared_arguments)
+    if redacted:
+        content.append(types.TextContent(type="text", text=note(redacted)))
+    return content
 
 
 def _json_default(value: Any) -> Any:
@@ -1306,9 +1317,13 @@ def _format_tool_result(
     return [types.TextContent(type="text", text=str(result))]
 
 
-def _format_appwrite_error(exc: AppwriteException, tool_name: str | None = None) -> str:
+def _format_appwrite_error(
+    exc: AppwriteException, tool_name: str | None = None, reveal: bool = False
+) -> str:
     if is_response_parse_error(exc):
-        return _format_response_parse_error(tool_name, _parse_error_response(exc))
+        return _format_response_parse_error(
+            tool_name, _parse_error_response(exc), reveal
+        )
 
     details = []
     if getattr(exc, "code", None):
@@ -1331,7 +1346,9 @@ def _parse_error_response(exc: BaseException) -> Any:
     return None
 
 
-def _format_response_parse_error(tool_name: str | None, response: Any = None) -> str:
+def _format_response_parse_error(
+    tool_name: str | None, response: Any = None, reveal: bool = False
+) -> str:
     """Explain an SDK deserialization failure without implying the write failed.
 
     ``Service._parse_response`` raises this after Appwrite has already accepted
@@ -1340,11 +1357,14 @@ def _format_response_parse_error(tool_name: str | None, response: Any = None) ->
     completed mutation.
     """
     if response is not None:
-        return (
+        # Untyped, so secrets are redacted by name rather than by model.
+        response, redacted = (response, []) if reveal else redact_payload(response)
+        message = (
             "Appwrite accepted the request and it succeeded; the SDK could not "
             "deserialize the response into its model, so the raw payload "
             f"follows. Do not retry.\n{_serialize_result(response)}"
         )
+        return f"{message}\n{note(redacted)}" if redacted else message
 
     verify = (
         f" Verify with the matching get or list tool for {tool_name} before retrying."
@@ -1823,7 +1843,7 @@ def build_operator(
 
     return Operator(
         tools_manager,
-        lambda tool_name, tool_arguments, target_project=None, organization_id=None, environment_id=None, reason=None: (
+        lambda tool_name, tool_arguments, target_project=None, organization_id=None, environment_id=None, reason=None, reveal=False: (
             execute_registered_tool(
                 tools_manager,
                 tool_name,
@@ -1833,6 +1853,7 @@ def build_operator(
                 organization_id=organization_id,
                 environment_id=environment_id,
                 reason=reason,
+                reveal=reveal,
             )
         ),
         context_provider=lambda arguments: _get_context_for_request(arguments, client),

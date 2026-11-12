@@ -22,7 +22,7 @@ flowchart LR
 
     subgraph CAT[Internal catalog — authentication-aware]
         direction LR
-        K[OAuth: 41 services / 1029 tools<br/>API key: 27 services / 689 tools]
+        K[OAuth: 41 services / 1065 tools<br/>API key: 27 services / 720 tools]
     end
 
     CT -->|large output| R[(MCP resource<br/>preview + URI)]
@@ -45,6 +45,14 @@ flowchart LR
 
 - **Large outputs** are stored as an MCP resource and returned as preview text
   plus a resource URI.
+- **Secrets** are redacted from results by default: every response field
+  Appwrite's API spec marks `format: password` (API key and token secrets,
+  webhook signing keys, password hashes, OAuth client secrets, MFA recovery
+  codes, database passwords). A redacted string becomes `[redacted]` with a
+  sibling `<field>Fingerprint` (a SHA-256 prefix) to tell secrets apart or check
+  a stored copy, and a note names the redacted fields. `reveal_secrets=true` on
+  `appwrite_call_tool` or `appwrite_call_write_tool` returns them in full, for
+  when the user asks to see a secret.
 - **Reads and writes** go through separate tools so each tool's annotations
   match every call it accepts: `appwrite_call_tool` is read-only and
   idempotent, `appwrite_call_write_tool` is destructive. Each search result
@@ -72,11 +80,11 @@ flowchart LR
   `context=organization`, or `context=project`. Hosted calls enforce the required
   top-level `organization_id` or `project_id` before making a request.
 - **Access** is still gated per-route by the scopes granted to the OAuth token.
-- **Hosted OAuth** registers all 41 services and 1029 methods shipped by
-  `appwrite-console` 0.12.0. This adds console control-plane services including
+- **Hosted OAuth** registers all 41 services and 1065 methods shipped by
+  `appwrite-console` 0.16.0. This adds console control-plane services including
   projects, organizations, domains, migrations, dedicated databases, usage, VCS,
   vectors, WAF, notifications, and regions.
-- **API-key stdio** deliberately registers only the 689 project-key-compatible
+- **API-key stdio** deliberately registers only the 720 project-key-compatible
   methods across 27 services. It includes the new DocumentsDB, VectorsDB, and
   text-embeddings APIs, while console administration methods remain hidden.
 - **Registration** remains SDK-driven, with the authentication profile policy

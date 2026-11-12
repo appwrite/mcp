@@ -47,10 +47,10 @@ from .headers import REASON_LENGTH, reason_error
 from .tool_manager import ToolManager
 
 ToolContent = types.TextContent | types.ImageContent | types.EmbeddedResource
-# (tool_name, arguments, project_id, organization_id, environment_id, reason)
-# -> content
+# (tool_name, arguments, project_id, organization_id, environment_id, reason,
+# reveal) -> content
 ToolExecutor = Callable[
-    [str, dict[str, Any], str | None, str | None, str | None, str | None],
+    [str, dict[str, Any], str | None, str | None, str | None, str | None, bool],
     list[ToolContent],
 ]
 ContextProvider = Callable[[dict[str, Any]], dict[str, Any]]
@@ -668,6 +668,9 @@ class Operator:
                     f"Tool {tool_name} requires organization_id. Use {CONTEXT_TOOL_NAME} "
                     "to select an organization, then retry with that organization ID."
                 )
+        reveal = bool(
+            raw_arguments.get("reveal_secrets", raw_arguments.get("revealSecrets"))
+        )
         arguments_object = _normalize_arguments(raw_arguments)
         return self._execute_tool(
             tool_name,
@@ -676,6 +679,7 @@ class Operator:
             organization_id,
             environment_id or None,
             reason,
+            reveal,
         )
 
     def _preview_or_store_result(
@@ -812,6 +816,16 @@ def _call_input_schema(*, write: bool) -> dict[str, Any]:
                 "log and shown in the Activity tab next to the change."
             ),
         }
+    properties["reveal_secrets"] = {
+        "type": "boolean",
+        "description": (
+            "Return secrets in full: API key and token secrets, signing keys, "
+            "client secrets, password hashes and other fields Appwrite marks "
+            "secret. Off by default, so they are redacted and replaced with a "
+            "fingerprint. Set true only when the user explicitly asks to see a "
+            "secret in this conversation."
+        ),
+    }
     properties |= {
         "project_id": {
             "type": "string",
@@ -1225,6 +1239,8 @@ def _normalize_arguments(raw_arguments: dict[str, Any]) -> dict[str, Any]:
             "environment_id",
             "environmentId",
             "reason",
+            "reveal_secrets",
+            "revealSecrets",
         }:
             continue
         if value is not None:
