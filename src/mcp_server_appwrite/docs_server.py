@@ -11,7 +11,12 @@ import anyio.to_thread
 import mcp.types as types
 from mcp.server import Server, ServerRequestContext
 
-from .constants import SERVER_ICON_URL, SERVER_VERSION, SERVER_WEBSITE_URL
+from .constants import (
+    DOCS_MAX_QUERY_LENGTH,
+    SERVER_ICON_URL,
+    SERVER_VERSION,
+    SERVER_WEBSITE_URL,
+)
 from .docs_search import DocsSearch
 
 INSTRUCTIONS = (
@@ -35,11 +40,16 @@ def build_docs_server(docs_search: DocsSearch) -> Server:
     ) -> types.CallToolResult:
         if params.name != tool.name:
             return _error(f"Unknown tool: {params.name}. Use {tool.name}.")
+        query = (params.arguments or {}).get("query")
+        if isinstance(query, str) and len(query) > DOCS_MAX_QUERY_LENGTH:
+            return _error(
+                f"query must be at most {DOCS_MAX_QUERY_LENGTH} characters long."
+            )
         try:
             content = await anyio.to_thread.run_sync(
                 docs_search.search, params.arguments, abandon_on_cancel=True
             )
-        except (ValueError, RuntimeError) as error:
+        except (ValueError, TypeError, RuntimeError) as error:
             return _error(str(error))
         return types.CallToolResult(content=list(content))
 

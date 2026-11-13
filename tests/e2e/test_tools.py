@@ -156,12 +156,21 @@ class DocsSearchRoute(unittest.TestCase):
             self.assertFalse(found.get("isError", False))
             self.assertTrue(json.loads(found["content"][0]["text"])["results"])
 
-            refused = rpc(
-                4,
-                "tools/call",
-                {"name": "appwrite_search_docs", "arguments": {"query": "x"}},
-            )["result"]
-            self.assertTrue(refused["isError"])
+            for id, invalid in enumerate(
+                (
+                    {"query": "x"},
+                    {"query": "x" * 501},
+                    {"query": "create a row", "limit": [5]},
+                    {"query": "create a row", "limit": "many"},
+                ),
+                start=4,
+            ):
+                refused = rpc(
+                    id,
+                    "tools/call",
+                    {"name": "appwrite_search_docs", "arguments": invalid},
+                )["result"]
+                self.assertTrue(refused["isError"], invalid)
 
             preflight = httpx.options(f"{server.url}/docs/mcp")
             self.assertEqual(preflight.status_code, 204)
