@@ -41,7 +41,7 @@ services:
   # Carries push events between replicas (MCP_EVENTS_PUSH), as in the cluster;
   # any Redis-protocol server works. See docs/events.md.
   dragonfly:
-    image: docker.dragonflydb.io/dragonflydb/dragonfly:v2.0.0
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:v2.1.0
     command: ["dragonfly", "--logtostderr", "--dbfilename=", "--proactor_threads=2"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
