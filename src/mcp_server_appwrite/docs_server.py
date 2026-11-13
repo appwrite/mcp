@@ -41,7 +41,9 @@ def build_docs_server(docs_search: DocsSearch) -> Server:
         if params.name != tool.name:
             return _error(f"Unknown tool: {params.name}. Use {tool.name}.")
         query = (params.arguments or {}).get("query")
-        if isinstance(query, str) and len(query) > DOCS_MAX_QUERY_LENGTH:
+        if not isinstance(query, str):
+            return _error("query must be a string.")
+        if len(query) > DOCS_MAX_QUERY_LENGTH:
             return _error(
                 f"query must be at most {DOCS_MAX_QUERY_LENGTH} characters long."
             )

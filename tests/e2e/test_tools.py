@@ -160,6 +160,7 @@ class DocsSearchRoute(unittest.TestCase):
                 (
                     {"query": "x"},
                     {"query": "x" * 501},
+                    {"query": ["x" * 501]},
                     {"query": "create a row", "limit": [5]},
                     {"query": "create a row", "limit": "many"},
                 ),
