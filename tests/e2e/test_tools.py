@@ -173,6 +173,20 @@ class DocsSearchRoute(unittest.TestCase):
                 )["result"]
                 self.assertTrue(refused["isError"], invalid)
 
+            unknown = httpx.post(
+                f"{server.url}/docs/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 99,
+                    "method": "tools/call",
+                    "params": {"name": "delete_everything", "arguments": {}},
+                },
+                headers=headers,
+            )
+            error = rpc_message(unknown)["error"]
+            self.assertEqual(error["code"], -32602)
+            self.assertIn("appwrite_search_docs", error["message"])
+
             preflight = httpx.options(f"{server.url}/docs/mcp")
             self.assertEqual(preflight.status_code, 204)
             self.assertEqual(preflight.headers["access-control-allow-origin"], "*")

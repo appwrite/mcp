@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import anyio.to_thread
 import mcp.types as types
+from mcp import MCPError
 from mcp.server import Server, ServerRequestContext
+from mcp.types import INVALID_PARAMS
 
 from .constants import (
     DOCS_MAX_QUERY_LENGTH,
@@ -39,7 +41,9 @@ def build_docs_server(docs_search: DocsSearch) -> Server:
         ctx: ServerRequestContext, params: types.CallToolRequestParams
     ) -> types.CallToolResult:
         if params.name != tool.name:
-            return _error(f"Unknown tool: {params.name}. Use {tool.name}.")
+            raise MCPError(
+                INVALID_PARAMS, f"Unknown tool: {params.name}. Use {tool.name}."
+            )
         query = (params.arguments or {}).get("query")
         if not isinstance(query, str):
             return _error("query must be a string.")
