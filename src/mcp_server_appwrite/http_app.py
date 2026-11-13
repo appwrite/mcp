@@ -18,6 +18,7 @@ Builds a single-tenant Starlette ASGI app for the served Appwrite project:
 * ``/docs/search`` — public documentation search for the deprecated docs MCP
   server, whose clients have no user to sign in. Results and limits are fixed, so
   a call costs one small embedding.
+* ``/docs/mcp`` — the public docs MCP server (:mod:`.docs_server`), no sign-in.
 * ``/.well-known/openai-apps-challenge`` — public domain verification token.
 * ``/appwrite/webhooks/{id}`` — MCP Events ingress for Appwrite webhooks, only
   with the events flag on. Unauthenticated by bearer token: the Appwrite
@@ -92,6 +93,7 @@ from .constants import (
     SERVER_WEBSITE_URL,
 )
 from .docs_search import DocsSearch
+from .docs_server import build_docs_server
 from .events import protocol as events_protocol
 from .events.ingress import Ingress
 from .events.streams import Settings, Streams
@@ -202,7 +204,7 @@ class RequireBearer:
             return
 
         if scope.get("method") == "OPTIONS":
-            await self._preflight(send)
+            await _send_preflight(send)
             return
 
         user = scope.get("user")
@@ -223,10 +225,25 @@ class RequireBearer:
 
         await self.app(scope, receive, send)
 
-    async def _preflight(self, send: Send) -> None:
-        headers = [(k.lower().encode(), v.encode()) for k, v in CORS_HEADERS.items()]
-        await send({"type": "http.response.start", "status": 204, "headers": headers})
-        await send({"type": "http.response.body", "body": b""})
+
+class Preflight:
+    """ASGI gate for a public MCP endpoint: answers CORS preflights, passes
+    everything else through."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("method") == "OPTIONS":
+            await _send_preflight(send)
+            return
+        await self.app(scope, receive, send)
+
+
+async def _send_preflight(send: Send) -> None:
+    headers = [(k.lower().encode(), v.encode()) for k, v in CORS_HEADERS.items()]
+    await send({"type": "http.response.start", "status": 204, "headers": headers})
+    await send({"type": "http.response.body", "body": b""})
 
 
 def _has_authorization_header(scope: Scope) -> bool:
@@ -581,10 +598,19 @@ def build_app(
 
     mcp_endpoint = RequireBearer(MCPIdentityMiddleware(handle_mcp))
 
+    docs_search = operator.docs_search
+    docs_manager = (
+        StreamableHTTPSessionManager(app=build_docs_server(docs_search), stateless=True)
+        if docs_search is not None
+        else None
+    )
+
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):
         async with contextlib.AsyncExitStack() as stack:
             await stack.enter_async_context(session_manager.run())
+            if docs_manager is not None:
+                await stack.enter_async_context(docs_manager.run())
             if ingress is not None:
                 await stack.enter_async_context(ingress.run())
             _log(f"Appwrite MCP (Streamable HTTP) ready — v{SERVER_VERSION}")
@@ -644,11 +670,16 @@ def build_app(
             [
                 Route(
                     "/docs/search",
-                    endpoint=docs_search_endpoint(operator.docs_search),
+                    endpoint=docs_search_endpoint(docs_search),
                     methods=["POST"],
-                )
+                ),
+                Route(
+                    "/docs/mcp",
+                    endpoint=Preflight(docs_manager.handle_request),
+                    methods=["GET", "POST", "DELETE", "OPTIONS"],
+                ),
             ]
-            if operator.docs_search is not None
+            if docs_search is not None and docs_manager is not None
             else []
         ),
         Route(

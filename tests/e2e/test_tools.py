@@ -35,6 +35,7 @@ from support import (
     Server,
     collector,
 )
+from support import message as rpc_message
 
 from mcp_server_appwrite import docs_search
 
@@ -80,7 +81,8 @@ def tearDownModule() -> None:
 
 class DocsSearchRoute(unittest.TestCase):
     """``POST /docs/search``, which the deprecated docs MCP server calls without a
-    user. Only the OpenAI query embedding is stubbed; the index is the real one."""
+    user, and the public docs MCP server at ``/docs/mcp``. Only the OpenAI query
+    embedding is stubbed; the index is the real one."""
 
     def setUp(self) -> None:
         patch = mock.patch.object(
@@ -112,6 +114,71 @@ class DocsSearchRoute(unittest.TestCase):
             self.assertEqual(
                 set(results[0]), {"path", "title", "description", "score", "content"}
             )
+
+    def test_docs_mcp_searches_without_auth(self):
+        headers = {"Accept": "application/json, text/event-stream"}
+
+        def rpc(id: int, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            response = httpx.post(
+                f"{server.url}/docs/mcp",
+                json={"jsonrpc": "2.0", "id": id, "method": method, "params": params},
+                headers=headers,
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            return rpc_message(response)
+
+        with self.server() as server:
+            initialized = rpc(
+                1,
+                "initialize",
+                {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "e2e", "version": "1"},
+                },
+            )["result"]
+            self.assertEqual(initialized["serverInfo"]["name"], "Appwrite Docs")
+            self.assertIn("appwrite_search_docs", initialized["instructions"])
+            headers["MCP-Protocol-Version"] = "2025-06-18"
+
+            tools = rpc(2, "tools/list", {})["result"]["tools"]
+            self.assertEqual([tool["name"] for tool in tools], ["appwrite_search_docs"])
+            self.assertTrue(tools[0]["annotations"]["readOnlyHint"])
+
+            found = rpc(
+                3,
+                "tools/call",
+                {
+                    "name": "appwrite_search_docs",
+                    "arguments": {"query": "create a row"},
+                },
+            )["result"]
+            self.assertFalse(found.get("isError", False))
+            self.assertTrue(json.loads(found["content"][0]["text"])["results"])
+
+            for id, invalid in enumerate(
+                (
+                    {"query": "x"},
+                    {"query": "x" * 501},
+                    {"query": ["x" * 501]},
+                    {"query": "create a row", "limit": [5]},
+                    {"query": "create a row", "limit": "many"},
+                ),
+                start=4,
+            ):
+                refused = rpc(
+                    id,
+                    "tools/call",
+                    {"name": "appwrite_search_docs", "arguments": invalid},
+                )["result"]
+                self.assertTrue(refused["isError"], invalid)
+
+            preflight = httpx.options(f"{server.url}/docs/mcp")
+            self.assertEqual(preflight.status_code, 204)
+            self.assertEqual(preflight.headers["access-control-allow-origin"], "*")
+
+            # The product endpoint still requires a token.
+            self.assertEqual(httpx.post(f"{server.url}/", json={}).status_code, 401)
 
     def test_rejects_invalid_queries_before_embedding_them(self):
         with self.server() as server:
