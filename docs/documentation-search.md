@@ -32,6 +32,10 @@ curl -X POST https://mcp.appwrite.io/docs/search \
 
 It answers `{"results": [{"path", "title", "description", "score", "content"}]}` with up to 5 pages, `400` for an invalid query or one over 500 characters, `413` for a body over 16 KiB, and `502` when the embedding request fails. The route exists only when documentation search is available.
 
+## Public docs MCP server
+
+`https://mcp.appwrite.io/docs/mcp` is a second MCP server, built in `docs_server.py`, that needs no sign-in. Its only tool is `appwrite_search_docs`, so agents and clients that never connect a project can still answer questions from the docs. It replaces `mcp-for-docs.appwrite.io` for clients that have no user to sign in. Like `/docs/search`, it is served only when documentation search is available.
+
 ## Rebuilding the index
 
 Re-run when the docs change, then commit the refreshed artifact:

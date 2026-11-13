@@ -25,7 +25,7 @@ Source lives in `src/mcp_server_appwrite/`:
 | File | Responsibility |
 | --- | --- |
 | `__main__.py` / `server.py` | Entry point, CLI args, transport selection (`--transport stdio\|http`), service registration, low-level MCP server. |
-| `http_app.py` | Hosted Streamable-HTTP transport: `/` plus the `/mcp` alias, RFC 9728 protected-resource metadata, `/healthz`. |
+| `http_app.py` | Hosted Streamable-HTTP transport: `/` plus the `/mcp` alias, the public `/docs/mcp`, RFC 9728 protected-resource metadata, `/healthz`. |
 | `auth.py` | OAuth 2.1 resource-server layer — bearer-token validation against the project's Appwrite authorization server. |
 | `flags.py` | Central registry of tester/testing flags (CLI arg + env var per flag). Enabling and testing them is documented in [docs/flags.md](docs/flags.md). |
 | `service.py` | `Service` base class: introspects an Appwrite SDK service and turns its methods into MCP tool definitions. |
@@ -36,6 +36,7 @@ Source lives in `src/mcp_server_appwrite/`:
 | `headers.py` | Per-call request headers: `X-Appwrite-Environment` (a project environment, next to the project's ID) and `X-Appwrite-Reason` (why a write is made, validated and percent-encoded as Appwrite expects). |
 | `redaction.py` | Redacts the response fields Appwrite's spec marks `format: password` (carried on Console SDK model fields) from tool results, leaving a fingerprint, unless a call sets `reveal_secrets`. |
 | `docs_search.py` | In-process semantic docs search (`appwrite_search_docs`) over a prebuilt index. |
+| `docs_server.py` | The public docs MCP server at `/docs/mcp`: `appwrite_search_docs` only, no sign-in. |
 | `docs_source.py` | Fetches the published docs (`/docs/llms.txt` + per-page `.md` exports on appwrite.io) and chunks them for the index build. |
 | `docs_index.py` | Writes the index artifact deterministically and atomically: page and chunk hashes, reuse of cached chunk vectors, build lock, and the added/changed/removed page report. |
 | `events/` | MCP Events (behind `flags.EVENTS`, HTTP only): `catalog.py` (event catalog), `protocol.py` (capability, `events/list` and the subscribe methods), `subscriptions.py` + `webhooks.py` (`events/subscribe` / `events/unsubscribe`: one managed Appwrite webhook per subscription), `envelope.py` (subscription state sealed with the `mcp-event-subscriptions` JWE profile), `egress.py` + `delivery.py` (SSRF-safe signed delivery), `projection.py` + `ingress.py` (Appwrite webhook ingress at `/appwrite/webhooks/{id}`), `streams.py` + `bus.py` (push delivery: `events/stream`, behind `flags.EVENTS_PUSH`, with events routed between replicas over Redis pub/sub). See [docs/events.md](docs/events.md). |
