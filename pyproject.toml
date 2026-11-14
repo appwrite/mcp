@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "anyio>=4.0.0",
-    "appwrite-console>=0.12.0,<0.13",
+    "appwrite-console>=0.16.0,<0.17",
     "docstring-parser>=0.16",
     "mcp[cli]>=2.3,<3",
     "python-dotenv>=1.0.1",
@@ -36,7 +36,7 @@ integration = [
 
 [dependency-groups]
 dev = [
-    "black==26.3.1",
+    "black==26.10.1",
     "ruff==0.15.18",
     "pyright==1.1.411",
 ]

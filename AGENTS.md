@@ -13,7 +13,8 @@ operator-style tools, supporting two deployments from one codebase:
   Appwrite REST API. Served primarily at `mcp.appwrite.io/`, with `/mcp` also
   available as a conventional alias.
 - **Self-hosted (`stdio`):** runs locally and authenticates with a project API
-  key (`APPWRITE_PROJECT_ID`, `APPWRITE_API_KEY`, `APPWRITE_ENDPOINT`).
+  key (`APPWRITE_PROJECT_ID`, `APPWRITE_API_KEY`, `APPWRITE_ENDPOINT`, and
+  optionally `APPWRITE_ENVIRONMENT_ID` for a project environment).
 
 Python ≥ 3.12, packaged with `hatchling`, managed with `uv`.
 
@@ -24,7 +25,7 @@ Source lives in `src/mcp_server_appwrite/`:
 | File | Responsibility |
 | --- | --- |
 | `__main__.py` / `server.py` | Entry point, CLI args, transport selection (`--transport stdio\|http`), service registration, low-level MCP server. |
-| `http_app.py` | Hosted Streamable-HTTP transport: `/` plus the `/mcp` alias, RFC 9728 protected-resource metadata, `/healthz`. |
+| `http_app.py` | Hosted Streamable-HTTP transport: `/` plus the `/mcp` alias, the public `/docs/mcp`, RFC 9728 protected-resource metadata, `/healthz`. |
 | `auth.py` | OAuth 2.1 resource-server layer — bearer-token validation against the project's Appwrite authorization server. |
 | `flags.py` | Central registry of tester/testing flags (CLI arg + env var per flag). Enabling and testing them is documented in [docs/flags.md](docs/flags.md). |
 | `service.py` | `Service` base class: introspects an Appwrite SDK service and turns its methods into MCP tool definitions. |
@@ -32,8 +33,11 @@ Source lives in `src/mcp_server_appwrite/`:
 | `operator.py` | The compact "operator" surface — `appwrite_search_tools`, `appwrite_call_tool` / `appwrite_call_write_tool`, tool annotations, result/resource storage, write confirmation. |
 | `instructions.py` | `serverInfo.description` and the server instructions sent on initialize, rendered from `assets/instructions.json` (a description plus ordered, transport/docs-conditional Markdown sections). Edit the JSON to change the wording; keep the `pyproject.toml` description in sync (a test enforces it). |
 | `zero.py` | Appwrite Zero (stdio without credentials): `appwrite_create_zero_project` creates a temporary project with no account and points the shared client at it; `appwrite_get_zero_project` reports its status. |
-| `context.py` | `appwrite_get_context` — workspace summary (project, services, account/org for OAuth). |
+| `context.py` | `appwrite_get_context` — workspace summary (project, services, account/org for OAuth, a focused project's environments). |
+| `headers.py` | Per-call request headers: `X-Appwrite-Environment` (a project environment, next to the project's ID) and `X-Appwrite-Reason` (why a write is made, validated and percent-encoded as Appwrite expects). |
+| `redaction.py` | Redacts the response fields Appwrite's spec marks `format: password` (carried on Console SDK model fields) from tool results, leaving a fingerprint, unless a call sets `reveal_secrets`. |
 | `docs_search.py` | In-process semantic docs search (`appwrite_search_docs`) over a prebuilt index. |
+| `docs_server.py` | The public docs MCP server at `/docs/mcp`: `appwrite_search_docs` only, no sign-in. |
 | `docs_source.py` | Fetches the published docs (`/docs/llms.txt` + per-page `.md` exports on appwrite.io) and chunks them for the index build. |
 | `docs_index.py` | Writes the index artifact deterministically and atomically: page and chunk hashes, reuse of cached chunk vectors, build lock, and the added/changed/removed page report. |
 | `events/` | MCP Events (behind `flags.EVENTS`, HTTP only): `catalog.py` (event catalog), `protocol.py` (capability, `events/list` and the subscribe methods), `subscriptions.py` + `webhooks.py` (`events/subscribe` / `events/unsubscribe`: one managed Appwrite webhook per subscription), `envelope.py` (subscription state sealed with the `mcp-event-subscriptions` JWE profile), `egress.py` + `delivery.py` (SSRF-safe signed delivery), `projection.py` + `ingress.py` (Appwrite webhook ingress at `/appwrite/webhooks/{id}`), `streams.py` + `bus.py` (push delivery: `events/stream`, behind `flags.EVENTS_PUSH`, with events routed between replicas over Redis pub/sub). See [docs/events.md](docs/events.md). |
@@ -60,8 +64,9 @@ reads, `appwrite_call_write_tool` for everything else, and optionally
 `appwrite_search_docs`), while the full OAuth Appwrite catalog (41
 services) stays internal and is searched at runtime. API-key stdio uses a filtered
 27-service catalog. Mutating hidden tools run only through
-`appwrite_call_write_tool` and require `confirm_write=true`, so each exposed
-tool's annotations match every call it accepts. Large outputs are stored as MCP
+`appwrite_call_write_tool` and require `confirm_write=true` and a one-line
+`reason` (sent as `X-Appwrite-Reason`, recorded on the audit log), so each
+exposed tool's annotations match every call it accepts. Large outputs are stored as MCP
 resources and returned as a preview + resource URI.
 
 With MCP Apps on (`flags.APPS`), hosts that render them also see

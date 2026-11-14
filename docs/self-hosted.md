@@ -4,7 +4,7 @@ Running your own Appwrite instance? Run the MCP server locally over `stdio` and
 authenticate with a project API key instead of OAuth.
 
 The local API-key catalog is intentionally smaller than the hosted OAuth catalog:
-it exposes 689 project-key-compatible methods across 27 services. DocumentsDB,
+it exposes 720 project-key-compatible methods across 27 services. DocumentsDB,
 VectorsDB, and text embeddings are available, but console control-plane services
 such as organizations, domains, projects, billing, migrations, dedicated
 databases, usage administration, VCS administration, and WAF administration are
@@ -50,16 +50,42 @@ it boots in Zero mode. The agent calls `appwrite_create_zero_project` to get a
 temporary project (endpoint, project ID and an API key valid for 60 minutes),
 and the other tools then operate on it. Open the returned `claimUrl` and sign in
 to keep the project; an unclaimed one is deleted.
-The project is created in the nearest Appwrite Cloud region; pass `region`
-(`fra`, `nyc`, `sfo`, `sgp`, `syd`, `tor`) to pick one. `region` needs the
-default endpoint, so it is refused when `APPWRITE_ENDPOINT` points elsewhere.
 Until then its Sites and function domains open only with the returned
 `accessToken`: open `https://<domain>/__appwrite/zero?token=<accessToken>` once
 in the browser, or send it in the `X-Appwrite-Zero-Token` header.
 
+The project is created in the nearest Appwrite Cloud region; pass `region`
+(`fra`, `nyc`, `sfo`, `sgp`, `syd`, `tor`) to pick one. `region` needs the
+default endpoint, so it is refused when `APPWRITE_ENDPOINT` points elsewhere.
+
 ```bash
 claude mcp add appwrite -- uvx mcp-server-appwrite
 ```
+
+## Project environments
+
+On Appwrite Cloud, a project can have environments (for example `staging`).
+To point a local server at one, keep `APPWRITE_PROJECT_ID` set to the ID of
+the project it belongs to and add the environment's ID:
+
+```bash
+APPWRITE_PROJECT_ID=<YOUR_PROJECT_ID> \
+APPWRITE_ENVIRONMENT_ID=staging \
+APPWRITE_API_KEY=<YOUR_API_KEY> \
+uvx mcp-server-appwrite
+```
+
+Every request then carries `X-Appwrite-Environment: staging` next to the
+project's ID. The environment is fixed for the server's lifetime: a tool call
+that names another `environment_id` is refused rather than run in this one.
+Run one server per environment you want the agent to reach.
+
+## Reasons on writes
+
+Every write the agent makes through `appwrite_call_write_tool` carries a
+one-line `reason`, which Appwrite records on the project's audit log
+(`X-Appwrite-Reason`). Self-hosted Appwrite versions that predate the header
+ignore it.
 
 ## Connect your client
 

@@ -8,15 +8,45 @@ public tools: ``appwrite_call_tool`` is read-only and idempotent and refuses
 anything else, ``appwrite_call_write_tool`` is destructive and refuses reads.
 :class:`support.Cloud` is the Appwrite API both reach with the caller's token,
 so a refused call is checked to have made no Appwrite request at all.
+
+Writes give a ``reason``, which Appwrite records on the audit log from the
+``X-Appwrite-Reason`` header, and any call can act in one of a project's
+environments, which Appwrite reaches through ``X-Appwrite-Environment`` next to
+the project's own ID.
 """
 
 import base64
+import hashlib
+import json
 import unittest
 from typing import Any
+from unittest import mock
+from urllib.parse import unquote
 
-from support import PNG, SCOPES, TOKEN, Client, Cloud, Project, Server, collector
+import httpx
+from support import (
+    PNG,
+    PUBLIC_URL,
+    SCOPES,
+    TOKEN,
+    Client,
+    Cloud,
+    Project,
+    Server,
+    collector,
+)
+from support import message as rpc_message
+
+from mcp_server_appwrite import docs_search
 
 PROJECT = "6630f1a2b3c4d5e6f7a8"
+STAGING = Project("internal-staging", buckets={"photos"}, name="Staging")
+"""The project's ``staging`` environment, a project whose own ID is internal."""
+REASON = "Notify the café's Slack: 100% of sign-ups, ticket #42"
+REASON_HEADER = (
+    "Notify%20the%20caf%C3%A9's%20Slack%3A%20100%25%20of%20sign-ups%2C%20ticket%20%2342"
+)
+"""``REASON`` as ``encodeURIComponent`` sends it."""
 HINTS = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
 READ = {
     "readOnlyHint": True,
@@ -41,12 +71,147 @@ cloud: Cloud
 def setUpModule() -> None:
     global cloud
     cloud = Cloud()
-    cloud.add(Project(PROJECT, buckets={"photos"}))
-    cloud.grant(TOKEN, {PROJECT}, SCOPES | {"files.read"})
+    cloud.add(Project(PROJECT, buckets={"photos"}, environments={"staging": STAGING}))
+    cloud.grant(TOKEN, {PROJECT}, SCOPES | {"files.read", "project.read"})
 
 
 def tearDownModule() -> None:
     cloud.close()
+
+
+class DocsSearchRoute(unittest.TestCase):
+    """``POST /docs/search``, which the deprecated docs MCP server calls without a
+    user, and the public docs MCP server at ``/docs/mcp``. Only the OpenAI query
+    embedding is stubbed; the index is the real one."""
+
+    def setUp(self) -> None:
+        patch = mock.patch.object(
+            docs_search,
+            "_default_embedder",
+            lambda: lambda _query: [1.0] + [0.0] * 1535,
+        )
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def server(self) -> Server:
+        return Server(
+            {
+                "APPWRITE_ENDPOINT": cloud.endpoint,
+                "DOCS_SEARCH_MIN_SCORE": "-1",
+                "OPENAI_API_KEY": "stubbed",
+            }
+        )
+
+    def test_returns_a_fixed_number_of_pages_without_auth(self):
+        with self.server() as server:
+            found = httpx.post(
+                f"{server.url}/docs/search",
+                json={"query": "create a row", "limit": 10},
+            )
+            self.assertEqual(found.status_code, 200)
+            results = found.json()["results"]
+            self.assertTrue(1 <= len(results) <= 5)
+            self.assertEqual(
+                set(results[0]), {"path", "title", "description", "score", "content"}
+            )
+
+    def test_docs_mcp_searches_without_auth(self):
+        headers = {"Accept": "application/json, text/event-stream"}
+
+        def rpc(id: int, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            response = httpx.post(
+                f"{server.url}/docs/mcp",
+                json={"jsonrpc": "2.0", "id": id, "method": method, "params": params},
+                headers=headers,
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            return rpc_message(response)
+
+        with self.server() as server:
+            initialized = rpc(
+                1,
+                "initialize",
+                {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "e2e", "version": "1"},
+                },
+            )["result"]
+            self.assertEqual(initialized["serverInfo"]["name"], "Appwrite Docs")
+            self.assertIn("appwrite_search_docs", initialized["instructions"])
+            headers["MCP-Protocol-Version"] = "2025-06-18"
+
+            tools = rpc(2, "tools/list", {})["result"]["tools"]
+            self.assertEqual([tool["name"] for tool in tools], ["appwrite_search_docs"])
+            self.assertTrue(tools[0]["annotations"]["readOnlyHint"])
+
+            found = rpc(
+                3,
+                "tools/call",
+                {
+                    "name": "appwrite_search_docs",
+                    "arguments": {"query": "create a row"},
+                },
+            )["result"]
+            self.assertFalse(found.get("isError", False))
+            self.assertTrue(json.loads(found["content"][0]["text"])["results"])
+
+            for id, invalid in enumerate(
+                (
+                    {"query": "x"},
+                    {"query": "x" * 501},
+                    {"query": ["x" * 501]},
+                    {"query": "create a row", "limit": [5]},
+                    {"query": "create a row", "limit": "many"},
+                ),
+                start=4,
+            ):
+                refused = rpc(
+                    id,
+                    "tools/call",
+                    {"name": "appwrite_search_docs", "arguments": invalid},
+                )["result"]
+                self.assertTrue(refused["isError"], invalid)
+
+            unknown = httpx.post(
+                f"{server.url}/docs/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 99,
+                    "method": "tools/call",
+                    "params": {"name": "delete_everything", "arguments": {}},
+                },
+                headers=headers,
+            )
+            error = rpc_message(unknown)["error"]
+            self.assertEqual(error["code"], -32602)
+            self.assertIn("appwrite_search_docs", error["message"])
+
+            preflight = httpx.options(f"{server.url}/docs/mcp")
+            self.assertEqual(preflight.status_code, 204)
+            self.assertEqual(preflight.headers["access-control-allow-origin"], "*")
+
+            # The product endpoint still requires a token.
+            self.assertEqual(httpx.post(f"{server.url}/", json={}).status_code, 401)
+
+    def test_rejects_invalid_queries_before_embedding_them(self):
+        with self.server() as server:
+            for invalid in (
+                {"query": "x"},
+                {"query": None},
+                {"query": "x" * 501},
+                ["create a row"],
+            ):
+                refused = httpx.post(f"{server.url}/docs/search", json=invalid)
+                self.assertEqual(refused.status_code, 400, invalid)
+
+            malformed = httpx.post(f"{server.url}/docs/search", content="nope")
+            self.assertEqual(malformed.status_code, 400)
+
+            oversized = httpx.post(
+                f"{server.url}/docs/search", content=b"x" * (16 * 1024 + 1)
+            )
+            self.assertEqual(oversized.status_code, 413)
 
 
 class ToolsFlow(unittest.TestCase):
@@ -72,6 +237,19 @@ class ToolsFlow(unittest.TestCase):
 
     def text(self, result: dict[str, Any]) -> str:
         return result["content"][0]["text"]
+
+    def test_server_card_describes_the_server_without_auth(self):
+        for path in ("/.well-known/mcp/server-card.json", "/server-card"):
+            response = httpx.get(f"{self.server.url}{path}")
+            self.assertEqual(response.status_code, 200, path)
+            self.assertEqual(response.headers["access-control-allow-origin"], "*")
+            card = response.json()
+            self.assertEqual(card["name"], "io.github.appwrite/mcp")
+            self.assertEqual(card["title"], "Appwrite")
+            self.assertLessEqual(len(card["description"]), 100)
+            self.assertEqual(card["icons"][0]["src"], f"{PUBLIC_URL}/favicon.svg")
+            self.assertEqual(card["remotes"][0]["url"], f"{PUBLIC_URL}/")
+            self.assertIn("2025-11-25", card["remotes"][0]["supportedProtocolVersions"])
 
     def test_every_tool_has_a_title_and_explicit_hints(self):
         _, response = self.client.call("tools/list")
@@ -116,6 +294,17 @@ class ToolsFlow(unittest.TestCase):
             "confirm_write",
             tools["appwrite_call_write_tool"]["inputSchema"]["properties"],
         )
+        # Every write says why; reads have nothing to explain.
+        self.assertIn(
+            "reason", tools["appwrite_call_write_tool"]["inputSchema"]["required"]
+        )
+        self.assertNotIn(
+            "reason", tools["appwrite_call_tool"]["inputSchema"]["properties"]
+        )
+        for name in ("appwrite_call_tool", "appwrite_call_write_tool"):
+            self.assertIn(
+                "environment_id", tools[name]["inputSchema"]["properties"], name
+            )
 
     def test_search_names_the_call_tool_for_each_match(self):
         result = self.call(
@@ -197,12 +386,43 @@ class ToolsFlow(unittest.TestCase):
                 "tool_name": "webhooks_create",
                 "project_id": PROJECT,
                 "confirm_write": True,
+                "reason": "Hook sign-ups into the CRM",
                 "arguments": WEBHOOK,
             },
         )
         self.assertFalse(result.get("isError"), result)
         self.assertEqual(cloud.calls("POST", "/v1/webhooks"), created + 1)
-        self.assertIn(WEBHOOK["webhook_id"], cloud.documents(PROJECT))
+        signing = cloud.documents(PROJECT)[WEBHOOK["webhook_id"]]["signatureKey"]
+
+        # The signing key Appwrite returns stays out of the model's context:
+        # only a fingerprint of it, and a note on how to see it if asked.
+        self.assertNotIn(signing, json.dumps(result["content"]))
+        webhook = json.loads(self.text(result))
+        self.assertEqual(webhook["secret"], "[redacted]")
+        self.assertEqual(
+            webhook["secretFingerprint"],
+            "sha256:" + hashlib.sha256(signing.encode()).hexdigest()[:12],
+        )
+        self.assertIn(
+            "Secrets redacted from this result: secret.", result["content"][1]["text"]
+        )
+
+        # Asked for, a rotated key comes back in full.
+        result = self.call(
+            "appwrite_call_write_tool",
+            {
+                "tool_name": "webhooks_update_secret",
+                "project_id": PROJECT,
+                "confirm_write": True,
+                "reason": "Show the user the rotated signing key",
+                "reveal_secrets": True,
+                "arguments": {"webhook_id": WEBHOOK["webhook_id"]},
+            },
+        )
+        self.assertFalse(result.get("isError"), result)
+        signing = cloud.documents(PROJECT)[WEBHOOK["webhook_id"]]["signatureKey"]
+        self.assertEqual(json.loads(self.text(result))["secret"], signing)
+        self.assertEqual(len(result["content"]), 1)
 
         self.assertEqual(
             collector().wait(
@@ -227,6 +447,157 @@ class ToolsFlow(unittest.TestCase):
         self.assertEqual(image["type"], "image")
         self.assertEqual(image["mimeType"], "image/png")
         self.assertEqual(base64.b64decode(image["data"]), PNG)
+
+    def test_writes_give_the_reason_appwrite_records(self):
+        refused = collector().count(
+            "mcp.tool.errors", error_category="write_confirmation"
+        )
+        created = cloud.calls("POST", "/v1/webhooks")
+        write = {
+            "tool_name": "webhooks_create",
+            "project_id": PROJECT,
+            "confirm_write": True,
+            "arguments": {**WEBHOOK, "webhook_id": "e2e-reason"},
+        }
+
+        # What Appwrite would refuse never reaches it, and the model is told
+        # how to fix it.
+        for reason, message in (
+            (None, "Re-run appwrite_call_write_tool with reason set to why"),
+            ("   ", "Re-run appwrite_call_write_tool with reason set to why"),
+            ("x" * 257, "at most 256 characters; it has 257"),
+            ("Rotate\nthe hook", "one line of text without control characters"),
+            ("Rotate \u202ethe hook", "one line of text without control characters"),
+        ):
+            with self.subTest(reason=reason):
+                arguments = write if reason is None else {**write, "reason": reason}
+                result = self.call("appwrite_call_write_tool", arguments)
+                self.assertTrue(result["isError"])
+                self.assertIn(message, self.text(result))
+        self.assertEqual(cloud.calls("POST", "/v1/webhooks"), created)
+
+        # Surrounding whitespace is dropped; the rest is sent percent-encoded,
+        # spaces as %20, which Appwrite decodes back.
+        result = self.call(
+            "appwrite_call_write_tool", {**write, "reason": f"  {REASON}\n"}
+        )
+        self.assertFalse(result.get("isError"), result)
+        sent = cloud.headers("POST", "/v1/webhooks")[-1]["x-appwrite-reason"]
+        self.assertEqual(sent, REASON_HEADER)
+        self.assertEqual(unquote(sent), REASON)
+        # Classified like a missing confirm_write: a model mistake, not an outage.
+        self.assertEqual(
+            collector().wait(
+                "mcp.tool.errors", refused + 5, error_category="write_confirmation"
+            ),
+            refused + 5,
+        )
+
+        # A read sends no reason, even when given one.
+        result = self.call(
+            "appwrite_call_tool",
+            {"tool_name": "webhooks_list", "project_id": PROJECT, "reason": REASON},
+        )
+        self.assertFalse(result.get("isError"), result)
+        self.assertNotIn("x-appwrite-reason", cloud.headers("GET", "/v1/webhooks")[-1])
+
+    def test_calls_act_in_a_project_environment(self):
+        listed = cloud.calls("GET", "/v1/webhooks")
+        result = self.call(
+            "appwrite_call_tool",
+            {"tool_name": "webhooks_list", "environment_id": "staging"},
+        )
+        self.assertTrue(result["isError"])
+        self.assertIn("environment_id requires project_id", self.text(result))
+        self.assertEqual(cloud.calls("GET", "/v1/webhooks"), listed)
+
+        result = self.call(
+            "appwrite_call_write_tool",
+            {
+                "tool_name": "webhooks_create",
+                "project_id": PROJECT,
+                "environment_id": "staging",
+                "confirm_write": True,
+                "reason": "Mirror the sign-up hook in staging",
+                "arguments": {**WEBHOOK, "webhook_id": "e2e-staging"},
+            },
+        )
+        self.assertFalse(result.get("isError"), result)
+        headers = cloud.headers("POST", "/v1/webhooks")[-1]
+        # The environment is reached through its project's ID, never its own.
+        self.assertEqual(headers["x-appwrite-project"], PROJECT)
+        self.assertEqual(headers["x-appwrite-environment"], "staging")
+        self.assertIn("e2e-staging", STAGING.webhooks)
+        self.assertNotIn("e2e-staging", cloud.documents(PROJECT))
+
+        # Binary reads take their own request path.
+        result = self.call(
+            "appwrite_call_tool",
+            {
+                "tool_name": "storage_get_file_preview",
+                "project_id": PROJECT,
+                "environment_id": "staging",
+                "arguments": {"bucket_id": "photos", "file_id": "sunrise"},
+            },
+        )
+        self.assertFalse(result.get("isError"), result)
+        self.assertEqual(result["content"][0]["type"], "image")
+        preview = cloud.headers(
+            "GET", "/v1/storage/buckets/photos/files/sunrise/preview"
+        )
+        self.assertEqual(preview[-1]["x-appwrite-environment"], "staging")
+        # Environments live in their project's region, so only the project's
+        # region is ever looked up.
+        self.assertEqual(
+            cloud.calls("GET", "/v1/projects/(staging|internal-staging)"), 0
+        )
+
+        result = self.call(
+            "appwrite_call_tool",
+            {
+                "tool_name": "webhooks_list",
+                "project_id": PROJECT,
+                "environment_id": "production",
+            },
+        )
+        self.assertTrue(result["isError"])
+        self.assertIn("project_environment_not_found", self.text(result))
+
+        result = self.call(
+            "appwrite_call_tool", {"tool_name": "webhooks_list", "project_id": PROJECT}
+        )
+        self.assertFalse(result.get("isError"), result)
+        self.assertNotIn(
+            "x-appwrite-environment", cloud.headers("GET", "/v1/webhooks")[-1]
+        )
+
+    def test_context_lists_and_summarizes_environments(self):
+        result = self.call(
+            "appwrite_get_context", {"project_id": PROJECT, "include_services": False}
+        )
+        (project,) = json.loads(self.text(result))["projects"]
+        self.assertEqual(
+            project["environments"], [{"$id": "staging", "name": "Staging"}]
+        )
+        self.assertNotIn("environmentId", project)
+
+        result = self.call(
+            "appwrite_get_context",
+            {
+                "project_id": PROJECT,
+                "environment_id": "staging",
+                "include_services": False,
+            },
+        )
+        (project,) = json.loads(self.text(result))["projects"]
+        self.assertEqual(project["environmentId"], "staging")
+        self.assertEqual(
+            cloud.headers("GET", "/v1/project")[-1]["x-appwrite-environment"], "staging"
+        )
+
+        result = self.call("appwrite_get_context", {"environment_id": "staging"})
+        self.assertTrue(result["isError"])
+        self.assertIn("environment_id requires project_id", self.text(result))
 
 
 if __name__ == "__main__":

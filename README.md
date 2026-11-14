@@ -307,6 +307,17 @@ A browser window opens to authenticate on first connect.
 
 </details>
 
+## Reasons and environments
+
+Every write the agent makes carries a short `reason` (why it made the change).
+Appwrite records it on the project's audit log, so you can review what your
+agent changed, and why, in the project's **Activity** tab.
+
+On Appwrite Cloud, the agent can act in a project's environments (for example
+`staging`): `appwrite_get_context` lists them, and each call takes the
+environment's ID as `environment_id` next to the project's `project_id`. See
+[Tool surface](docs/tool-surface.md#behavior).
+
 ## Self-hosted Appwrite
 
 Running your own Appwrite instance? Run the MCP server locally over `stdio` and

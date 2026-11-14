@@ -178,7 +178,10 @@ class DocsSearch:
             },
         )
 
-    def search(self, arguments: dict[str, Any] | None) -> list[ToolContent]:
+    def find(
+        self, arguments: dict[str, Any] | None
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Return the normalized query and its ranked pages."""
         arguments = arguments or {}
         query = str(arguments.get("query", "")).strip()
         if len(query) < DOCS_MIN_QUERY_LENGTH:
@@ -198,6 +201,10 @@ class DocsSearch:
                 "Documentation search embedding request failed. "
                 "Check OPENAI_API_KEY and outbound connectivity to OpenAI."
             ) from exc
+        return query, results
+
+    def search(self, arguments: dict[str, Any] | None) -> list[ToolContent]:
+        query, results = self.find(arguments)
 
         if not results:
             return [

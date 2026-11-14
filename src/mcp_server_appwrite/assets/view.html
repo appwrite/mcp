@@ -576,6 +576,7 @@ details.headers td { height: 32px; max-width: none; white-space: normal; overflo
   function showArgs(extra) {
     const args = { view: data.view };
     if (data.projectId) args.project_id = data.projectId;
+    if (data.environmentId) args.environment_id = data.environmentId;
     return { ...args, ...extra };
   }
 
@@ -728,6 +729,7 @@ details.headers td { height: 32px; max-width: none; white-space: normal; overflo
       const result = await callTool(WRITE_TOOL, {
         tool_name: "tables_db_update_row",
         project_id: data.projectId || undefined,
+        environment_id: data.environmentId || undefined,
         confirm_write: true,
         arguments: { database_id: data.databaseId, table_id: data.tableId, row_id: row.$id, data: values },
       });
@@ -1320,7 +1322,8 @@ details.headers td { height: 32px; max-width: none; white-space: normal; overflo
     render();
     try {
       const result = await callTool(WRITE_TOOL, {
-        tool_name: change.tool, project_id: data.projectId || undefined, confirm_write: true, arguments: change.arguments,
+        tool_name: change.tool, project_id: data.projectId || undefined, environment_id: data.environmentId || undefined,
+        confirm_write: true, arguments: change.arguments,
       });
       const updated = { ...user, ...(result.structuredContent || {}) };
       data.user = updated;
@@ -1515,6 +1518,7 @@ details.headers td { height: 32px; max-width: none; white-space: normal; overflo
       await callTool(WRITE_TOOL, {
         tool_name: data.kind === "site" ? "sites_update_deployment_status" : "functions_update_deployment_status",
         project_id: data.projectId || undefined,
+        environment_id: data.environmentId || undefined,
         confirm_write: true,
         arguments: { [data.kind === "site" ? "site_id" : "function_id"]: data.resourceId, deployment_id: data.deployment.id },
       });

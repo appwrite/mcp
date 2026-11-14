@@ -1080,6 +1080,11 @@ class Project:
     usage: dict[str, dict[str, int]] = field(default_factory=dict)
     """Usage values per metric, keyed by interval start (ISO 8601), for both
     the events and the gauges API."""
+    environments: dict[str, Project] = field(default_factory=dict)
+    """The project's environments by the ID ``X-Appwrite-Environment`` names,
+    each a project of its own whose ID is internal: requests reach one with
+    this project's ID in ``X-Appwrite-Project``."""
+    name: str = ""
 
 
 @dataclass
@@ -1130,7 +1135,10 @@ class Cloud:
     password is write-only, the secret is returned only by create and by the
     secret update, an update keeps the password unless it sends one, and a
     project at its plan limit refuses a create with
-    ``403 additional_resource_not_allowed``.
+    ``403 additional_resource_not_allowed``. ``X-Appwrite-Environment`` moves
+    a request into one of the project's :attr:`Project.environments`, an
+    unknown one being ``404 project_environment_not_found``, and
+    ``/v1/project/environments`` lists them.
     """
 
     VERSION = "1.8.0"
@@ -1143,6 +1151,7 @@ class Cloud:
         self._interleavings: list[Interleaving] = []
         self.requests: list[tuple[str, str, str | None]] = []
         """``(method, path, bearer token)`` of every request, in order."""
+        self._headers: list[tuple[str, str, dict[str, str]]] = []
         cloud = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -1273,6 +1282,17 @@ class Cloud:
             for id, document in self.documents(project).items()
         ]
 
+    def headers(self, method: str, path: str) -> list[dict[str, str]]:
+        """The headers (lowercased names) of every request that matched
+        ``method`` and the ``path`` expression, in order."""
+        pattern = re.compile(path)
+        with self._lock:
+            return [
+                dict(headers)
+                for (made, requested, headers) in self._headers
+                if made == method and pattern.fullmatch(requested)
+            ]
+
     def calls(self, method: str, path: str) -> int:
         """How many requests matched ``method`` and the ``path`` expression."""
         pattern = re.compile(path)
@@ -1310,6 +1330,7 @@ class Cloud:
             interleaving.action()
         with self._lock:
             self.requests.append((method, path, token))
+            self._headers.append((method, path, dict(headers)))
             try:
                 for failure in self._failures:
                     if failure.method == method and failure.path.fullmatch(path):
@@ -1351,6 +1372,16 @@ class Cloud:
                 401, "user_unauthorized", "The current user is not authorized"
             )
         scopes = grant[1]
+        parent = project
+        if environment := headers.get("x-appwrite-environment"):
+            if environment not in parent.environments:
+                raise _Refusal(
+                    404,
+                    "project_environment_not_found",
+                    "Environment with the requested ID could not be found in "
+                    "this project.",
+                )
+            project = parent.environments[environment]
 
         def need(scope: str) -> None:
             if scope not in scopes:
@@ -1360,6 +1391,20 @@ class Cloud:
                     f'jane@example.com (role: owner) missing scopes (["{scope}"])',
                 )
 
+        if path == "/v1/project/environments" and method == "GET":
+            need("project.read")
+            stamp = _stamp()
+            environments = [
+                {
+                    "$id": id,
+                    "$createdAt": stamp,
+                    "$updatedAt": stamp,
+                    "projectId": project.id,
+                    "name": each.name or id,
+                }
+                for id, each in project.environments.items()
+            ]
+            return 200, {"total": len(environments), "environments": environments}
         if match := re.fullmatch(
             r"/v1/(functions|sites)/([^/]+)/deployments(?:/([^/]+))?(/status)?",
             path,

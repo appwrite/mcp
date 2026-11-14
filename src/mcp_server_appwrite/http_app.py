@@ -12,7 +12,13 @@ Builds a single-tenant Starlette ASGI app for the served Appwrite project:
   authorization-server metadata at the MCP server's own origin instead of
   following ``resource_metadata`` from the 401 challenge. Mirrors the Appwrite
   authorization server's discovery document verbatim.
+* ``/.well-known/mcp/server-card.json`` and ``/server-card`` — SEP-2127 server
+  card (name, title, description, icon, remote) for pre-connection discovery.
 * ``/healthz`` — liveness probe.
+* ``/docs/search`` — public documentation search for the deprecated docs MCP
+  server, whose clients have no user to sign in. Results and limits are fixed, so
+  a call costs one small embedding.
+* ``/docs/mcp`` — the public docs MCP server (:mod:`.docs_server`), no sign-in.
 * ``/.well-known/openai-apps-challenge`` — public domain verification token.
 * ``/appwrite/webhooks/{id}`` — MCP Events ingress for Appwrite webhooks, only
   with the events flag on. Unauthenticated by bearer token: the Appwrite
@@ -39,13 +45,17 @@ from importlib.resources import files
 from types import FrameType
 from urllib.parse import urlsplit
 
+import anyio.to_thread
 import httpx
 import uvicorn
 from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser, BearerAuthBackend
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.types import CLIENT_INFO_META_KEY, PROTOCOL_VERSION_META_KEY
-from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS
+from mcp_types.version import (
+    HANDSHAKE_PROTOCOL_VERSIONS,
+    SUPPORTED_PROTOCOL_VERSIONS,
+)
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.authentication import AuthenticationMiddleware
@@ -71,7 +81,19 @@ from .auth import (
     public_base_url,
     resource_metadata_url,
 )
-from .constants import CORS_HEADERS, SERVER_VERSION
+from .constants import (
+    CORS_HEADERS,
+    DOCS_DEFAULT_LIMIT,
+    DOCS_MAX_BODY_BYTES,
+    DOCS_MAX_QUERY_LENGTH,
+    SERVER_CARD_SCHEMA,
+    SERVER_REGISTRY_NAME,
+    SERVER_SUMMARY,
+    SERVER_VERSION,
+    SERVER_WEBSITE_URL,
+)
+from .docs_search import DocsSearch
+from .docs_server import build_docs_server
 from .events import protocol as events_protocol
 from .events.ingress import Ingress
 from .events.streams import Settings, Streams
@@ -182,7 +204,7 @@ class RequireBearer:
             return
 
         if scope.get("method") == "OPTIONS":
-            await self._preflight(send)
+            await _send_preflight(send)
             return
 
         user = scope.get("user")
@@ -203,10 +225,25 @@ class RequireBearer:
 
         await self.app(scope, receive, send)
 
-    async def _preflight(self, send: Send) -> None:
-        headers = [(k.lower().encode(), v.encode()) for k, v in CORS_HEADERS.items()]
-        await send({"type": "http.response.start", "status": 204, "headers": headers})
-        await send({"type": "http.response.body", "body": b""})
+
+class Preflight:
+    """ASGI gate for a public MCP endpoint: answers CORS preflights, passes
+    everything else through."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("method") == "OPTIONS":
+            await _send_preflight(send)
+            return
+        await self.app(scope, receive, send)
+
+
+async def _send_preflight(send: Send) -> None:
+    headers = [(k.lower().encode(), v.encode()) for k, v in CORS_HEADERS.items()]
+    await send({"type": "http.response.start", "status": 204, "headers": headers})
+    await send({"type": "http.response.body", "body": b""})
 
 
 def _has_authorization_header(scope: Scope) -> bool:
@@ -449,6 +486,34 @@ async def oauth_authorize_proxy_endpoint(request: Request) -> Response:
     )
 
 
+def docs_search_endpoint(docs_search: DocsSearch):
+    async def endpoint(request: Request) -> JSONResponse:
+        try:
+            raw = b""
+            async for chunk in request.stream():
+                raw += chunk
+                if len(raw) > DOCS_MAX_BODY_BYTES:
+                    return JSONResponse({"error": "body_too_large"}, status_code=413)
+            body = json.loads(raw)
+            query = body.get("query") if isinstance(body, dict) else None
+            if not isinstance(query, str) or len(query) > DOCS_MAX_QUERY_LENGTH:
+                raise ValueError(
+                    f"query must be a string of at most {DOCS_MAX_QUERY_LENGTH} characters."
+                )
+            _query, results = await anyio.to_thread.run_sync(
+                docs_search.find,
+                {"query": query, "limit": DOCS_DEFAULT_LIMIT},
+                abandon_on_cancel=True,
+            )
+        except ValueError as error:
+            return JSONResponse({"error": str(error)}, status_code=400)
+        except RuntimeError as error:
+            return JSONResponse({"error": str(error)}, status_code=502)
+        return JSONResponse({"results": results})
+
+    return endpoint
+
+
 async def health_endpoint(request: Request) -> PlainTextResponse:
     return PlainTextResponse(f"appwrite-mcp {SERVER_VERSION} ok")
 
@@ -464,6 +529,30 @@ async def favicon_svg_endpoint(request: Request) -> Response:
         media_type="image/svg+xml",
         headers={"Cache-Control": "public, max-age=86400"},
     )
+
+
+async def server_card_endpoint(request: Request) -> JSONResponse:
+    """Server card (SEP-2127, experimental-ext-server-card v1), so registries
+    and agents can describe this server before connecting."""
+    card = {
+        "$schema": SERVER_CARD_SCHEMA,
+        "name": SERVER_REGISTRY_NAME,
+        "title": "Appwrite",
+        "description": SERVER_SUMMARY,
+        "version": SERVER_VERSION,
+        "websiteUrl": SERVER_WEBSITE_URL,
+        "repository": {"url": SERVER_WEBSITE_URL, "source": "github"},
+        "icons": [{"src": _icon_url(), "mimeType": "image/svg+xml", "sizes": ["any"]}],
+        "remotes": [
+            {
+                "type": "streamable-http",
+                "url": canonical_resource(),
+                "supportedProtocolVersions": list(SUPPORTED_PROTOCOL_VERSIONS),
+            }
+        ],
+    }
+    headers = {**CORS_HEADERS, "Cache-Control": "public, max-age=3600"}
+    return JSONResponse(card, headers=headers)
 
 
 async def favicon_ico_endpoint(request: Request) -> RedirectResponse:
@@ -509,10 +598,19 @@ def build_app(
 
     mcp_endpoint = RequireBearer(MCPIdentityMiddleware(handle_mcp))
 
+    docs_search = operator.docs_search
+    docs_manager = (
+        StreamableHTTPSessionManager(app=build_docs_server(docs_search), stateless=True)
+        if docs_search is not None
+        else None
+    )
+
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):
         async with contextlib.AsyncExitStack() as stack:
             await stack.enter_async_context(session_manager.run())
+            if docs_manager is not None:
+                await stack.enter_async_context(docs_manager.run())
             if ingress is not None:
                 await stack.enter_async_context(ingress.run())
             _log(f"Appwrite MCP (Streamable HTTP) ready — v{SERVER_VERSION}")
@@ -556,10 +654,34 @@ def build_app(
             endpoint=oauth_authorize_proxy_endpoint,
             methods=["GET"],
         ),
+        Route(
+            "/.well-known/mcp/server-card.json",
+            endpoint=server_card_endpoint,
+            methods=["GET", "OPTIONS"],
+        ),
+        Route(
+            "/server-card", endpoint=server_card_endpoint, methods=["GET", "OPTIONS"]
+        ),
         Route("/favicon.svg", endpoint=favicon_svg_endpoint, methods=["GET"]),
         Route("/favicon.ico", endpoint=favicon_ico_endpoint, methods=["GET"]),
         Route("/healthz", endpoint=health_endpoint, methods=["GET"]),
         *([ingress.route] if ingress is not None else []),
+        *(
+            [
+                Route(
+                    "/docs/search",
+                    endpoint=docs_search_endpoint(docs_search),
+                    methods=["POST"],
+                ),
+                Route(
+                    "/docs/mcp",
+                    endpoint=Preflight(docs_manager.handle_request),
+                    methods=["GET", "POST", "DELETE", "OPTIONS"],
+                ),
+            ]
+            if docs_search is not None and docs_manager is not None
+            else []
+        ),
         Route(
             "/",
             endpoint=mcp_endpoint,

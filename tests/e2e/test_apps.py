@@ -158,6 +158,9 @@ def setUpModule() -> None:
         session(f"ses_{index}", "ada", ip=f"203.0.113.{index}")
         for index in range(1, 13)
     ]
+    project.environments["staging"] = Project(
+        "internal-staging", users=[user("lin", "Lin Tester", "lin@staging.example")]
+    )
     today = datetime.datetime.now(datetime.UTC).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
@@ -737,6 +740,38 @@ class AppsFlow(unittest.TestCase):
             "grace | Grace Hopper | grace@navy.example | blocked, unverified | admin,navy",
             grace["content"][0]["text"],
         )
+
+    def test_views_stay_in_a_project_environment(self):
+        show = {"view": "users", "project_id": PROJECT, "environment_id": "staging"}
+        result = self.call("appwrite_show", show)
+        self.assertFalse(result.get("isError"), result)
+        data = result["structuredContent"]
+        # The view sends it back on its own calls, as it does projectId.
+        self.assertEqual(data["environmentId"], "staging")
+        self.assertEqual([each["id"] for each in data["users"]], ["lin"])
+        headers = cloud.headers("GET", "/v1/users")[-1]
+        self.assertEqual(headers["x-appwrite-project"], PROJECT)
+        self.assertEqual(headers["x-appwrite-environment"], "staging")
+
+        # A person confirms the view's writes, so a reason is optional there,
+        # and passed on when the view gives one.
+        result = self.call(
+            "appwrite_view_write",
+            {
+                "tool_name": "users_update_status",
+                "project_id": PROJECT,
+                "environment_id": "staging",
+                "confirm_write": True,
+                "reason": "Blocked from the view",
+                "arguments": {"user_id": "lin", "status": False},
+            },
+            FROM_VIEW,
+        )
+        self.assertFalse(result.get("isError"), result)
+        self.assertFalse(result["structuredContent"]["status"])
+        headers = cloud.headers("PATCH", r"/v1/users/lin/status")[-1]
+        self.assertEqual(headers["x-appwrite-environment"], "staging")
+        self.assertEqual(headers["x-appwrite-reason"], "Blocked%20from%20the%20view")
 
     def test_usage_view_charts_a_range(self):
         show = {"view": "usage", "project_id": PROJECT}

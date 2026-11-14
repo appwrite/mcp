@@ -24,6 +24,16 @@ def _resolve_server_version() -> str:
 SERVER_VERSION = _resolve_server_version()
 SERVER_WEBSITE_URL = "https://github.com/appwrite/mcp"
 SERVER_ICON_URL = "https://mcp.appwrite.io/favicon.svg"
+# MCP Registry name; the server card and server.template.json share it.
+SERVER_REGISTRY_NAME = "io.github.appwrite/mcp"
+# Server card description; the card schema caps it at 100 characters.
+SERVER_SUMMARY = (
+    "Build and deploy backends: auth, Postgres/MySQL/vector databases, storage, "
+    "functions, hosting, CDN"
+)
+SERVER_CARD_SCHEMA = (
+    "https://static.modelcontextprotocol.io/schemas/v1/server-card.schema.json"
+)
 
 DEFAULT_ENDPOINT = "https://cloud.appwrite.io/v1"
 # Region reported by single-region deployments; carries no region subdomain.
@@ -114,6 +124,8 @@ DOCS_DEFAULT_LIMIT = 5
 DOCS_MAX_LIMIT = 10
 DOCS_DEFAULT_MIN_SCORE = 0.25
 DOCS_MIN_QUERY_LENGTH = 3
+DOCS_MAX_QUERY_LENGTH = 500
+DOCS_MAX_BODY_BYTES = 16 * 1024
 
 DATA_DIR = Path(__file__).parent / "data"
 INDEX_FILE = "docs_index.npz"

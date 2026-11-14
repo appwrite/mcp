@@ -42,16 +42,20 @@ from .docs_search import DocsSearch
 from .error_classification import (
     ErrorCategory,
     WriteConfirmationRequired,
+    WriteReasonRequired,
     WrongCallTool,
     classify_tool_error,
 )
+from .headers import REASON_LENGTH, reason_error
 from .tool_manager import ToolManager
 from .zero import Zero
 
 ToolContent = types.TextContent | types.ImageContent | types.EmbeddedResource
-# (tool_name, arguments, project_id, organization_id) -> content
+# (tool_name, arguments, project_id, organization_id, environment_id, reason,
+# reveal) -> content
 ToolExecutor = Callable[
-    [str, dict[str, Any], str | None, str | None], list[ToolContent]
+    [str, dict[str, Any], str | None, str | None, str | None, str | None, bool],
+    list[ToolContent],
 ]
 ContextProvider = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -174,7 +178,7 @@ class Operator:
         self._public_tools = self._build_public_tools()
         self._view_tools = {
             tool.name: PublicTool(tool, handler)
-            for tool, handler in Views(self._run_hidden_tool).tools()
+            for tool, handler in Views(self._run_view_tool).tools()
         }
 
     def get_catalog_resource_uri(self) -> str:
@@ -187,6 +191,10 @@ class Operator:
     @property
     def zero_enabled(self) -> bool:
         return self._zero is not None
+
+    @property
+    def docs_search(self) -> DocsSearch | None:
+        return self._docs_search
 
     def get_public_tools(self, *, apps: bool = False) -> list[types.Tool]:
         """The exposed tools, with the MCP Apps view tools when ``apps``."""
@@ -218,7 +226,17 @@ class Operator:
                         "properties": {
                             "project_id": {
                                 "type": "string",
-                                "description": "Optional project ID to focus the context summary.",
+                                "description": (
+                                    "Optional project ID to focus the context summary. "
+                                    "The summary then lists the project's environments."
+                                ),
+                            },
+                            "environment_id": {
+                                "type": "string",
+                                "description": (
+                                    "Optional ID of one of the project's environments to "
+                                    "summarize instead of the project. Requires project_id."
+                                ),
                             },
                             "organization_id": {
                                 "type": "string",
@@ -328,8 +346,10 @@ class Operator:
                     description=(
                         "Run a mutating hidden Appwrite tool (create, update, delete, upsert "
                         f"and every other class except read in {SEARCH_TOOL_NAME} results) "
-                        "by name. Put Appwrite parameters inside `arguments` and set "
-                        f"confirm_write=true. Read-only tools run through {CALL_TOOL_NAME}. "
+                        "by name. Put Appwrite parameters inside `arguments`, set "
+                        "confirm_write=true and give a one-line `reason` for the change, "
+                        "which Appwrite records on the project's audit log. Read-only "
+                        f"tools run through {CALL_TOOL_NAME}. "
                         "Hidden Appwrite parameters accept canonical snake_case names and "
                         "common camelCase aliases. Calls the Appwrite REST API, see "
                         f"{API_REFERENCE_URL}."
@@ -580,7 +600,7 @@ class Operator:
             lines.append(
                 "Run each match through its call_tool with tool_name and arguments: "
                 f"reads through {CALL_TOOL_NAME}, everything else through "
-                f"{WRITE_TOOL_NAME} with confirm_write=true. "
+                f"{WRITE_TOOL_NAME} with confirm_write=true and a reason. "
                 f"Full catalog resource: {CATALOG_URI}"
             )
 
@@ -599,8 +619,19 @@ class Operator:
         content = self._run_hidden_tool(raw_arguments, write)
         return self._preview_or_store_result(str(tool_name), content)
 
-    def _run_hidden_tool(
+    def _run_view_tool(
         self, raw_arguments: dict[str, Any], write: bool
+    ) -> list[ToolContent]:
+        """Run a hidden tool for the Appwrite view. Its writes follow a person's
+        confirmation in the view, which asks for no reason, so one is optional."""
+        return self._run_hidden_tool(raw_arguments, write, reason_required=False)
+
+    def _run_hidden_tool(
+        self,
+        raw_arguments: dict[str, Any],
+        write: bool,
+        *,
+        reason_required: bool = True,
     ) -> list[ToolContent]:
         """Validate and run a hidden tool, returning its whole result."""
         tool_name = raw_arguments.get("tool_name", raw_arguments.get("toolName"))
@@ -638,11 +669,20 @@ class Operator:
                 f"Tool {tool_name} is {entry.classification}. Re-run {WRITE_TOOL_NAME} "
                 "with confirm_write=true if you intend to mutate Appwrite state."
             )
+        reason = _write_reason(tool_name, entry, raw_arguments, write, reason_required)
 
         project_id = raw_arguments.get("project_id", raw_arguments.get("projectId"))
         organization_id = raw_arguments.get(
             "organization_id", raw_arguments.get("organizationId")
         )
+        environment_id = raw_arguments.get(
+            "environment_id", raw_arguments.get("environmentId")
+        )
+        if self._require_target_context and environment_id and not project_id:
+            raise ValueError(
+                "environment_id requires project_id: pass the ID of the project the "
+                "environment belongs to as project_id."
+            )
         if self._require_target_context:
             if entry.context_scope == "project" and not project_id:
                 raise ValueError(
@@ -654,9 +694,18 @@ class Operator:
                     f"Tool {tool_name} requires organization_id. Use {CONTEXT_TOOL_NAME} "
                     "to select an organization, then retry with that organization ID."
                 )
+        reveal = bool(
+            raw_arguments.get("reveal_secrets", raw_arguments.get("revealSecrets"))
+        )
         arguments_object = _normalize_arguments(raw_arguments)
         return self._execute_tool(
-            tool_name, arguments_object, project_id, organization_id
+            tool_name,
+            arguments_object,
+            project_id,
+            organization_id,
+            environment_id or None,
+            reason,
+            reveal,
         )
 
     def _preview_or_store_result(
@@ -784,6 +833,25 @@ def _call_input_schema(*, write: bool) -> dict[str, Any]:
             "type": "boolean",
             "description": "Required: set true to confirm the mutation.",
         }
+        properties["reason"] = {
+            "type": "string",
+            "maxLength": REASON_LENGTH,
+            "description": (
+                "Why you are making this change, in one line (max "
+                f"{REASON_LENGTH} characters). Recorded on the project's audit "
+                "log and shown in the Activity tab next to the change."
+            ),
+        }
+    properties["reveal_secrets"] = {
+        "type": "boolean",
+        "description": (
+            "Return secrets in full: API key and token secrets, signing keys, "
+            "client secrets, password hashes and other fields Appwrite marks "
+            "secret. Off by default, so they are redacted and replaced with a "
+            "fingerprint. Set true only when the user explicitly asks to see a "
+            "secret in this conversation."
+        ),
+    }
     properties |= {
         "project_id": {
             "type": "string",
@@ -805,13 +873,49 @@ def _call_input_schema(*, write: bool) -> dict[str, Any]:
                 "console tools such as creating a project. Omit otherwise."
             ),
         },
+        "environment_id": {
+            "type": "string",
+            "description": (
+                "ID of a project environment (Appwrite Cloud) to act in, sent as "
+                "X-Appwrite-Environment. Pass it with project_id set to the ID of "
+                f"the project the environment belongs to; {CONTEXT_TOOL_NAME} with "
+                "project_id lists them. Omit to act in the project itself."
+            ),
+        },
     }
     return {
         "type": "object",
         "properties": properties,
-        "required": ["tool_name"],
+        "required": ["tool_name", "reason"] if write else ["tool_name"],
         "additionalProperties": True,
     }
+
+
+def _write_reason(
+    tool_name: str,
+    entry: CatalogEntry,
+    raw_arguments: dict[str, Any],
+    write: bool,
+    required: bool,
+) -> str | None:
+    """The reason a write gives, checked as Appwrite checks it. Reads send none."""
+    if not write:
+        return None
+    reason = raw_arguments.get("reason")
+    reason = reason.strip() if isinstance(reason, str) else ""
+    if not reason:
+        if not required:
+            return None
+        raise WriteReasonRequired(
+            f"Tool {tool_name} is {entry.classification}. Re-run {WRITE_TOOL_NAME} "
+            "with reason set to why you are making this change, in one line (max "
+            f"{REASON_LENGTH} characters). Appwrite records it on the project's "
+            "audit log."
+        )
+    error = reason_error(reason)
+    if error:
+        raise WriteReasonRequired(f"{error} Re-run {WRITE_TOOL_NAME} with it fixed.")
+    return reason
 
 
 # Public tools that need a project; Zero mode refuses them until one exists.
@@ -824,6 +928,8 @@ _PROJECT_TOOLS = frozenset(
         VIEW_WRITE_TOOL_NAME,
     }
 )
+
+
 _MIN_INFLECTION_TOKEN_LENGTH = 3
 _MAX_INFLECTION_SUFFIX = 2
 _SUGGESTION_LIMIT = 5
@@ -1168,6 +1274,11 @@ def _normalize_arguments(raw_arguments: dict[str, Any]) -> dict[str, Any]:
             "projectId",
             "organization_id",
             "organizationId",
+            "environment_id",
+            "environmentId",
+            "reason",
+            "reveal_secrets",
+            "revealSecrets",
         }:
             continue
         if value is not None:
