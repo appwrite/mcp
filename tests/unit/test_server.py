@@ -269,6 +269,19 @@ class ServerHelperTests(unittest.TestCase):
         self.assertIn("Large results are stored as resources", stdio)
         self.assertIn("returns tool results inline", http)
 
+        # Zero setup goes only to stdio without credentials, never alongside
+        # the configured-project line.
+        zero = build_instructions("stdio", zero=True)
+        self.assertIn("appwrite_create_zero_project", zero)
+        self.assertIn("claimUrl", zero)
+        self.assertNotIn("configured in the server environment", zero)
+        self.assertIn("configured in the server environment", stdio)
+        self.assertNotIn("appwrite_create_zero_project", stdio)
+        self.assertNotIn("appwrite_create_zero_project", http)
+        self.assertNotIn(
+            "appwrite_create_zero_project", build_instructions("http", zero=True)
+        )
+
     def test_build_instructions_cover_every_database_type(self):
         for transport in ("stdio", "http"):
             instructions = build_instructions(transport)
