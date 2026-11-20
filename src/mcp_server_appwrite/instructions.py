@@ -8,6 +8,7 @@ only for those transports (the API-key stdio catalog lacks console-only APIs
 such as dedicated databases and domain registration, see ``catalog_policy``),
 and one with ``docs`` only when docs search availability matches. Lines within
 a section are joined by newlines and sections by blank lines, in file order.
+One with ``zero`` is included only when Zero mode (see ``zero``) matches.
 """
 
 from __future__ import annotations
@@ -26,9 +27,12 @@ class Section:
     lines: tuple[str, ...]
     transports: frozenset[str] | None = None
     docs: bool | None = None
+    zero: bool | None = None
 
-    def applies(self, transport: str, docs_enabled: bool) -> bool:
+    def applies(self, transport: str, docs_enabled: bool, zero: bool = False) -> bool:
         if self.transports is not None and transport not in self.transports:
+            return False
+        if self.zero is not None and self.zero != zero:
             return False
         return self.docs is None or self.docs == docs_enabled
 
@@ -37,7 +41,7 @@ class Section:
 
     @classmethod
     def parse(cls, raw: dict[str, Any]) -> Section:
-        unknown = raw.keys() - {"lines", "transports", "docs"}
+        unknown = raw.keys() - {"lines", "transports", "docs", "zero"}
         if unknown:
             raise ValueError(f"Unknown instruction section keys: {sorted(unknown)}")
         lines = raw["lines"]
@@ -54,7 +58,10 @@ class Section:
         docs = raw.get("docs")
         if docs is not None and not isinstance(docs, bool):
             raise ValueError("Instruction section 'docs' must be a boolean.")
-        return cls(tuple(lines), transports, docs)
+        zero = raw.get("zero")
+        if zero is not None and not isinstance(zero, bool):
+            raise ValueError("Instruction section 'zero' must be a boolean.")
+        return cls(tuple(lines), transports, docs, zero)
 
 
 @cache
@@ -78,9 +85,11 @@ def load_description() -> str:
     return description
 
 
-def build_instructions(transport: str = "http", *, docs_enabled: bool = True) -> str:
+def build_instructions(
+    transport: str = "http", *, docs_enabled: bool = True, zero: bool = False
+) -> str:
     return "\n\n".join(
         section.render()
         for section in load_sections()
-        if section.applies(transport, docs_enabled)
+        if section.applies(transport, docs_enabled, zero)
     )

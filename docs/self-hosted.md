@@ -43,6 +43,26 @@ For a local Docker Appwrite instance the endpoint is typically
 `http://localhost:9501/v1` (HTTP, not HTTPS). The value must be the API base
 (`…/v1`), not the Console URL.
 
+## No account: Appwrite Zero
+
+Start the server with neither `APPWRITE_PROJECT_ID` nor `APPWRITE_API_KEY` and
+it boots in Zero mode. The agent calls `appwrite_create_zero_project` to get a
+temporary project (endpoint, project ID and an API key valid for 60 minutes),
+and the other tools then operate on it. Open the returned `claimUrl` and sign in
+to keep the project; an unclaimed one is deleted.
+Until then its Sites and function domains are public under a "Powered by
+Appwrite Zero" banner. Deployment preview domains open only with the returned
+`accessToken`: open `https://<domain>/__appwrite/zero?token=<accessToken>` once
+in the browser, or send it in the `X-Appwrite-Zero-Token` header.
+
+The project is created in the nearest Appwrite Cloud region; pass `region`
+(`fra`, `nyc`, `sfo`, `sgp`, `syd`, `tor`) to pick one. `region` needs the
+default endpoint, so it is refused when `APPWRITE_ENDPOINT` points elsewhere.
+
+```bash
+claude mcp add appwrite -- uvx mcp-server-appwrite
+```
+
 ## Project environments
 
 On Appwrite Cloud, a project can have environments (for example `staging`).

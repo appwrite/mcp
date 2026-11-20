@@ -32,6 +32,7 @@ Source lives in `src/mcp_server_appwrite/`:
 | `tool_manager.py` | Registry of all services and their generated tools. |
 | `operator.py` | The compact "operator" surface — `appwrite_search_tools`, `appwrite_call_tool` / `appwrite_call_write_tool`, tool annotations, result/resource storage, write confirmation. |
 | `instructions.py` | `serverInfo.description` and the server instructions sent on initialize, rendered from `assets/instructions.json` (a description plus ordered, transport/docs-conditional Markdown sections). Edit the JSON to change the wording; keep the `pyproject.toml` description in sync (a test enforces it). |
+| `zero.py` | Appwrite Zero (stdio without credentials): `appwrite_create_zero_project` creates a temporary project with no account and points the shared client at it; `appwrite_get_zero_project` reports its status. |
 | `context.py` | `appwrite_get_context` — workspace summary (project, services, account/org for OAuth, a focused project's environments). |
 | `headers.py` | Per-call request headers: `X-Appwrite-Environment` (a project environment, next to the project's ID) and `X-Appwrite-Reason` (why a write is made, validated and percent-encoded as Appwrite expects). |
 | `redaction.py` | Redacts the response fields Appwrite's spec marks `format: password` (carried on Console SDK model fields) from tool results, leaving a fingerprint, unless a call sets `reveal_secrets`. |
