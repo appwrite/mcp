@@ -31,9 +31,12 @@ from .constants import (
     RESULT_URI_TEMPLATE,
     SEARCH_LIMIT,
     SEARCH_TOOL_NAME,
+    SHOW_TOOL_NAME,
     UPDATE_HINTS,
     VERBS,
+    VIEW_WRITE_TOOL_NAME,
     WRITE_TOOL_NAME,
+    ZERO_CREATE_TOOL_NAME,
 )
 from .docs_search import DocsSearch
 from .error_classification import (
@@ -45,6 +48,7 @@ from .error_classification import (
 )
 from .headers import REASON_LENGTH, reason_error
 from .tool_manager import ToolManager
+from .zero import Zero
 
 ToolContent = types.TextContent | types.ImageContent | types.EmbeddedResource
 # (tool_name, arguments, project_id, organization_id, environment_id, reason,
@@ -155,6 +159,7 @@ class Operator:
         store_results: bool = True,
         search_limit: int = SEARCH_LIMIT,
         notice: str | None = None,
+        zero: Zero | None = None,
     ):
         self._tools_manager = tools_manager
         self._execute_tool = execute_tool
@@ -165,6 +170,7 @@ class Operator:
         self._store_results = store_results
         self._search_limit = search_limit
         self._notice = notice
+        self._zero = zero
         self._result_store = ResultStore()
         self._catalog = self._build_catalog()
         self._cached_catalog_json = self._catalog_json()
@@ -181,6 +187,10 @@ class Operator:
     @property
     def docs_enabled(self) -> bool:
         return self._docs_search is not None
+
+    @property
+    def zero_enabled(self) -> bool:
+        return self._zero is not None
 
     @property
     def docs_search(self) -> DocsSearch | None:
@@ -353,6 +363,16 @@ class Operator:
         if self._docs_search is not None:
             tools.append(PublicTool(self._docs_search.get_tool(), self._search_docs))
 
+        if self._zero is not None:
+            zero = self._zero
+            for tool in zero.get_tools():
+                tools.append(
+                    PublicTool(
+                        tool,
+                        lambda arguments, name=tool.name: zero.execute(name, arguments),
+                    )
+                )
+
         return {public.tool.name: public for public in tools}
 
     def execute_public_tool(
@@ -395,6 +415,12 @@ class Operator:
     def _dispatch_public_tool(
         self, name: str, arguments: dict[str, Any] | None
     ) -> ToolOutput:
+        if self._zero is not None and not self._zero.ready and name in _PROJECT_TOOLS:
+            raise ValueError(
+                "No Appwrite project is configured. Call "
+                f"{ZERO_CREATE_TOOL_NAME} to create a temporary one, or set "
+                "APPWRITE_PROJECT_ID and APPWRITE_API_KEY."
+            )
         public = self._public_tools.get(name) or self._view_tools.get(name)
         if public is None:
             raise ValueError(f"Unknown public Appwrite tool {name}")
@@ -890,6 +916,18 @@ def _write_reason(
     if error:
         raise WriteReasonRequired(f"{error} Re-run {WRITE_TOOL_NAME} with it fixed.")
     return reason
+
+
+# Public tools that need a project; Zero mode refuses them until one exists.
+_PROJECT_TOOLS = frozenset(
+    {
+        CONTEXT_TOOL_NAME,
+        CALL_TOOL_NAME,
+        WRITE_TOOL_NAME,
+        SHOW_TOOL_NAME,
+        VIEW_WRITE_TOOL_NAME,
+    }
+)
 
 
 _MIN_INFLECTION_TOKEN_LENGTH = 3
