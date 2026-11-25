@@ -1090,7 +1090,7 @@ class ServerHelperTests(unittest.TestCase):
             set(SERVICE_CLASSES),
         )
         self.assertEqual(len(manager_a.services), 41)
-        self.assertEqual(len(manager_a.get_all_tools()), 1065)
+        self.assertEqual(len(manager_a.get_all_tools()), 1069)
 
     def test_console_sdk_0_7_surface(self):
         manager = register_services(object(), profile=OAUTH_PROFILE)
@@ -1212,7 +1212,7 @@ class ServerHelperTests(unittest.TestCase):
         tool_names = {tool.name for tool in manager.get_all_tools()}
 
         self.assertEqual(len(manager.services), 27)
-        self.assertEqual(len(tool_names), 720)
+        self.assertEqual(len(tool_names), 724)
         self.assertIn("waf_list_rules", tool_names)
         self.assertIn("waf_create_deny_rule", tool_names)
         self.assertIn("avatars_get_photo", tool_names)
