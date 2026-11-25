@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -39,16 +39,16 @@ wheels = [
 
 [[package]]
 name = "appwrite-console"
-version = "0.16.0"
+version = "0.17.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
     { name = "requests" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4f/56/1bcae0f5ffd77632d19693b85b0ae231e770c995804dc2d85ef7b974c2c7/appwrite_console-0.16.0.tar.gz", hash = "sha256:04807fa1403fa2fdcc41fe38fabca6ebc3f50819245763da380645b02e95b5d7", size = 376725, upload-time = "2026-11-12T15:44:58.206Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/67/c8/e75482299b88ad962c3f303eaa2d6b959699b7129cb1d248c9d6dd912def/appwrite_console-0.17.0.tar.gz", hash = "sha256:2b89dabca289a5de0ab71ac9af553f28e1d031bc7592b3deb6231237e78b7a1a", size = 380575, upload-time = "2026-11-16T13:53:25.912Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/09/b5/94005d0c095b652fb193d808a233165915b8128abb1632e8a3f0d2445118/appwrite_console-0.16.0-py3-none-any.whl", hash = "sha256:edd87050757f5ab78efc0a095b99599537c5e890722d0461a5ffe479a2e8d7f6", size = 683918, upload-time = "2026-11-12T15:44:56.626Z" },
+    { url = "https://files.pythonhosted.org/packages/2b/17/12e92ec603a8a76b2be2c2a12acfa5da18b1c5865be97b1508aba8b332c9/appwrite_console-0.17.0-py3-none-any.whl", hash = "sha256:9377f80e0bbd608936a8b9b692aaabb43f010936dc5f2938017044cf0e2b7f5b", size = 688210, upload-time = "2026-11-16T13:53:23.858Z" },
 ]
 
 [[package]]
@@ -752,7 +752,7 @@ e2e = [
 [package.metadata]
 requires-dist = [
     { name = "anyio", specifier = ">=4.0.0" },
-    { name = "appwrite-console", specifier = ">=0.16.0,<0.17" },
+    { name = "appwrite-console", specifier = ">=0.17.0,<0.18" },
     { name = "argon2-cffi", marker = "extra == 'integration'", specifier = ">=23.1.0" },
     { name = "bcrypt", marker = "extra == 'integration'", specifier = ">=4.1.2" },
     { name = "cryptography", specifier = ">=44.0.0" },

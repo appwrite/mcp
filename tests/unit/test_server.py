@@ -187,6 +187,14 @@ def _remap_create_connection(ip_to_addr):
     return wrapped
 
 
+CONSOLE_SDK_0_17_TOOLS = (
+    "account_create_ldap_session",
+    "project_create_ldap_test",
+    "project_update_ldap",
+    "sites_update_analytics",
+)
+
+
 class ServerHelperTests(unittest.TestCase):
     def test_parse_args_defaults_to_stdio(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -1090,7 +1098,7 @@ class ServerHelperTests(unittest.TestCase):
             set(SERVICE_CLASSES),
         )
         self.assertEqual(len(manager_a.services), 41)
-        self.assertEqual(len(manager_a.get_all_tools()), 1065)
+        self.assertEqual(len(manager_a.get_all_tools()), 1069)
 
     def test_console_sdk_0_7_surface(self):
         manager = register_services(object(), profile=OAUTH_PROFILE)
@@ -1103,6 +1111,8 @@ class ServerHelperTests(unittest.TestCase):
         self.assertIn("tables_db_create_cutover", tools)
         self.assertIn("analytics_list_metrics", tools)
         self.assertIn("avatars_update_photo", tools)
+        for tool_name in CONSOLE_SDK_0_17_TOOLS:
+            self.assertIn(tool_name, tools)
         for removed_tool in (
             "project_get_usage",
             "projects_list_dev_keys",
@@ -1212,7 +1222,9 @@ class ServerHelperTests(unittest.TestCase):
         tool_names = {tool.name for tool in manager.get_all_tools()}
 
         self.assertEqual(len(manager.services), 27)
-        self.assertEqual(len(tool_names), 720)
+        self.assertEqual(len(tool_names), 724)
+        for tool_name in CONSOLE_SDK_0_17_TOOLS:
+            self.assertIn(tool_name, tool_names)
         self.assertIn("waf_list_rules", tool_names)
         self.assertIn("waf_create_deny_rule", tool_names)
         self.assertIn("avatars_get_photo", tool_names)
