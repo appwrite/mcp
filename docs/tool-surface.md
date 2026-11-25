@@ -89,7 +89,7 @@ operate on it for the rest of the session.
   top-level `organization_id` or `project_id` before making a request.
 - **Access** is still gated per-route by the scopes granted to the OAuth token.
 - **Hosted OAuth** registers all 41 services and 1069 methods shipped by
-  `appwrite-console` 0.16.0. This adds console control-plane services including
+  `appwrite-console` 0.17.0. This adds console control-plane services including
   projects, organizations, domains, migrations, dedicated databases, usage, VCS,
   vectors, WAF, notifications, and regions.
 - **API-key stdio** deliberately registers only the 724 project-key-compatible
