@@ -1004,6 +1004,9 @@ class ServerHelperTests(unittest.TestCase):
             def has_public_tool(self, name, *, apps=False):
                 return True
 
+            def approval(self, name, arguments):
+                return None
+
             def execute_public_tool(self, name, arguments):
                 raise WriteConfirmationRequired(
                     "Tool tables_db_create is write. Re-run appwrite_call_write_tool "

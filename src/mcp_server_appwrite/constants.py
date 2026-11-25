@@ -117,6 +117,23 @@ CREATE_HINTS = {"add", "build", "create", "insert", "make", "new", "provision"}
 UPDATE_HINTS = {"change", "edit", "modify", "rename", "set", "update"}
 DELETE_HINTS = {"delete", "destroy", "drop", "remove"}
 READ_HINTS = {"fetch", "find", "get", "list", "read", "search", "show", "view"}
+# Writes that spend money. Like deletes, the server asks the user to approve
+# them when the client can show a form.
+PAID_TOOLS = frozenset(
+    {
+        "domains_create_purchase",
+        "domains_create_transfer_in",
+        "mongo_create_upgrade",
+        "mysql_create_upgrade",
+        "organizations_add_credit",
+        "organizations_create_baa_addon",
+        "organizations_create_invoice_payment",
+        "organizations_create_premium_geo_db_addon",
+        "organizations_update_plan",
+        "postgresql_create_upgrade",
+        "projects_create_premium_geo_db_addon",
+    }
+)
 
 DOCS_TOOL_NAME = "appwrite_search_docs"
 EMBED_MODEL = "text-embedding-3-small"

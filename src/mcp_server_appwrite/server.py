@@ -40,7 +40,7 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.subscriptions import InMemorySubscriptionBus, ListenHandler
 from mcp.types import CLIENT_INFO_META_KEY, INVALID_PARAMS
 
-from . import error_monitoring, flags, legacy, telemetry
+from . import confirmation, error_monitoring, flags, legacy, telemetry
 from .apps import protocol as apps
 from .catalog_policy import (
     API_KEY_PROFILE,
@@ -74,7 +74,11 @@ from .context import (
     get_appwrite_context,
 )
 from .docs_search import DocsSearch
-from .error_classification import HostedBinaryResponseTooLarge, is_response_parse_error
+from .error_classification import (
+    HostedBinaryResponseTooLarge,
+    WriteDeclined,
+    is_response_parse_error,
+)
 from .events import egress
 from .events import protocol as events
 from .events.ingress import Ingress
@@ -1442,7 +1446,7 @@ def build_mcp_server(
 
     async def handle_call_tool(
         ctx: ServerRequestContext, params: types.CallToolRequestParams
-    ) -> types.CallToolResult:
+    ) -> types.CallToolResult | types.InputRequiredResult:
         _emit_initialize(ctx)
         apps.bind_origin(ctx)
         start = time.monotonic()
@@ -1452,6 +1456,16 @@ def build_mcp_server(
             if not operator.has_public_tool(name, apps=apps.enabled()):
                 telemetry.record_hallucination(name)
                 raise ValueError(f"Tool {name} not found")
+            approval = operator.approval(name, arguments)
+            if approval is not None and confirmation.supported(ctx):
+                answer = confirmation.answer(params)
+                if answer is None:
+                    return confirmation.request(approval)
+                if answer != "accept":
+                    raise WriteDeclined(
+                        "The user did not approve this change, so it was not made. "
+                        "Do not retry it unless they ask again."
+                    )
             output = await _execute_public_tool_for_transport(
                 operator, name, arguments, transport
             )

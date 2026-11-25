@@ -35,6 +35,7 @@ Source lives in `src/mcp_server_appwrite/`:
 | `zero.py` | Appwrite Zero (stdio without credentials): `appwrite_create_zero_project` creates a temporary project with no account and points the shared client at it; `appwrite_get_zero_project` reports its status. |
 | `context.py` | `appwrite_get_context` — workspace summary (project, services, account/org for OAuth, a focused project's environments). |
 | `headers.py` | Per-call request headers: `X-Appwrite-Environment` (a project environment, next to the project's ID) and `X-Appwrite-Reason` (why a write is made, validated and percent-encoded as Appwrite expects). |
+| `confirmation.py` | Asks the user, through MCP elicitation, to approve deletes and paid writes (`PAID_TOOLS`) on 2026-07-28 clients that declare form elicitation: an `InputRequiredResult` first, the write on the accepted retry. Other clients keep `confirm_write` alone. |
 | `redaction.py` | Redacts the response fields Appwrite's spec marks `format: password` (carried on Console SDK model fields) from tool results, leaving a fingerprint, unless a call sets `reveal_secrets`. |
 | `docs_search.py` | In-process semantic docs search (`appwrite_search_docs`) over a prebuilt index. |
 | `docs_server.py` | The public docs MCP server at `/docs/mcp`: `appwrite_search_docs` only, no sign-in. |
@@ -66,7 +67,8 @@ services) stays internal and is searched at runtime. API-key stdio uses a filter
 27-service catalog. Mutating hidden tools run only through
 `appwrite_call_write_tool` and require `confirm_write=true` and a one-line
 `reason` (sent as `X-Appwrite-Reason`, recorded on the audit log), so each
-exposed tool's annotations match every call it accepts. Large outputs are stored as MCP
+exposed tool's annotations match every call it accepts. Deletes and paid writes
+also wait for the user's approval when the client can show an elicitation form. Large outputs are stored as MCP
 resources and returned as a preview + resource URI.
 
 With MCP Apps on (`flags.APPS`), hosts that render them also see

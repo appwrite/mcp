@@ -501,6 +501,135 @@ class ToolsFlow(unittest.TestCase):
         self.assertFalse(result.get("isError"), result)
         self.assertNotIn("x-appwrite-reason", cloud.headers("GET", "/v1/webhooks")[-1])
 
+    def test_deletes_wait_for_the_user_when_the_client_can_ask(self):
+        deleted = cloud.calls("DELETE", "/v1/webhooks/e2e-approval")
+        delete = {
+            "name": "appwrite_call_write_tool",
+            "arguments": {
+                "tool_name": "webhooks_delete",
+                "project_id": PROJECT,
+                "confirm_write": True,
+                "reason": "Remove the retired CRM hook",
+                "arguments": {"webhook_id": "e2e-approval"},
+            },
+        }
+        result = self.call(
+            "appwrite_call_write_tool",
+            {
+                "tool_name": "webhooks_create",
+                "project_id": PROJECT,
+                "confirm_write": True,
+                "reason": "Hook sign-ups into the CRM",
+                "arguments": {**WEBHOOK, "webhook_id": "e2e-approval"},
+            },
+        )
+        self.assertFalse(result.get("isError"), result)
+
+        with self.server.client(capabilities={"elicitation": {"form": {}}}) as client:
+            # The model's confirm_write is not enough: the user is shown the
+            # call and the reason, and nothing reaches Appwrite yet.
+            status, response = client.call("tools/call", delete)
+            self.assertEqual(status, 200)
+            asked = response["result"]
+            self.assertEqual(asked["resultType"], "input_required")
+            form = asked["inputRequests"]["confirm"]
+            self.assertEqual(form["method"], "elicitation/create")
+            self.assertEqual(form["params"]["mode"], "form")
+            self.assertEqual(
+                form["params"]["message"],
+                "Allow webhooks_delete?\n"
+                f"Project: {PROJECT}\n"
+                'Arguments: {"webhook_id": "e2e-approval"}\n'
+                "Reason: Remove the retired CRM hook",
+            )
+            self.assertEqual(
+                cloud.calls("DELETE", "/v1/webhooks/e2e-approval"), deleted
+            )
+
+            # Declined or dismissed, the webhook stays and the model is told why.
+            for action in ("decline", "cancel"):
+                with self.subTest(action=action):
+                    status, response = client.call(
+                        "tools/call",
+                        {**delete, "inputResponses": {"confirm": {"action": action}}},
+                    )
+                    result = response["result"]
+                    self.assertTrue(result["isError"])
+                    self.assertIn(
+                        "The user did not approve this change", self.text(result)
+                    )
+            self.assertIn("e2e-approval", cloud.documents(PROJECT))
+
+            # Approved, the retried call runs.
+            status, response = client.call(
+                "tools/call",
+                {
+                    **delete,
+                    "inputResponses": {"confirm": {"action": "accept", "content": {}}},
+                },
+            )
+            self.assertFalse(response["result"].get("isError"), response)
+            self.assertEqual(
+                cloud.calls("DELETE", "/v1/webhooks/e2e-approval"), deleted + 1
+            )
+            self.assertNotIn("e2e-approval", cloud.documents(PROJECT))
+
+            # Writes that neither delete nor spend run without asking.
+            status, response = client.call(
+                "tools/call",
+                {
+                    "name": "appwrite_call_write_tool",
+                    "arguments": {
+                        "tool_name": "webhooks_create",
+                        "project_id": PROJECT,
+                        "confirm_write": True,
+                        "reason": "Hook sign-ups into the CRM",
+                        "arguments": {**WEBHOOK, "webhook_id": "e2e-approval"},
+                    },
+                },
+            )
+            self.assertFalse(response["result"].get("isError"), response)
+            self.assertEqual(response["result"]["resultType"], "complete")
+
+            # Writes that spend money are asked about too, and the accepted
+            # retry reaches Appwrite.
+            upgrade = {
+                "name": "appwrite_call_write_tool",
+                "arguments": {
+                    "tool_name": "organizations_update_plan",
+                    "organization_id": "org-e2e",
+                    "confirm_write": True,
+                    "reason": "Upgrade to Pro for the launch",
+                    "arguments": {
+                        "organization_id": "org-e2e",
+                        "billing_plan": "tier-1",
+                    },
+                },
+            }
+            path = "/v1/organizations/org-e2e/plan"
+            upgraded = cloud.calls("PATCH", path)
+            status, response = client.call("tools/call", upgrade)
+            self.assertEqual(response["result"]["resultType"], "input_required")
+            self.assertTrue(
+                response["result"]["inputRequests"]["confirm"]["params"][
+                    "message"
+                ].startswith("Allow organizations_update_plan?\nOrganization: org-e2e")
+            )
+            self.assertEqual(cloud.calls("PATCH", path), upgraded)
+            status, response = client.call(
+                "tools/call",
+                {**upgrade, "inputResponses": {"confirm": {"action": "accept"}}},
+            )
+            self.assertEqual(response["result"]["resultType"], "complete")
+            self.assertEqual(cloud.calls("PATCH", path), upgraded + 1)
+
+        # A client that cannot show a form keeps the confirm_write flow alone.
+        result = self.call("appwrite_call_write_tool", delete["arguments"])
+        self.assertFalse(result.get("isError"), result)
+        self.assertEqual(
+            cloud.calls("DELETE", "/v1/webhooks/e2e-approval"), deleted + 2
+        )
+
     def test_calls_act_in_a_project_environment(self):
         listed = cloud.calls("GET", "/v1/webhooks")
         result = self.call(
