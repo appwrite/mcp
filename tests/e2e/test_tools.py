@@ -591,6 +591,38 @@ class ToolsFlow(unittest.TestCase):
             self.assertFalse(response["result"].get("isError"), response)
             self.assertEqual(response["result"]["resultType"], "complete")
 
+            # Writes that spend money are asked about too, and the accepted
+            # retry reaches Appwrite.
+            upgrade = {
+                "name": "appwrite_call_write_tool",
+                "arguments": {
+                    "tool_name": "organizations_update_plan",
+                    "organization_id": "org-e2e",
+                    "confirm_write": True,
+                    "reason": "Upgrade to Pro for the launch",
+                    "arguments": {
+                        "organization_id": "org-e2e",
+                        "billing_plan": "tier-1",
+                    },
+                },
+            }
+            path = "/v1/organizations/org-e2e/plan"
+            upgraded = cloud.calls("PATCH", path)
+            status, response = client.call("tools/call", upgrade)
+            self.assertEqual(response["result"]["resultType"], "input_required")
+            self.assertTrue(
+                response["result"]["inputRequests"]["confirm"]["params"][
+                    "message"
+                ].startswith("Allow organizations_update_plan?\nOrganization: org-e2e")
+            )
+            self.assertEqual(cloud.calls("PATCH", path), upgraded)
+            status, response = client.call(
+                "tools/call",
+                {**upgrade, "inputResponses": {"confirm": {"action": "accept"}}},
+            )
+            self.assertEqual(response["result"]["resultType"], "complete")
+            self.assertEqual(cloud.calls("PATCH", path), upgraded + 1)
+
         # A client that cannot show a form keeps the confirm_write flow alone.
         result = self.call("appwrite_call_write_tool", delete["arguments"])
         self.assertFalse(result.get("isError"), result)
