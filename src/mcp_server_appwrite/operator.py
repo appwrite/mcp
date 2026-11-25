@@ -24,6 +24,7 @@ from .constants import (
     CONTEXT_TOOL_NAME,
     CREATE_HINTS,
     DELETE_HINTS,
+    PAID_TOOLS,
     PREVIEW_THRESHOLD,
     READ_HINTS,
     READ_VERBS,
@@ -77,6 +78,12 @@ class CatalogEntry:
         """Anything but a recognised read. Unknown verbs (upserts, increments,
         GraphQL) may change state, so they are treated as mutations."""
         return self.classification != "read"
+
+    @property
+    def needs_approval(self) -> bool:
+        """Whether the user, not only the model, approves this call: deletes and
+        writes that spend money."""
+        return self.classification == "delete" or self.tool_name in PAID_TOOLS
 
     @property
     def call_tool(self) -> str:
@@ -202,6 +209,43 @@ class Operator:
 
     def has_public_tool(self, name: str, *, apps: bool = False) -> bool:
         return name in self._tools(apps)
+
+    def approval(self, name: str, arguments: dict[str, Any]) -> str | None:
+        """What to ask the user before this public call runs, when it is a write
+        that needs their approval. ``None`` for any other call, and for a write
+        the model has not confirmed or explained yet: that is refused first, so
+        the user is never asked about a call that will not run."""
+        if name != WRITE_TOOL_NAME:
+            return None
+        tool_name = arguments.get("tool_name", arguments.get("toolName"))
+        entry = self._catalog_map.get(tool_name) if isinstance(tool_name, str) else None
+        if entry is None or not entry.needs_approval:
+            return None
+        if not arguments.get("confirm_write", arguments.get("confirmWrite")):
+            return None
+        reason = arguments.get("reason")
+        if not isinstance(reason, str) or not reason.strip() or reason_error(reason):
+            return None
+        lines = [f"Allow {tool_name}?"]
+        for label, keys in (
+            ("Organization", ("organization_id", "organizationId")),
+            ("Project", ("project_id", "projectId")),
+            ("Environment", ("environment_id", "environmentId")),
+        ):
+            value = arguments.get(keys[0], arguments.get(keys[1]))
+            if value:
+                lines.append(f"{label}: {value}")
+        try:
+            target = _normalize_arguments(arguments)
+        except ValueError:
+            return None
+        if target:
+            text = json.dumps(target, default=str)
+            if len(text) > _APPROVAL_ARGUMENTS_LIMIT:
+                text = f"{text[:_APPROVAL_ARGUMENTS_LIMIT]}…"
+            lines.append(f"Arguments: {text}")
+        lines.append(f"Reason: {reason.strip()}")
+        return "\n".join(lines)
 
     def _tools(self, apps: bool) -> dict[str, PublicTool]:
         return self._public_tools | self._view_tools if apps else self._public_tools
@@ -1017,6 +1061,8 @@ def _has_schema_property(entry: CatalogEntry, key: str) -> bool:
 
 _PARAM_DESCRIPTION_LIMIT = 600
 _TOOL_DESCRIPTION_LIMIT = 400
+# Keeps the approval form readable when a write carries a large payload.
+_APPROVAL_ARGUMENTS_LIMIT = 500
 _CATALOG_DESCRIPTION_LIMIT = 200
 
 

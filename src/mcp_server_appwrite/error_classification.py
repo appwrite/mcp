@@ -47,6 +47,13 @@ class WriteReasonRequired(WriteConfirmationRequired):
     write must carry, so it is classified and monitored the same way."""
 
 
+class WriteDeclined(WriteConfirmationRequired):
+    """The user declined or dismissed the approval form for a write.
+
+    Expected, like a missing ``confirm_write``: the write did not run because
+    someone chose not to make it."""
+
+
 class WrongCallTool(ValueError):
     """A hidden tool was called through the public tool for the other
     classification: a mutation through the read-only call tool, or a read
