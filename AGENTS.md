@@ -62,9 +62,9 @@ needs no credentials. The MCP dashboard lives in `appwrite-labs/monitoring` at
 The server boots in a compact workflow: the client sees up to 5 tools
 (`appwrite_get_context`, `appwrite_search_tools`, `appwrite_call_tool` for
 reads, `appwrite_call_write_tool` for everything else, and optionally
-`appwrite_search_docs`), while the full OAuth Appwrite catalog (41
+`appwrite_search_docs`), while the full OAuth Appwrite catalog (43
 services) stays internal and is searched at runtime. API-key stdio uses a filtered
-27-service catalog. Mutating hidden tools run only through
+29-service catalog. Mutating hidden tools run only through
 `appwrite_call_write_tool` and require `confirm_write=true` and a one-line
 `reason` (sent as `X-Appwrite-Reason`, recorded on the audit log), so each
 exposed tool's annotations match every call it accepts. Deletes and paid writes

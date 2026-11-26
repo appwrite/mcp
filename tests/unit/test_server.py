@@ -194,6 +194,40 @@ CONSOLE_SDK_0_17_TOOLS = (
     "sites_update_analytics",
 )
 
+# Monitors and alerts are project APIs, so both catalogs register them.
+CONSOLE_SDK_0_18_PROJECT_TOOLS = (
+    "alerts_get",
+    "alerts_list",
+    "alerts_update",
+    "monitors_create_dns_monitor",
+    "monitors_create_http_monitor",
+    "monitors_create_smtp_monitor",
+    "monitors_create_tcp_monitor",
+    "monitors_create_usage_monitor",
+    "monitors_delete",
+    "monitors_get",
+    "monitors_list",
+    "monitors_update_dns_monitor",
+    "monitors_update_http_monitor",
+    "monitors_update_smtp_monitor",
+    "monitors_update_tcp_monitor",
+    "monitors_update_usage_monitor",
+)
+
+# Escalations take an organization key and the organizations service is console
+# only, so these stay out of the API-key catalog.
+CONSOLE_SDK_0_18_CONSOLE_TOOLS = (
+    "organization_create_escalation",
+    "organization_delete_escalation",
+    "organization_get_escalation",
+    "organization_list_escalations",
+    "organization_update_escalation",
+    "organizations_get_alert",
+    "organizations_get_monitor",
+    "organizations_list_alerts",
+    "organizations_list_monitors",
+)
+
 
 class ServerHelperTests(unittest.TestCase):
     def test_parse_args_defaults_to_stdio(self):
@@ -1097,8 +1131,8 @@ class ServerHelperTests(unittest.TestCase):
             {service.service_name for service in manager_a.services},
             set(SERVICE_CLASSES),
         )
-        self.assertEqual(len(manager_a.services), 41)
-        self.assertEqual(len(manager_a.get_all_tools()), 1069)
+        self.assertEqual(len(manager_a.services), 43)
+        self.assertEqual(len(manager_a.get_all_tools()), 1094)
 
     def test_console_sdk_0_7_surface(self):
         manager = register_services(object(), profile=OAUTH_PROFILE)
@@ -1111,7 +1145,11 @@ class ServerHelperTests(unittest.TestCase):
         self.assertIn("tables_db_create_cutover", tools)
         self.assertIn("analytics_list_metrics", tools)
         self.assertIn("avatars_update_photo", tools)
-        for tool_name in CONSOLE_SDK_0_17_TOOLS:
+        for tool_name in (
+            *CONSOLE_SDK_0_17_TOOLS,
+            *CONSOLE_SDK_0_18_PROJECT_TOOLS,
+            *CONSOLE_SDK_0_18_CONSOLE_TOOLS,
+        ):
             self.assertIn(tool_name, tools)
         for removed_tool in (
             "project_get_usage",
@@ -1221,10 +1259,12 @@ class ServerHelperTests(unittest.TestCase):
         service_names = {service.service_name for service in manager.services}
         tool_names = {tool.name for tool in manager.get_all_tools()}
 
-        self.assertEqual(len(manager.services), 27)
-        self.assertEqual(len(tool_names), 724)
-        for tool_name in CONSOLE_SDK_0_17_TOOLS:
+        self.assertEqual(len(manager.services), 29)
+        self.assertEqual(len(tool_names), 740)
+        for tool_name in (*CONSOLE_SDK_0_17_TOOLS, *CONSOLE_SDK_0_18_PROJECT_TOOLS):
             self.assertIn(tool_name, tool_names)
+        for tool_name in CONSOLE_SDK_0_18_CONSOLE_TOOLS:
+            self.assertNotIn(tool_name, tool_names)
         self.assertIn("waf_list_rules", tool_names)
         self.assertIn("waf_create_deny_rule", tool_names)
         self.assertIn("avatars_get_photo", tool_names)

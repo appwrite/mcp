@@ -24,6 +24,7 @@ API_KEY_SERVICES: frozenset[str] = frozenset(
         "account",
         "activities",
         "advisor",
+        "alerts",
         "apps",
         "avatars",
         "backups",
@@ -34,6 +35,7 @@ API_KEY_SERVICES: frozenset[str] = frozenset(
         "graphql",
         "locale",
         "messaging",
+        "monitors",
         "oauth2",
         "organization",
         "presences",
@@ -100,10 +102,15 @@ API_KEY_EXCLUDED_METHODS: dict[str, frozenset[str]] = {
     "organization": frozenset(
         {
             "create_ephemeral_project_key",
+            "create_escalation",
             "create_project_key",
+            "delete_escalation",
             "delete_project_key",
+            "get_escalation",
             "get_project_key",
+            "list_escalations",
             "list_project_keys",
+            "update_escalation",
             "update_project_key",
         }
     ),
@@ -138,6 +145,7 @@ API_KEY_EXCLUDED_METHODS: dict[str, frozenset[str]] = {
 PROJECT_CONTEXT_SERVICES: frozenset[str] = frozenset(
     {
         "advisor",
+        "alerts",
         "databases",
         "documents_db",
         "embeddings",
@@ -145,6 +153,7 @@ PROJECT_CONTEXT_SERVICES: frozenset[str] = frozenset(
         "messaging",
         "migrations",
         "mongo",
+        "monitors",
         "mysql",
         "postgresql",
         "sites",
