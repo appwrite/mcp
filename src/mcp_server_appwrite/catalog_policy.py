@@ -115,6 +115,15 @@ API_KEY_EXCLUDED_METHODS: dict[str, frozenset[str]] = {
         }
     ),
     "presences": frozenset({"get_usage"}),
+    "project": frozenset(
+        {
+            "create_video_profile",
+            "delete_video_profile",
+            "get_video_profile",
+            "list_video_profiles",
+            "update_video_profile",
+        }
+    ),
     "sites": frozenset({"get_template", "list_templates"}),
     "tables_db": frozenset(
         {
@@ -156,6 +165,7 @@ PROJECT_CONTEXT_SERVICES: frozenset[str] = frozenset(
         "monitors",
         "mysql",
         "postgresql",
+        "project",
         "sites",
         "storage",
         "tables_db",
@@ -164,6 +174,7 @@ PROJECT_CONTEXT_SERVICES: frozenset[str] = frozenset(
         "users",
         "vcs",
         "vectors_db",
+        "videos",
         "waf",
     }
 )

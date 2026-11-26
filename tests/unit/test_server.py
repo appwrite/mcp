@@ -228,6 +228,37 @@ CONSOLE_SDK_0_18_CONSOLE_TOOLS = (
     "organizations_list_monitors",
 )
 
+# Videos is a new service and video profiles are new project methods. Neither has
+# been reviewed for project API keys yet, so both stay out of the API-key catalog.
+CONSOLE_SDK_0_19_TOOLS = (
+    "project_create_video_profile",
+    "project_delete_video_profile",
+    "project_get_video_profile",
+    "project_list_video_profiles",
+    "project_update_video_profile",
+    "videos_create",
+    "videos_create_caption",
+    "videos_create_rendition",
+    "videos_delete",
+    "videos_delete_caption",
+    "videos_delete_rendition",
+    "videos_get",
+    "videos_get_caption_manifest",
+    "videos_get_cmaf_dash_manifest",
+    "videos_get_cmaf_hls_manifest",
+    "videos_get_dash_manifest",
+    "videos_get_hls_manifest",
+    "videos_get_rendition",
+    "videos_get_thumbnail",
+    "videos_get_timeline",
+    "videos_list",
+    "videos_list_captions",
+    "videos_list_codecs",
+    "videos_list_renditions",
+    "videos_update",
+    "videos_update_caption",
+)
+
 
 class ServerHelperTests(unittest.TestCase):
     def test_parse_args_defaults_to_stdio(self):
@@ -1131,8 +1162,8 @@ class ServerHelperTests(unittest.TestCase):
             {service.service_name for service in manager_a.services},
             set(SERVICE_CLASSES),
         )
-        self.assertEqual(len(manager_a.services), 43)
-        self.assertEqual(len(manager_a.get_all_tools()), 1094)
+        self.assertEqual(len(manager_a.services), 44)
+        self.assertEqual(len(manager_a.get_all_tools()), 1120)
 
     def test_console_sdk_0_7_surface(self):
         manager = register_services(object(), profile=OAUTH_PROFILE)
@@ -1149,8 +1180,13 @@ class ServerHelperTests(unittest.TestCase):
             *CONSOLE_SDK_0_17_TOOLS,
             *CONSOLE_SDK_0_18_PROJECT_TOOLS,
             *CONSOLE_SDK_0_18_CONSOLE_TOOLS,
+            *CONSOLE_SDK_0_19_TOOLS,
         ):
             self.assertIn(tool_name, tools)
+        # Every project_* method calls /project/*, which acts on the client's
+        # project, so hosted calls must name the target project.
+        for tool_name in CONSOLE_SDK_0_19_TOOLS:
+            self.assertEqual(tools[tool_name]["context_scope"], "project")
         for removed_tool in (
             "project_get_usage",
             "projects_list_dev_keys",
@@ -1263,7 +1299,7 @@ class ServerHelperTests(unittest.TestCase):
         self.assertEqual(len(tool_names), 740)
         for tool_name in (*CONSOLE_SDK_0_17_TOOLS, *CONSOLE_SDK_0_18_PROJECT_TOOLS):
             self.assertIn(tool_name, tool_names)
-        for tool_name in CONSOLE_SDK_0_18_CONSOLE_TOOLS:
+        for tool_name in (*CONSOLE_SDK_0_18_CONSOLE_TOOLS, *CONSOLE_SDK_0_19_TOOLS):
             self.assertNotIn(tool_name, tool_names)
         self.assertIn("waf_list_rules", tool_names)
         self.assertIn("waf_create_deny_rule", tool_names)
