@@ -623,6 +623,34 @@ class ToolsFlow(unittest.TestCase):
             self.assertEqual(response["result"]["resultType"], "complete")
             self.assertEqual(cloud.calls("PATCH", path), upgraded + 1)
 
+            # A synthetic monitor past the plan's included amount is billed,
+            # so creating one waits for approval as well.
+            monitored = cloud.calls("POST", "/v1/monitors/http")
+            status, response = client.call(
+                "tools/call",
+                {
+                    "name": "appwrite_call_write_tool",
+                    "arguments": {
+                        "tool_name": "monitors_create_http_monitor",
+                        "project_id": PROJECT,
+                        "confirm_write": True,
+                        "reason": "Watch the checkout API",
+                        "arguments": {
+                            "monitor_id": "e2e-checkout",
+                            "name": "Checkout",
+                            "url": "https://example.com/checkout",
+                        },
+                    },
+                },
+            )
+            self.assertEqual(response["result"]["resultType"], "input_required")
+            self.assertTrue(
+                response["result"]["inputRequests"]["confirm"]["params"][
+                    "message"
+                ].startswith("Allow monitors_create_http_monitor?")
+            )
+            self.assertEqual(cloud.calls("POST", "/v1/monitors/http"), monitored)
+
         # A client that cannot show a form keeps the confirm_write flow alone.
         result = self.call("appwrite_call_write_tool", delete["arguments"])
         self.assertFalse(result.get("isError"), result)
