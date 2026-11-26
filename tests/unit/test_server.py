@@ -1183,9 +1183,10 @@ class ServerHelperTests(unittest.TestCase):
             *CONSOLE_SDK_0_19_TOOLS,
         ):
             self.assertIn(tool_name, tools)
+        # Every project_* method calls /project/*, which acts on the client's
+        # project, so hosted calls must name the target project.
         for tool_name in CONSOLE_SDK_0_19_TOOLS:
-            if tool_name.startswith("videos_"):
-                self.assertEqual(tools[tool_name]["context_scope"], "project")
+            self.assertEqual(tools[tool_name]["context_scope"], "project")
         for removed_tool in (
             "project_get_usage",
             "projects_list_dev_keys",

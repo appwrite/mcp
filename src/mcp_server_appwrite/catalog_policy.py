@@ -165,6 +165,7 @@ PROJECT_CONTEXT_SERVICES: frozenset[str] = frozenset(
         "monitors",
         "mysql",
         "postgresql",
+        "project",
         "sites",
         "storage",
         "tables_db",
