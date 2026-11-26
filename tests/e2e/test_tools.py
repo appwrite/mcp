@@ -651,6 +651,34 @@ class ToolsFlow(unittest.TestCase):
             )
             self.assertEqual(cloud.calls("POST", "/v1/monitors/http"), monitored)
 
+            # Each rendition is an encode the project pays compute for.
+            path = "/v1/videos/e2e-video/renditions"
+            rendered = cloud.calls("POST", path)
+            status, response = client.call(
+                "tools/call",
+                {
+                    "name": "appwrite_call_write_tool",
+                    "arguments": {
+                        "tool_name": "videos_create_rendition",
+                        "project_id": PROJECT,
+                        "confirm_write": True,
+                        "reason": "Encode the launch video for HLS",
+                        "arguments": {
+                            "video_id": "e2e-video",
+                            "profile_id": "e2e-720p",
+                            "output": "hls",
+                        },
+                    },
+                },
+            )
+            self.assertEqual(response["result"]["resultType"], "input_required")
+            self.assertTrue(
+                response["result"]["inputRequests"]["confirm"]["params"][
+                    "message"
+                ].startswith("Allow videos_create_rendition?")
+            )
+            self.assertEqual(cloud.calls("POST", path), rendered)
+
         # A client that cannot show a form keeps the confirm_write flow alone.
         result = self.call("appwrite_call_write_tool", delete["arguments"])
         self.assertFalse(result.get("isError"), result)
