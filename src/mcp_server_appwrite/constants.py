@@ -136,6 +136,7 @@ PAID_TOOLS = frozenset(
         "organizations_update_plan",
         "postgresql_create_upgrade",
         "projects_create_premium_geo_db_addon",
+        "videos_create_rendition",
     }
 )
 
